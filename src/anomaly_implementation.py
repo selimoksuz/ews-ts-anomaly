@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 import adaptive_peer_selection as adaptive
-import fatura_peer_anomaly_model as core
+import anomaly_model as core
 
 warnings.filterwarnings("ignore", category=pd.errors.PerformanceWarning)
 
@@ -21,7 +21,7 @@ SIGNAL_COLUMNS = [
     ("historical_peer", "historical_peer_z", "historical_peer_score", "gecmis peer beklentisi"),
     ("current_peer", "current_peer_z", "current_peer_score", "ayni ay peer medyani"),
     ("peer_trend", "peer_trend_z", "peer_trend_score", "peer trendi"),
-    ("turnover_intensity", "turnover_intensity_z", "turnover_intensity_score", "fatura/turnover yogunlugu"),
+    ("turnover_intensity", "turnover_intensity_z", "turnover_intensity_score", "ana metrik/referans feature orani"),
     ("self_history", "self_history_z", "self_history_score", "musterinin kendi gecmisi"),
     ("customer_trend", "customer_trend_z", "customer_trend_score", "musteri trendi"),
     ("customer_seasonal", "customer_seasonal_z", "customer_seasonal_score", "musteri sezonalligi"),
@@ -83,15 +83,15 @@ MODEL_DECISION_RENAME = {
     "scoreability_status": "VERI_YETERLILIK_DURUMU",
     "human_readable_reason": "ANOMALI_NEDENI",
     "reason_codes": "NEDEN_KODLARI",
-    "expected_bill_amount": "BEKLENEN_FATURA_TTR",
+    "expected_bill_amount": "BEKLENEN_ANA_METRIK",
     "actual_to_expected_ratio": "GERCEK_BEKLENEN_ORANI",
-    "current_peer_median_bill": "PEER_GUNCEL_MEDYAN_FATURA_TTR",
-    "prior_median_bill": "MUSTERI_GECMIS_MEDYAN_FATURA_TTR",
-    "customer_trend_expected_bill": "MUSTERI_TREND_BEKLENEN_FATURA_TTR",
-    "customer_seasonal_expected_bill": "MUSTERI_SEZON_BEKLENEN_FATURA_TTR",
-    "customer_recent3_median_bill": "MUSTERI_SON3_AY_MEDYAN_FATURA_TTR",
+    "current_peer_median_bill": "PEER_GUNCEL_MEDYAN_ANA_METRIK",
+    "prior_median_bill": "MUSTERI_GECMIS_MEDYAN_ANA_METRIK",
+    "customer_trend_expected_bill": "MUSTERI_TREND_BEKLENEN_ANA_METRIK",
+    "customer_seasonal_expected_bill": "MUSTERI_SEZON_BEKLENEN_ANA_METRIK",
+    "customer_recent3_median_bill": "MUSTERI_SON3_AY_MEDYAN_ANA_METRIK",
     "customer_recent3_range_log": "MUSTERI_SON3_AY_RANGE_LOG",
-    "peer_trend_expected_bill": "PEER_TREND_BEKLENEN_FATURA_TTR",
+    "peer_trend_expected_bill": "PEER_TREND_BEKLENEN_ANA_METRIK",
     "peer_group_level_name": "PEER_SEVIYE",
     "peer_group_columns": "PEER_KOLONLARI",
     "prior_n": "MUSTERI_GECMIS_AY_ADET",
@@ -110,8 +110,8 @@ MODEL_DECISION_RENAME = {
     "current_peer_score": "GUNCEL_PEER_SKORU",
     "peer_trend_z": "PEER_TREND_Z",
     "peer_trend_score": "PEER_TREND_SKORU",
-    "turnover_intensity_z": "TURNOVER_YOGUNLUK_Z",
-    "turnover_intensity_score": "TURNOVER_YOGUNLUK_SKORU",
+    "turnover_intensity_z": "FEATURE_ORAN_Z",
+    "turnover_intensity_score": "FEATURE_ORAN_SKORU",
     "self_history_z": "MUSTERI_GECMIS_Z",
     "self_history_score": "MUSTERI_GECMIS_SKORU",
     "customer_trend_z": "MUSTERI_TREND_Z",
@@ -157,7 +157,7 @@ MODEL_DECISION_RENAME = {
     "behavior_level_bucket": "DAVRANIS_SEVIYE_BUCKET",
     "behavior_volatility_bucket": "DAVRANIS_VOLATILITE_BUCKET",
     "behavior_trend_bucket": "DAVRANIS_TREND_BUCKET",
-    "behavior_median_bill": "DAVRANIS_MEDYAN_FATURA_TTR",
+    "behavior_median_bill": "DAVRANIS_MEDYAN_ANA_METRIK",
     "behavior_volatility_log": "DAVRANIS_VOLATILITE_LOG",
     "behavior_trend_slope": "DAVRANIS_TREND_SLOPE",
     "customer_final_weight": "MUSTERI_FINAL_AGIRLIK",
@@ -169,13 +169,13 @@ MODEL_DECISION_RENAME = {
     "historical_peer_final_weight": "GECMIS_PEER_AGIRLIK",
     "current_peer_final_weight": "GUNCEL_PEER_AGIRLIK",
     "peer_trend_final_weight": "PEER_TREND_AGIRLIK",
-    "turnover_intensity_final_weight": "TURNOVER_YOGUNLUK_AGIRLIK",
+    "turnover_intensity_final_weight": "FEATURE_ORAN_AGIRLIK",
     "hist_n": "PEER_GECMIS_ADET",
     "moy_n": "PEER_SEZON_AY_ADET",
     "recent_n": "PEER_RECENT_ADET",
     "current_n": "PEER_GUNCEL_ADET",
-    "ratio_n": "PEER_TURNOVER_ORAN_ADET",
-    "prior_12_n": "SON_12_AY_FATURA_ADET",
+    "ratio_n": "PEER_FEATURE_ORAN_ADET",
+    "prior_12_n": "SON_12_AY_ANA_METRIK_ADET",
     "customer_trend_n": "MUSTERI_TREND_ADET",
     "customer_seasonal_n": "MUSTERI_SEZON_ADET",
     "customer_recent3_n": "MUSTERI_SON3_AY_ADET",
@@ -184,7 +184,7 @@ MODEL_DECISION_RENAME = {
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Production monthly scoring entrypoint for invoice anomalies.")
+    parser = argparse.ArgumentParser(description="Production monthly scoring entrypoint for single-variable anomalies.")
     parser.add_argument(
         "--input",
         default="data/raw/encrypted_final.csv",
@@ -231,9 +231,9 @@ def fmt_num(value: Any, digits: int = 2) -> str:
 
 
 def input_column_map(profile: dict[str, Any]) -> dict[str, str]:
-    configured = profile.get("input_column_map")
-    if isinstance(configured, dict):
-        return {str(k): str(v) for k, v in configured.items()}
+    source_map = profile.get("input_column_map")
+    if isinstance(source_map, dict):
+        return {str(k): str(v) for k, v in source_map.items()}
     return {
         "branch_id": "SUBE_KD",
         "customer_id": profile.get("customer_id_column", "MUSTERINO"),
@@ -330,17 +330,20 @@ def operational_decision(action_label: Any, anomaly_label: Any, is_scored: bool 
         return "REVIEW_SIGNAL_CONFLICT"
     if "LOW_CONFIDENCE" in action or "SPARSE_HISTORY" in action:
         return "REVIEW_LOW_CONFIDENCE"
-    return "REVIEW_AMOUNT_ANOMALY"
+    return "REVIEW_MAIN_METRIC_ANOMALY"
 
 
 def strongest_signal(row: pd.Series) -> tuple[str, str, float, float]:
+    def output_signal_name(value: str) -> str:
+        return "feature_ratio" if value == "turnover_intensity" else value
+
     primary_signal = row.get("primary_signal_name", "")
     if isinstance(primary_signal, str) and primary_signal:
         signal_lookup = {signal_name: (z_col, score_col, signal_label) for signal_name, z_col, score_col, signal_label in SIGNAL_COLUMNS}
         if primary_signal in signal_lookup:
             z_col, score_col, signal_label = signal_lookup[primary_signal]
             score = row.get("primary_signal_score", row.get(score_col, np.nan))
-            return (primary_signal, signal_label, row.get(z_col, np.nan), score)
+            return (output_signal_name(primary_signal), signal_label, row.get(z_col, np.nan), score)
     best = ("none", "major sinyal yok", np.nan, 0.0)
     direction = str(row.get("anomaly_direction", "NONE"))
     candidates: list[tuple[str, str, float, float]] = []
@@ -351,7 +354,7 @@ def strongest_signal(row: pd.Series) -> tuple[str, str, float, float]:
         z_value = row.get(z_col, np.nan)
         if pd.isna(z_value):
             continue
-        candidate = (signal_name, signal_label, float(z_value), float(score))
+        candidate = (output_signal_name(signal_name), signal_label, float(z_value), float(score))
         candidates.append(candidate)
         aligned = (
             direction == "NONE"
@@ -374,6 +377,16 @@ def safe_ratio(numerator: Any, denominator: Any) -> float:
     return float(numerator) / denom
 
 
+def display_peer_columns(value: Any) -> str:
+    replacements = {
+        "turnover_bucket": "feature_ratio_bucket",
+        "active_subscriber_bucket": "exposure_bucket",
+    }
+    text = str(value)
+    parts = [replacements.get(part, part) for part in text.split("+")]
+    return "+".join(parts)
+
+
 def decision_label_text(row: pd.Series) -> str:
     label = str(row.get("anomaly_label", "NORMAL"))
     action = str(row.get("action_label", "NORMAL"))
@@ -387,10 +400,10 @@ def decision_label_text(row: pd.Series) -> str:
         return "dusuk guven review"
     if action.startswith("WATCHLIST"):
         return "watchlist"
-    if label == "HIGH_BILL_ANOMALY" or action.startswith("LIKELY_HIGH"):
-        return "yuksek fatura anomalisi"
-    if label == "LOW_BILL_ANOMALY" or action.startswith("LIKELY_LOW"):
-        return "dusuk fatura anomalisi"
+    if label in {"HIGH_MAIN_METRIC_ANOMALY", "HIGH_BILL_ANOMALY"} or action.startswith("LIKELY_HIGH"):
+        return "yuksek ana metrik anomalisi"
+    if label in {"LOW_MAIN_METRIC_ANOMALY", "LOW_BILL_ANOMALY"} or action.startswith("LIKELY_LOW"):
+        return "dusuk ana metrik anomalisi"
     return "anomali review"
 
 
@@ -402,53 +415,56 @@ def strongest_signal_detail(row: pd.Series) -> str:
     if signal_name == "customer_seasonal":
         seasonal = row.get("customer_seasonal_expected_bill", np.nan)
         return (
-            f"Skorlanan fatura {fmt_num(actual)}; musterinin ayni sezon beklentisi "
-            f"{fmt_num(seasonal)}; fatura/sezonsal beklenti orani {fmt_num(safe_ratio(actual, seasonal), 3)}."
+            f"Skorlanan ana metrik {fmt_num(actual)}; musterinin ayni sezon beklentisi "
+            f"{fmt_num(seasonal)}; ana metrik/sezonsal beklenti orani {fmt_num(safe_ratio(actual, seasonal), 3)}."
         )
     if signal_name == "customer_trend":
         trend = row.get("customer_trend_expected_bill", np.nan)
         return (
-            f"Skorlanan fatura {fmt_num(actual)}; musterinin trend beklentisi "
-            f"{fmt_num(trend)}; fatura/trend beklenti orani {fmt_num(safe_ratio(actual, trend), 3)}."
+            f"Skorlanan ana metrik {fmt_num(actual)}; musterinin trend beklentisi "
+            f"{fmt_num(trend)}; ana metrik/trend beklenti orani {fmt_num(safe_ratio(actual, trend), 3)}."
         )
     if signal_name == "self_history":
         prior = row.get("prior_median_bill", np.nan)
         return (
-            f"Skorlanan fatura {fmt_num(actual)}; musterinin gecmis medyani "
-            f"{fmt_num(prior)}; fatura/kendi medyan orani {fmt_num(safe_ratio(actual, prior), 3)}."
+            f"Skorlanan ana metrik {fmt_num(actual)}; musterinin gecmis medyani "
+            f"{fmt_num(prior)}; ana metrik/kendi medyan orani {fmt_num(safe_ratio(actual, prior), 3)}."
         )
     if signal_name == "customer_recent_regime":
         recent = row.get("customer_recent3_median_bill", np.nan)
         return (
-            f"Skorlanan fatura {fmt_num(actual)}; musterinin son 3 ay medyani "
-            f"{fmt_num(recent)}; fatura/son 3 ay medyan orani {fmt_num(safe_ratio(actual, recent), 3)}."
+            f"Skorlanan ana metrik {fmt_num(actual)}; musterinin son 3 ay medyani "
+            f"{fmt_num(recent)}; ana metrik/son 3 ay medyan orani {fmt_num(safe_ratio(actual, recent), 3)}."
         )
     if signal_name == "current_peer":
         current_peer = row.get("current_peer_median_bill", np.nan)
         return (
-            f"Skorlanan fatura {fmt_num(actual)}; ayni ay peer medyani "
-            f"{fmt_num(current_peer)}; fatura/current peer orani {fmt_num(safe_ratio(actual, current_peer), 3)}."
+            f"Skorlanan ana metrik {fmt_num(actual)}; ayni ay peer medyani "
+            f"{fmt_num(current_peer)}; ana metrik/current peer orani {fmt_num(safe_ratio(actual, current_peer), 3)}."
         )
     if signal_name == "historical_peer":
         return (
-            f"Skorlanan fatura {fmt_num(actual)}; peer beklenen fatura "
-            f"{fmt_num(expected)}; fatura/peer beklenen orani {fmt_num(safe_ratio(actual, expected), 3)}."
+            f"Skorlanan ana metrik {fmt_num(actual)}; peer beklenen ana metrik "
+            f"{fmt_num(expected)}; ana metrik/peer beklenen orani {fmt_num(safe_ratio(actual, expected), 3)}."
         )
     if signal_name == "peer_trend":
         peer_trend = row.get("peer_trend_expected_bill", np.nan)
         return (
-            f"Skorlanan fatura {fmt_num(actual)}; peer trend beklentisi "
-            f"{fmt_num(peer_trend)}; fatura/peer trend orani {fmt_num(safe_ratio(actual, peer_trend), 3)}."
+            f"Skorlanan ana metrik {fmt_num(actual)}; peer trend beklentisi "
+            f"{fmt_num(peer_trend)}; ana metrik/peer trend orani {fmt_num(safe_ratio(actual, peer_trend), 3)}."
         )
-    if signal_name == "turnover_intensity":
+    if signal_name in {"turnover_intensity", "feature_ratio"}:
         bill_turnover = row.get("bill_to_turnover_ratio", np.nan)
+        numerator_col = row.get("ratio_numerator_source_col", "ana_metrik")
+        denominator_col = row.get("ratio_denominator_source_col", "referans_feature")
         return (
-            f"Skorlanan fatura {fmt_num(actual)}; turnover {fmt_num(row.get('turnover_amt', np.nan))}; "
-            f"fatura/turnover orani {fmt_num(bill_turnover, 6)}."
+            f"Skorlanan ana metrik {fmt_num(actual)}; referans feature {denominator_col}="
+            f"{fmt_num(row.get('turnover_amt', np.nan))}; {numerator_col}/{denominator_col} "
+            f"orani {fmt_num(bill_turnover, 6)}."
         )
     return (
-        f"Skorlanan fatura {fmt_num(actual)}; beklenen fatura {fmt_num(expected)}; "
-        f"fatura/beklenen orani {fmt_num(safe_ratio(actual, expected), 3)}."
+        f"Skorlanan ana metrik {fmt_num(actual)}; beklenen ana metrik {fmt_num(expected)}; "
+        f"ana metrik/beklenen orani {fmt_num(safe_ratio(actual, expected), 3)}."
     )
 
 
@@ -468,7 +484,12 @@ def augment_scores_for_outputs(scores: pd.DataFrame) -> pd.DataFrame:
         lambda row: operational_decision(row.get("action_label"), row.get("anomaly_label"), True),
         axis=1,
     )
-    out["is_amount_anomaly"] = out["anomaly_label"].isin(["HIGH_BILL_ANOMALY", "LOW_BILL_ANOMALY"])
+    for col in ["primary_signal_name", "secondary_signal_name"]:
+        if col in out.columns:
+            out[col] = out[col].replace({"turnover_intensity": "feature_ratio"})
+    out["is_main_metric_anomaly"] = out["anomaly_label"].isin(
+        ["HIGH_MAIN_METRIC_ANOMALY", "LOW_MAIN_METRIC_ANOMALY", "HIGH_BILL_ANOMALY", "LOW_BILL_ANOMALY"]
+    )
     out["human_readable_reason"] = out.apply(build_human_reason, axis=1)
     return out
 
@@ -497,8 +518,8 @@ def build_human_reason(row: pd.Series) -> str:
 def build_not_scored_reason(row: pd.Series) -> str:
     reason = row.get("not_scored_reason", "UNKNOWN")
     return (
-        f"Skorlanamadi: {reason}. Fatura tutari doldurulmadi; bu musteri icin secilebilir peer destegi "
-        "veya gecerli fatura bilgisi yeterli olmadigi icin anomali karari uretilemedi."
+        f"Skorlanamadi: {reason}. Ana metrik doldurulmadi; bu musteri icin secilebilir peer destegi "
+        "veya gecerli ana metrik bilgisi yeterli olmadigi icin anomali karari uretilemedi."
     )
 
 
@@ -572,8 +593,9 @@ def month_range(start_period: int, end_period: int) -> list[int]:
 
 def build_peer_monthly_stats(prepared: pd.DataFrame, peer_group_columns: list[str]) -> dict[str, pd.DataFrame]:
     valid = prepared.loc[prepared["valid_bill_for_model"] & prepared["bill_amount"].notna()].copy()
+    ratio_enabled = bool(prepared.attrs.get("feature_ratio", {}).get("enabled", False))
     valid["bill_to_turnover_ratio"] = np.where(
-        valid["turnover_for_model"].astype(float).gt(0),
+        ratio_enabled & valid["turnover_for_model"].astype(float).gt(0),
         valid["bill_amount"] / valid["turnover_for_model"].astype(float),
         np.nan,
     )
@@ -619,6 +641,11 @@ def build_detail_context(scores: pd.DataFrame, not_scored: pd.DataFrame) -> pd.D
         "active_subscriber_bucket",
         "bill_amount",
         "turnover_amt",
+        "ratio_numerator_source_col",
+        "ratio_denominator_source_col",
+        "feature_ratio_enabled",
+        "feature_ratio_signal_enabled",
+        "feature_ratio_peer_enabled",
         "expected_bill_amount",
         "current_peer_median_bill",
         "prior_median_bill",
@@ -790,19 +817,19 @@ def build_month_comment(row: pd.Series) -> str:
     if bool(row.get("is_scoring_month", False)):
         return row.get("decision_reason_sentence", "")
     if bool(row.get("customer_bill_missing_flag", False)):
-        return "Bu ay musteri faturasi yok; tutar doldurulmadi ve gap/coverage bilgisinde takip edilir."
+        return "Bu ay musteri ana metrigi yok; deger doldurulmadi ve gap/coverage bilgisinde takip edilir."
     ratio = row.get("customer_vs_peer_month_ratio", np.nan)
     if pd.isna(ratio):
-        return "Bu ay musteri faturasi var; peer medyani hesaplanamadigi icin aylik peer karsilastirmasi yok."
+        return "Bu ay musteri ana metrigi var; peer medyani hesaplanamadigi icin aylik peer karsilastirmasi yok."
     percentile = row.get("customer_vs_peer_ratio_percentile", np.nan)
     reference_n = row.get("customer_vs_peer_ratio_reference_n", np.nan)
     if pd.notna(percentile):
         return (
-            f"Gecmis ayda fatura/peer orani {fmt_num(ratio, 2)}; secili peer oran "
+            f"Gecmis ayda ana metrik/peer orani {fmt_num(ratio, 2)}; secili peer oran "
             f"dagiliminda persentil {fmt_num(float(percentile) * 100, 1)} "
             f"(referans n={fmt_num(reference_n, 0)})."
         )
-    return f"Gecmis ayda musteri faturasi peer medyanina yakin; oran {fmt_num(ratio, 2)}."
+    return f"Gecmis ayda musteri ana metrigi peer medyanina yakin; oran {fmt_num(ratio, 2)}."
 
 
 def add_peer_ratio_context(detail: pd.DataFrame) -> pd.DataFrame:
@@ -834,17 +861,17 @@ def add_peer_ratio_context(detail: pd.DataFrame) -> pd.DataFrame:
 
 
 def assign_month_comments(detail: pd.DataFrame) -> pd.Series:
-    comments = pd.Series("Gecmis ayda musteri faturasi peer medyanina yakin.", index=detail.index, dtype=object)
+    comments = pd.Series("Gecmis ayda musteri ana metrigi peer medyanina yakin.", index=detail.index, dtype=object)
     scoring = detail["is_scoring_month"].fillna(False)
     missing = detail["customer_bill_missing_flag"].fillna(False) & ~scoring
     ratio = detail["customer_vs_peer_month_ratio"]
-    comments.loc[missing] = "Bu ay musteri faturasi yok; tutar doldurulmadi ve gap/coverage bilgisinde takip edilir."
+    comments.loc[missing] = "Bu ay musteri ana metrigi yok; deger doldurulmadi ve gap/coverage bilgisinde takip edilir."
     comments.loc[ratio.isna() & ~missing & ~scoring] = (
-        "Bu ay musteri faturasi var; peer medyani hesaplanamadigi icin aylik peer karsilastirmasi yok."
+        "Bu ay musteri ana metrigi var; peer medyani hesaplanamadigi icin aylik peer karsilastirmasi yok."
     )
     contextual = ~missing & ~scoring & ratio.notna() & detail["customer_vs_peer_ratio_percentile"].notna()
     comments.loc[contextual] = (
-        "Gecmis ayda fatura/peer orani "
+        "Gecmis ayda ana metrik/peer orani "
         + ratio.loc[contextual].map(lambda value: fmt_num(value, 2))
         + "; secili peer oran dagiliminda persentil "
         + (detail.loc[contextual, "customer_vs_peer_ratio_percentile"] * 100).map(lambda value: fmt_num(value, 1))
@@ -896,14 +923,18 @@ def build_detail_table(
     not_scored: pd.DataFrame,
     scoring_month: int,
     profile: dict[str, Any],
+    derived_features_config: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
     history = prepared.copy()
     edges = core.fit_turnover_edges(history.loc[history["invoice_month"].lt(scoring_month)])
     history = core.assign_turnover_bucket(history, edges)
-    behavior = core.build_behavior_clusters(history.loc[history["invoice_month"].lt(scoring_month)])
-    history = core.assign_behavior_clusters(history, behavior)
+    behavior_enabled = bool(profile.get("behavior_peer_enabled", core.behavior_peer_enabled(derived_features_config)))
+    if behavior_enabled:
+        behavior = core.build_behavior_clusters(history.loc[history["invoice_month"].lt(scoring_month)])
+        history = core.assign_behavior_clusters(history, behavior)
+    ratio_enabled = bool(profile.get("feature_ratio_enabled", False))
     history["bill_to_turnover_ratio"] = np.where(
-        history["turnover_for_model"].astype(float).gt(0),
+        ratio_enabled & history["turnover_for_model"].astype(float).gt(0),
         history["bill_amount"] / history["turnover_for_model"].astype(float),
         np.nan,
     )
@@ -1096,19 +1127,25 @@ def build_detail_table(
         elif logical == "turnover_amt":
             out[source_name] = detail["customer_turnover_amt"]
 
-    out["FATURA_EKSIK_MI"] = detail["customer_bill_missing_flag"]
-    out["MUSTERI_FATURA_TURNOVER_ORANI"] = detail["customer_bill_to_turnover_ratio"]
+    out["ANA_METRIK_EKSIK_MI"] = detail["customer_bill_missing_flag"]
+    ratio_settings = profile.get("feature_ratio", {})
+    ratio_enabled = bool(profile.get("feature_ratio_enabled", False))
+    if ratio_enabled:
+        out["ORAN_PAY_KOLON"] = str(ratio_settings.get("numerator_source_col", ""))
+        out["ORAN_PAYDA_KOLON"] = str(ratio_settings.get("denominator_source_col", ""))
+        out["MUSTERI_FEATURE_ORANI"] = detail["customer_bill_to_turnover_ratio"]
     out["MUSTERI_TOPLAM_AY_ADET"] = detail["customer_obs_count_total"]
     out["ONCEKI_AYA_GAP"] = detail["month_gap_from_previous"]
     out["PEER_SEVIYE"] = detail["peer_group_level_name"]
-    out["PEER_KOLONLARI"] = detail["peer_group_columns"]
+    out["PEER_KOLONLARI"] = detail["peer_group_columns"].map(display_peer_columns)
     out["PEER_AYLIK_MUSTERI_ADET"] = detail["peer_month_customer_count"]
     out["PEER_AYLIK_SATIR_ADET"] = detail["peer_month_row_count"]
-    out["PEER_AYLIK_FATURA_MEDYAN"] = detail["peer_month_bill_median"]
-    out["PEER_AYLIK_FATURA_ORTALAMA"] = detail["peer_month_bill_mean"]
-    out["PEER_AYLIK_TURNOVER_MEDYAN"] = detail["peer_month_turnover_median"]
-    out["PEER_AYLIK_FATURA_TURNOVER_MEDYAN"] = detail["peer_month_bill_to_turnover_median"]
-    out["MUSTERI_PEER_FATURA_ORANI"] = detail["customer_vs_peer_month_ratio"]
+    out["PEER_AYLIK_ANA_METRIK_MEDYAN"] = detail["peer_month_bill_median"]
+    out["PEER_AYLIK_ANA_METRIK_ORTALAMA"] = detail["peer_month_bill_mean"]
+    if ratio_enabled:
+        out["PEER_AYLIK_REFERANS_FEATURE_MEDYAN"] = detail["peer_month_turnover_median"]
+        out["PEER_AYLIK_FEATURE_ORAN_MEDYAN"] = detail["peer_month_bill_to_turnover_median"]
+    out["MUSTERI_PEER_ANA_METRIK_ORANI"] = detail["customer_vs_peer_month_ratio"]
     out["MUSTERI_PEER_ORAN_PCTL"] = detail["customer_vs_peer_ratio_percentile"]
     out["MUSTERI_PEER_ORAN_REF_N"] = detail["customer_vs_peer_ratio_reference_n"]
     out["AYLIK_YORUM"] = detail["month_level_comment"]
@@ -1133,15 +1170,15 @@ def build_detail_table(
         "strongest_signal_label": "ANA_SINYAL",
         "strongest_signal_z": "ANA_SINYAL_Z",
         "strongest_signal_score_pct": "ANA_SINYAL_SKORU",
-        "scoring_bill_amount": "SKORLANAN_FATURA_TTR",
-        "scoring_peer_expected_bill_amount": "BEKLENEN_FATURA_TTR",
-        "current_peer_median_bill": "PEER_GUNCEL_MEDYAN_FATURA_TTR",
-        "scoring_customer_prior_median_bill": "MUSTERI_GECMIS_MEDYAN_FATURA_TTR",
-        "customer_trend_expected_bill": "MUSTERI_TREND_BEKLENEN_FATURA_TTR",
-        "customer_seasonal_expected_bill": "MUSTERI_SEZON_BEKLENEN_FATURA_TTR",
-        "customer_recent3_median_bill": "MUSTERI_SON3_AY_MEDYAN_FATURA_TTR",
+        "scoring_bill_amount": "SKORLANAN_ANA_METRIK",
+        "scoring_peer_expected_bill_amount": "BEKLENEN_ANA_METRIK",
+        "current_peer_median_bill": "PEER_GUNCEL_MEDYAN_ANA_METRIK",
+        "scoring_customer_prior_median_bill": "MUSTERI_GECMIS_MEDYAN_ANA_METRIK",
+        "customer_trend_expected_bill": "MUSTERI_TREND_BEKLENEN_ANA_METRIK",
+        "customer_seasonal_expected_bill": "MUSTERI_SEZON_BEKLENEN_ANA_METRIK",
+        "customer_recent3_median_bill": "MUSTERI_SON3_AY_MEDYAN_ANA_METRIK",
         "customer_recent3_range_log": "MUSTERI_SON3_AY_RANGE_LOG",
-        "peer_trend_expected_bill": "PEER_TREND_BEKLENEN_FATURA_TTR",
+        "peer_trend_expected_bill": "PEER_TREND_BEKLENEN_ANA_METRIK",
         "actual_to_expected_ratio": "GERCEK_BEKLENEN_ORANI",
         "historical_peer_z": "GECMIS_PEER_Z",
         "historical_peer_score": "GECMIS_PEER_SKORU",
@@ -1149,8 +1186,8 @@ def build_detail_table(
         "current_peer_score": "GUNCEL_PEER_SKORU",
         "peer_trend_z": "PEER_TREND_Z",
         "peer_trend_score": "PEER_TREND_SKORU",
-        "turnover_intensity_z": "TURNOVER_YOGUNLUK_Z",
-        "turnover_intensity_score": "TURNOVER_YOGUNLUK_SKORU",
+        "turnover_intensity_z": "FEATURE_ORAN_Z",
+        "turnover_intensity_score": "FEATURE_ORAN_SKORU",
         "self_history_z": "MUSTERI_GECMIS_Z",
         "self_history_score": "MUSTERI_GECMIS_SKORU",
         "customer_trend_z": "MUSTERI_TREND_Z",
@@ -1196,7 +1233,7 @@ def build_detail_table(
         "behavior_level_bucket": "DAVRANIS_SEVIYE_BUCKET",
         "behavior_volatility_bucket": "DAVRANIS_VOLATILITE_BUCKET",
         "behavior_trend_bucket": "DAVRANIS_TREND_BUCKET",
-        "behavior_median_bill": "DAVRANIS_MEDYAN_FATURA_TTR",
+        "behavior_median_bill": "DAVRANIS_MEDYAN_ANA_METRIK",
         "behavior_volatility_log": "DAVRANIS_VOLATILITE_LOG",
         "behavior_trend_slope": "DAVRANIS_TREND_SLOPE",
         "customer_final_weight": "MUSTERI_FINAL_AGIRLIK",
@@ -1208,14 +1245,14 @@ def build_detail_table(
         "historical_peer_final_weight": "GECMIS_PEER_AGIRLIK",
         "current_peer_final_weight": "GUNCEL_PEER_AGIRLIK",
         "peer_trend_final_weight": "PEER_TREND_AGIRLIK",
-        "turnover_intensity_final_weight": "TURNOVER_YOGUNLUK_AGIRLIK",
+        "turnover_intensity_final_weight": "FEATURE_ORAN_AGIRLIK",
         "hist_n": "PEER_GECMIS_ADET",
         "moy_n": "PEER_SEZON_AY_ADET",
         "recent_n": "PEER_RECENT_ADET",
         "current_n": "PEER_GUNCEL_ADET",
-        "ratio_n": "PEER_TURNOVER_ORAN_ADET",
+        "ratio_n": "PEER_FEATURE_ORAN_ADET",
         "prior_n": "MUSTERI_GECMIS_AY_ADET",
-        "prior_12_n": "SON_12_AY_FATURA_ADET",
+        "prior_12_n": "SON_12_AY_ANA_METRIK_ADET",
         "customer_trend_n": "MUSTERI_TREND_ADET",
         "customer_seasonal_n": "MUSTERI_SEZON_ADET",
         "customer_recent3_n": "MUSTERI_SON3_AY_ADET",
@@ -1564,7 +1601,9 @@ def apply_rolling_window(prepared: pd.DataFrame, scoring_month: int, rolling_win
         return prepared
     scoring_ord = core.period_ord(scoring_month)
     min_ord = scoring_ord - int(rolling_window_months) + 1
-    return prepared.loc[prepared["month_ord"].between(min_ord, scoring_ord)].copy()
+    out = prepared.loc[prepared["month_ord"].between(min_ord, scoring_ord)].copy()
+    out.attrs = dict(prepared.attrs)
+    return out
 
 
 def run_implementation_scoring(
@@ -1589,6 +1628,7 @@ def run_implementation_scoring(
     support_thresholds: adaptive.PeerSupportThresholds | None = None,
     scoring_weights: dict[str, Any] | None = None,
     score_aggregation: dict[str, Any] | None = None,
+    derived_features_config: dict[str, Any] | None = None,
     write_oracle: bool = False,
     oracle_info_dir: Path | None = None,
     oracle_config_file: str = "ora_config.ini",
@@ -1625,10 +1665,21 @@ def run_implementation_scoring(
 
     if source_frame is not None:
         progress(f"source_prepare_start rows={len(source_frame):,} source={input_name}")
-        prepared, profile = core.prepare_source_frame(source_frame, column_map=input_column_map, source_name=input_name)
+        prepared, profile = core.prepare_source_frame(
+            source_frame,
+            column_map=input_column_map,
+            source_name=input_name,
+            derived_features_config=derived_features_config,
+        )
     elif input_path is not None:
         progress(f"source_prepare_start input_path={input_path}")
-        prepared, profile = core.read_source(input_path, encoding, sep, column_map=input_column_map)
+        prepared, profile = core.read_source(
+            input_path,
+            encoding,
+            sep,
+            column_map=input_column_map,
+            derived_features_config=derived_features_config,
+        )
     else:
         raise ValueError("Either input_path or source_frame must be provided.")
     progress(
@@ -1662,6 +1713,7 @@ def run_implementation_scoring(
         support_thresholds=support_thresholds,
         scoring_weights=scoring_weights,
         score_aggregation=score_aggregation,
+        derived_features_config=derived_features_config,
     )
     progress(
         "score_scoring_month_done "
@@ -1678,6 +1730,7 @@ def run_implementation_scoring(
             support_thresholds=support_thresholds,
             scoring_weights=scoring_weights,
             score_aggregation=score_aggregation,
+            derived_features_config=derived_features_config,
         )
         progress("prior_score_diagnostic_done")
 
@@ -1688,7 +1741,14 @@ def run_implementation_scoring(
     progress("output_tables_start")
     scores_for_outputs = augment_scores_for_outputs(run.scores)
     decision_table = build_decision_table(scores_for_outputs, run.not_scored, profile, scoring_month_int, prepared=prepared)
-    detail_table = build_detail_table(prepared, scores_for_outputs, run.not_scored, scoring_month_int, profile)
+    detail_table = build_detail_table(
+        prepared,
+        scores_for_outputs,
+        run.not_scored,
+        scoring_month_int,
+        profile,
+        derived_features_config=derived_features_config,
+    )
     progress(
         "output_tables_done "
         f"decision_rows={len(decision_table):,} detail_rows={len(detail_table):,}"
@@ -1739,7 +1799,7 @@ def run_implementation_scoring(
         "paths": paths,
         "contract": {
             "target": "none",
-            "amount_filling": "none",
+            "main_metric_filling": "none",
             "fit_scope": "months before scoring_month only",
             "rolling_window_months": rolling_window_months,
             "score_range": "0-100",

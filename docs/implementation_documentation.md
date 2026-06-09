@@ -63,7 +63,28 @@ variables:
     - AKTIF_ABONE
 ```
 
-`feature_variables` listesindeki ilk kolon skorlanan ana tutardir. Segment listesi peer adaylarini besler. Eski `columns.required` formati hala desteklenir ama yeni kullanimda gerekli degildir.
+`feature_variables` listesindeki ilk kolon skorlanan ana metriktir. Segment listesi peer adaylarini besler.
+
+Feature kolonlari sadece listede yer aldigi icin anomali skoruna girmez. Aktif turevler `model.derived_features` altinda tanimlanir:
+
+```yaml
+model:
+  derived_features:
+    feature_ratio:
+      enabled: true
+      numerator: main_feature
+      denominator: TURNOVER_AMT
+      use_as_peer_variable: true
+      use_as_anomaly_signal: true
+    behavior_peer:
+      enabled: false
+    bucket_features:
+      - source: AKTIF_ABONE
+        internal_role: exposure_feature
+        use_as_peer_variable: true
+```
+
+Farkli proseslerde `denominator` ve `bucket_features.source` alanlari degistirilir; kod icinde proses-spesifik kolon adi aranmaz.
 
 Skorlanacak ay `configs/anomaly.yaml` icindeki `model.scoring_month` ile secilir:
 
@@ -121,7 +142,7 @@ Linux/macOS:
 Dogudan Python:
 
 ```bash
-python3 src/configured_anomaly_pipeline.py --config configs/anomaly.yaml --skip-peer-quality-report
+python3 src/anomaly_pipeline.py --config configs/anomaly.yaml --skip-peer-quality-report
 ```
 
 ## Oracle Input + Oracle Output Run
@@ -148,7 +169,7 @@ Linux/macOS:
 Dogudan Python:
 
 ```bash
-python3 src/configured_anomaly_pipeline.py \
+python3 src/anomaly_pipeline.py \
   --config configs/anomaly.yaml \
   --enable-oracle-output \
   --skip-peer-quality-report

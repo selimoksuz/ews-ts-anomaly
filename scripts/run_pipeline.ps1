@@ -9,5 +9,5 @@ if ($SkipPeerQualityReport) {
     $argsList += "-SkipPeerQualityReport"
 }
 
-powershell -ExecutionPolicy Bypass -File scripts\run_configured_anomaly_pipeline.ps1 @argsList
+powershell -ExecutionPolicy Bypass -File scripts\run_anomaly_pipeline.ps1 @argsList
 exit $LASTEXITCODE

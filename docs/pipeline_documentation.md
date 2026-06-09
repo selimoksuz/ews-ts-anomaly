@@ -1,8 +1,8 @@
-# Configured Anomaly Pipeline
+# Anomaly Pipeline
 
 ## Amac
 
-Bu akis target kullanmadan aylik tutar anomalisi skorlar. Son ay implementasyon ayi olarak skorlanir; onceki aylar modelleme ve peer istatistikleri icin kullanilir. Varsayilan pencere son 36 aydir.
+Bu akis target kullanmadan aylik ana metrik anomalisi skorlar. Son ay implementasyon ayi olarak skorlanir; onceki aylar modelleme ve peer istatistikleri icin kullanilir. Varsayilan pencere son 36 aydir.
 
 ## Config Dosyalari
 
@@ -57,13 +57,34 @@ variables:
     - AKTIF_ABONE
 ```
 
-`feature_variables` listesindeki ilk kolon skorlanan ana tutardir. Diger feature kolonlari turnover/aktif abone gibi destek sinyali veya operasyonel feature olarak kullanilir. Eski `columns.required` formati backward-compatible kalir ama yeni kullanimda gerekli degildir.
+`feature_variables` listesindeki ilk kolon skorlanan ana metriktir. Diger feature kolonlari adindan dolayi otomatik kullanilmaz; ratio, bucket veya behavior gibi aktif kullanimlar `model.derived_features` altinda acikca tanimlanir.
+
+Ornek:
+
+```yaml
+model:
+  derived_features:
+    feature_ratio:
+      enabled: true
+      numerator: main_feature
+      denominator: TURNOVER_AMT
+      use_as_peer_variable: true
+      use_as_anomaly_signal: true
+    behavior_peer:
+      enabled: false
+    bucket_features:
+      - source: AKTIF_ABONE
+        internal_role: exposure_feature
+        use_as_peer_variable: true
+```
+
+Bu blok olmazsa `TURNOVER_AMT` veya `AKTIF_ABONE` benzeri kolonlar sadece ham input olarak tasinir; anomali skoruna veya peer secimine otomatik girmez.
 
 Secilen source icinde `output_columns: all` ise kaynak tablodaki kolonlar decision/detail output'a tasinir. Bir kolonu istemiyorsan ilgili source altinda `exclude_output_columns` kullan.
 
 ## Peer Secimi
 
-`peer_selection.priority_variables: auto` ise sistem `variables.segment_variables` listesini ve feature'lardan tureyen `turnover_bucket`, `active_subscriber_bucket` gibi operatif peer degiskenlerini kullanir. Ek olarak:
+`peer_selection.priority_variables: auto` ise sistem `variables.segment_variables` listesini ve `model.derived_features` ile acikca uretilen peer degiskenlerini kullanir. Ek olarak:
 
 - `mandatory_variables`: varsa once bu degiskenleri merkeze alir.
 - `fallback_variables`: destek dusunce bu degiskenlerle daha genis peer dener.

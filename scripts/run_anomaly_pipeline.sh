@@ -44,7 +44,7 @@ while [[ $# -gt 0 ]]; do
     --help|-h)
       cat <<'EOF'
 Usage:
-  scripts/run_configured_anomaly_pipeline.sh [options]
+  scripts/run_anomaly_pipeline.sh [options]
 
 Options:
   --config PATH                  Pipeline config path. Default: configs/anomaly.yaml
@@ -64,7 +64,7 @@ EOF
   esac
 done
 
-ARGS=("src/configured_anomaly_pipeline.py" "--config" "$CONFIG_PATH")
+ARGS=("src/anomaly_pipeline.py" "--config" "$CONFIG_PATH")
 
 if [[ -n "$DATA_SOURCE_CONFIG_PATH" ]]; then
   ARGS+=("--data-source-config" "$DATA_SOURCE_CONFIG_PATH")

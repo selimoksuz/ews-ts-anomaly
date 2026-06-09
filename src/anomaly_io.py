@@ -12,7 +12,7 @@ def read_oracle_frame(oracle_config: dict[str, Any]) -> pd.DataFrame:
     except ImportError as exc:
         raise RuntimeError("Oracle read requires oracledb. Install dependencies with: python -m pip install -r requirements.txt") from exc
 
-    import fatura_anomaly_implementation as implementation
+    import anomaly_implementation as implementation
 
     connection_cfg = oracle_config.get("connection", {})
     source_cfg = oracle_config.get("input", {})

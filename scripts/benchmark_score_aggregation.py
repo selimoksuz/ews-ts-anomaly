@@ -19,9 +19,9 @@ if str(SRC_DIR) not in sys.path:
 
 import adaptive_peer_selection as adaptive  # noqa: E402
 import anomaly_config  # noqa: E402
-import configured_anomaly_pipeline as configured_pipeline  # noqa: E402
-import fatura_anomaly_implementation as implementation  # noqa: E402
-import fatura_peer_anomaly_model as core  # noqa: E402
+import anomaly_pipeline as pipeline  # noqa: E402
+import anomaly_implementation as implementation  # noqa: E402
+import anomaly_model as core  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,12 +37,12 @@ def parse_args() -> argparse.Namespace:
 
 def load_prepared_data(config_path: Path, data_source_config_path: str | None) -> dict[str, Any]:
     pipeline_config = anomaly_config.load_yaml_config(config_path)
-    project_root = configured_pipeline.project_root_from_config(config_path, pipeline_config)
-    data_source_config = configured_pipeline.load_data_source_config(pipeline_config, project_root, data_source_config_path)
-    source = configured_pipeline.selected_data_source(pipeline_config, data_source_config)
+    project_root = pipeline.project_root_from_config(config_path, pipeline_config)
+    data_source_config = pipeline.load_data_source_config(pipeline_config, project_root, data_source_config_path)
+    source = pipeline.selected_data_source(pipeline_config, data_source_config)
     model = pipeline_config.get("model", {})
     column_map = anomaly_config.column_map_from_config(pipeline_config)
-    input_path, source_frame, input_name, _ = configured_pipeline.read_source_frame(pipeline_config, source, project_root)
+    input_path, source_frame, input_name, _ = pipeline.read_source_frame(pipeline_config, source, project_root)
     if source_frame is not None:
         prepared, profile = core.prepare_source_frame(source_frame, column_map=column_map, source_name=input_name)
     elif input_path is not None:

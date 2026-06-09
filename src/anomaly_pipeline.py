@@ -10,8 +10,8 @@ from typing import Any
 
 import anomaly_config
 import anomaly_io
-import fatura_anomaly_implementation as implementation
-import fatura_peer_quality_report as peer_quality_report
+import anomaly_implementation as implementation
+import peer_quality_report
 
 
 def log_step(message: str) -> None:
@@ -29,9 +29,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def project_root_from_config(config_path: Path, pipeline_config: dict[str, Any]) -> Path:
-    configured_root = pipeline_config.get("project_root")
-    if configured_root:
-        resolved = anomaly_config.resolve_path(str(configured_root), config_path.parent)
+    root_value = pipeline_config.get("project_root")
+    if root_value:
+        resolved = anomaly_config.resolve_path(str(root_value), config_path.parent)
         if resolved is not None:
             return resolved
     if config_path.parent.name.lower() == "configs":
@@ -44,10 +44,10 @@ def load_data_source_config(
     project_root: Path,
     override_path: str | None,
 ) -> dict[str, Any]:
-    configured_path = override_path or pipeline_config.get("data_source_config_path") or "configs/data_source.yaml"
-    if not configured_path:
+    source_config_path = override_path or pipeline_config.get("data_source_config_path") or "configs/data_source.yaml"
+    if not source_config_path:
         return {}
-    resolved = anomaly_config.resolve_path(str(configured_path), project_root)
+    resolved = anomaly_config.resolve_path(str(source_config_path), project_root)
     if resolved is None:
         return {}
     return anomaly_config.load_yaml_config(resolved)
@@ -152,6 +152,7 @@ def run_peer_quality_report(
     detail_csv: Path,
     scoring_month: int,
     column_map: dict[str, str],
+    derived_features: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     reports = pipeline_config.get("reports", {})
     peer_quality = reports.get("peer_quality", {}) if isinstance(reports, dict) else {}
@@ -175,6 +176,8 @@ def run_peer_quality_report(
         str(scoring_month),
         "--column-map-json",
         json.dumps(column_map, ensure_ascii=False),
+        "--derived-features-json",
+        json.dumps(derived_features or {}, ensure_ascii=False),
     ]
     subprocess.run(cmd, cwd=project_root, check=True)
     log_step("peer_quality_report_done")
@@ -201,6 +204,7 @@ def run_peer_quality_report_from_frames(
     scoring_month: int,
     column_map: dict[str, str],
     source_name: str,
+    derived_features: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     output_dir = peer_quality_output_dir(pipeline_config, project_root)
     log_step(f"peer_quality_report_start output_dir={output_dir} mode=in_memory")
@@ -211,6 +215,7 @@ def run_peer_quality_report_from_frames(
         scoring_month=scoring_month,
         column_map=column_map,
         source_name=source_name,
+        derived_features_config=derived_features,
     )
     log_step("peer_quality_report_done")
     return {"output_dir": str(output_dir), "status": "generated", **result}
@@ -245,6 +250,7 @@ def run_from_config(
     )
     model = pipeline_config.get("model", {})
     column_map = anomaly_config.column_map_from_config(pipeline_config)
+    derived_features = anomaly_config.derived_features_from_config(pipeline_config)
     peer_config = anomaly_config.peer_config_from_config(pipeline_config)
     support_thresholds = anomaly_config.support_thresholds_from_config(pipeline_config)
     output_source_columns, exclude_source_columns = anomaly_config.source_column_policy(source)
@@ -305,6 +311,7 @@ def run_from_config(
         support_thresholds=support_thresholds,
         scoring_weights=model.get("scoring_weights", {}),
         score_aggregation=model.get("score_aggregation", {}),
+        derived_features_config=derived_features,
         write_local_tables=write_local_tables,
         write_contract=write_contract,
         return_output_tables=return_output_tables,
@@ -327,6 +334,7 @@ def run_from_config(
             int(result["scoring_month"]),
             column_map,
             input_name,
+            derived_features,
         )
     elif reports_enabled and not skip_peer_quality_report and source_snapshot_path is not None and result.get("paths", {}).get("detail_table_csv"):
         result["peer_quality_report"] = run_peer_quality_report(
@@ -336,6 +344,7 @@ def run_from_config(
             Path(result["paths"]["detail_table_csv"]),
             int(result["scoring_month"]),
             column_map,
+            derived_features,
         )
     else:
         log_step("peer_quality_report_skipped")

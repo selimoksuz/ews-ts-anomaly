@@ -53,6 +53,46 @@ DEFAULT_TECHNICAL_EXCLUSIONS = {
     "behavior_trend_slope",
 }
 
+DEFAULT_TECHNICAL_PREFIXES = (
+    "actual_to_expected_",
+    "anomaly_",
+    "confidence",
+    "current_",
+    "customer_explainability_",
+    "customer_family_",
+    "customer_recent3_",
+    "customer_recent_",
+    "customer_seasonal_",
+    "customer_trend_",
+    "data_gap_",
+    "evidence_",
+    "expected_",
+    "final_",
+    "gap_",
+    "hist_",
+    "historical_",
+    "is_disconnected_",
+    "is_new_",
+    "last_",
+    "log_",
+    "model_",
+    "moy_",
+    "peer_",
+    "previous_",
+    "primary_",
+    "prior_",
+    "ratio_",
+    "reason_",
+    "recent_",
+    "score_",
+    "secondary_",
+    "self_history_",
+    "signal_",
+    "source_",
+    "turnover_intensity_",
+    "watchlist_",
+)
+
 DEFAULT_PREFERRED_VARIABLES = (
     "customer_segment",
     "turnover_bucket",
@@ -64,9 +104,9 @@ DEFAULT_PREFERRED_VARIABLES = (
 
 VARIABLE_NAME_ALIASES = {
     "customer_segment": "segment",
-    "turnover_bucket": "turnover",
+    "turnover_bucket": "feature_ratio_bucket",
     "sector": "sector",
-    "active_subscriber_bucket": "active",
+    "active_subscriber_bucket": "exposure_bucket",
     "branch_id": "branch",
     "behavior_cluster": "behavior",
     "_global_key": "global",
@@ -197,6 +237,12 @@ def peer_level_name(columns: tuple[str, ...] | list[str]) -> str:
     return "_".join(VARIABLE_NAME_ALIASES.get(col, col) for col in columns)
 
 
+def peer_columns_display(columns: tuple[str, ...] | list[str]) -> str:
+    if not columns:
+        return "global"
+    return "+".join(VARIABLE_NAME_ALIASES.get(col, col) for col in columns)
+
+
 def available_peer_variables(frame: list[str] | pd.Index | pd.DataFrame, config: PeerSelectionConfig) -> tuple[str, ...]:
     columns = set(str(col) for col in (frame.columns if isinstance(frame, pd.DataFrame) else frame))
     if config.priority_variables:
@@ -211,6 +257,8 @@ def infer_peer_variables(frame: list[str] | pd.Index | pd.DataFrame, config: Pee
     extras: list[str] = []
     for column in columns:
         if column in excluded or column in preferred or column.startswith("_"):
+            continue
+        if str(column).startswith(DEFAULT_TECHNICAL_PREFIXES):
             continue
         if isinstance(frame, pd.DataFrame):
             series = frame[column]
@@ -598,7 +646,7 @@ def representability_status_series(
 
 def selection_reason(row: pd.Series, candidate: PeerCandidate, prior_attempts: list[str]) -> str:
     selected = (
-        f"Secilen peer={candidate.name}; kolonlar={'+'.join(candidate.columns) if candidate.columns else 'global'}; "
+        f"Secilen peer={candidate.name}; kolonlar={peer_columns_display(candidate.columns)}; "
         f"destek hist={support_value(row, 'hist_n'):.0f}, season={support_value(row, 'moy_n'):.0f}, "
         f"recent={support_value(row, 'recent_n'):.0f}, current={support_value(row, 'current_n'):.0f}; "
         f"dagilim={row.get('peer_distribution_status')}, "

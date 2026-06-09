@@ -24,53 +24,6 @@ COLUMN_ALIASES = {
     "active_subscriber": ["AKTIF_ABONE"],
 }
 
-PEER_LEVELS_WITH_TURNOVER: list[tuple[str, list[str]]] = [
-    (
-        "segment_turnover_sector_active_branch",
-        ["customer_segment", "turnover_bucket", "sector", "active_subscriber_bucket", "branch_id"],
-    ),
-    (
-        "segment_turnover_sector_active_behavior",
-        ["customer_segment", "turnover_bucket", "sector", "active_subscriber_bucket", "behavior_cluster"],
-    ),
-    (
-        "segment_turnover_sector_behavior",
-        ["customer_segment", "turnover_bucket", "sector", "behavior_cluster"],
-    ),
-    ("segment_turnover_sector_active", ["customer_segment", "turnover_bucket", "sector", "active_subscriber_bucket"]),
-    ("segment_turnover_sector_branch", ["customer_segment", "turnover_bucket", "sector", "branch_id"]),
-    ("segment_turnover_sector", ["customer_segment", "turnover_bucket", "sector"]),
-    ("segment_turnover_active", ["customer_segment", "turnover_bucket", "active_subscriber_bucket"]),
-    ("segment_turnover_behavior", ["customer_segment", "turnover_bucket", "behavior_cluster"]),
-    ("segment_turnover", ["customer_segment", "turnover_bucket"]),
-    ("segment_sector_active_branch", ["customer_segment", "sector", "active_subscriber_bucket", "branch_id"]),
-    ("segment_sector_active", ["customer_segment", "sector", "active_subscriber_bucket"]),
-    ("segment_sector_branch", ["customer_segment", "sector", "branch_id"]),
-    ("segment_sector", ["customer_segment", "sector"]),
-    ("segment_active", ["customer_segment", "active_subscriber_bucket"]),
-    ("segment_behavior", ["customer_segment", "behavior_cluster"]),
-    ("segment", ["customer_segment"]),
-    ("sector_turnover_active", ["sector", "turnover_bucket", "active_subscriber_bucket"]),
-    ("sector_turnover", ["sector", "turnover_bucket"]),
-    ("sector_active", ["sector", "active_subscriber_bucket"]),
-    ("sector", ["sector"]),
-    ("global", []),
-]
-
-PEER_LEVELS_NO_TURNOVER: list[tuple[str, list[str]]] = [
-    ("segment_sector_active_branch", ["customer_segment", "sector", "active_subscriber_bucket", "branch_id"]),
-    ("segment_sector_active_behavior", ["customer_segment", "sector", "active_subscriber_bucket", "behavior_cluster"]),
-    ("segment_sector_active", ["customer_segment", "sector", "active_subscriber_bucket"]),
-    ("segment_sector_branch", ["customer_segment", "sector", "branch_id"]),
-    ("segment_sector", ["customer_segment", "sector"]),
-    ("segment_active", ["customer_segment", "active_subscriber_bucket"]),
-    ("segment_behavior", ["customer_segment", "behavior_cluster"]),
-    ("segment", ["customer_segment"]),
-    ("sector_active", ["sector", "active_subscriber_bucket"]),
-    ("sector", ["sector"]),
-    ("global", []),
-]
-
 MIN_HIST_ROWS = 120
 MIN_MOY_ROWS = 15
 MIN_RECENT_ROWS = 25
@@ -186,6 +139,20 @@ SIGNAL_DEFINITIONS: tuple[dict[str, str], ...] = (
     },
 )
 
+DEFAULT_DERIVED_FEATURES: dict[str, Any] = {
+    "feature_ratio": {
+        "enabled": "auto",
+        "numerator": "bill_amount",
+        "denominator": "turnover_amt",
+        "use_as_peer_variable": True,
+        "use_as_anomaly_signal": True,
+    },
+    "behavior_peer": {
+        "enabled": False,
+        "use_as_peer_variable": True,
+    },
+}
+
 
 @dataclass
 class ModelRun:
@@ -198,8 +165,8 @@ class ModelRun:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Peer based monthly invoice anomaly scoring.")
-    parser.add_argument("--input", default="data/raw/fatura_KVKK.csv")
+    parser = argparse.ArgumentParser(description="Peer-based monthly single-metric anomaly scoring.")
+    parser.add_argument("--input", default="data/raw/input.csv")
     parser.add_argument("--output-dir", default="outputs/development/peer_anomaly_exploration")
     parser.add_argument("--encoding", default="auto")
     parser.add_argument("--sep", default="auto")
@@ -332,6 +299,71 @@ def unique_quantile_edges(values: pd.Series, quantiles: list[float], min_count: 
         return []
     edges = np.quantile(valid, quantiles)
     return [float(x) for x in np.unique(edges) if np.isfinite(x)]
+
+
+def _deep_merge(base: Mapping[str, Any], overrides: Mapping[str, Any] | None) -> dict[str, Any]:
+    out: dict[str, Any] = {str(key): value for key, value in base.items()}
+    if not overrides:
+        return out
+    for key, value in overrides.items():
+        if isinstance(out.get(key), Mapping) and isinstance(value, Mapping):
+            out[str(key)] = _deep_merge(out[key], value)
+        else:
+            out[str(key)] = value
+    return out
+
+
+def _auto_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, str) and value.strip().lower() == "auto":
+        return default
+    if value is None:
+        return default
+    return bool(value)
+
+
+def normalize_derived_features_config(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    values = _deep_merge(DEFAULT_DERIVED_FEATURES, config)
+    ratio = dict(values.get("feature_ratio", {}))
+    behavior = dict(values.get("behavior_peer", {}))
+    values["feature_ratio"] = ratio
+    values["behavior_peer"] = behavior
+    return values
+
+
+def feature_ratio_settings(
+    config: Mapping[str, Any] | None,
+    cols: Mapping[str, str] | None = None,
+    *,
+    denominator_usable: bool = True,
+) -> dict[str, Any]:
+    values = normalize_derived_features_config(config)
+    ratio = dict(values.get("feature_ratio", {}))
+    denominator_role = str(ratio.get("denominator", "turnover_amt"))
+    numerator_role = str(ratio.get("numerator", "bill_amount"))
+    has_denominator = bool(cols and (denominator_role in cols or denominator_role in set(cols.values())))
+    enabled_default = has_denominator and bool(denominator_usable)
+    enabled = _auto_bool(ratio.get("enabled", "auto"), enabled_default)
+    signal_enabled = enabled and _auto_bool(ratio.get("use_as_anomaly_signal", True), True)
+    peer_enabled = enabled and _auto_bool(ratio.get("use_as_peer_variable", True), True)
+    return {
+        "enabled": bool(enabled),
+        "use_as_anomaly_signal": bool(signal_enabled),
+        "use_as_peer_variable": bool(peer_enabled),
+        "numerator_role": numerator_role,
+        "denominator_role": denominator_role,
+        "numerator_source_col": str(cols.get(numerator_role, numerator_role)) if cols else numerator_role,
+        "denominator_source_col": (
+            str(cols.get(denominator_role, denominator_role))
+            if not cols or denominator_role in cols
+            else str(denominator_role)
+        ),
+    }
+
+
+def behavior_peer_enabled(config: Mapping[str, Any] | None) -> bool:
+    values = normalize_derived_features_config(config)
+    behavior = dict(values.get("behavior_peer", {}))
+    return bool(behavior.get("enabled", False)) and bool(behavior.get("use_as_peer_variable", True))
 
 
 def robust_group_stats(frame: pd.DataFrame, key: list[str], value_col: str, prefix: str) -> pd.DataFrame:
@@ -563,13 +595,14 @@ def detect_read_options(input_path: Path, encoding: str, sep: str) -> tuple[str,
 def resolve_columns(raw: pd.DataFrame, column_map: dict[str, str] | None = None) -> tuple[dict[str, str], list[str]]:
     resolved: dict[str, str] = {}
     missing: list[str] = []
-    configured = column_map or {}
+    source_map = column_map or {}
+    use_alias_fallback = not bool(source_map)
     for logical, candidates in COLUMN_ALIASES.items():
-        configured_col = configured.get(logical)
-        if configured_col:
-            found = configured_col if configured_col in raw.columns else None
+        mapped_col = source_map.get(logical)
+        if mapped_col:
+            found = mapped_col if mapped_col in raw.columns else None
         else:
-            found = next((col for col in candidates if col in raw.columns), None)
+            found = next((col for col in candidates if col in raw.columns), None) if use_alias_fallback else None
         if found is None and logical in {"customer_id", "invoice_month", "bill_amount"}:
             missing.append(logical)
         elif found is not None:
@@ -591,6 +624,7 @@ def prepare_source_frame(
     raw: pd.DataFrame,
     column_map: dict[str, str] | None = None,
     source_name: str | None = None,
+    derived_features_config: Mapping[str, Any] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     cols, missing = resolve_columns(raw, column_map)
     if missing:
@@ -665,7 +699,24 @@ def prepare_source_frame(
     turnover_missing_rate = float(monthly["turnover_amt"].isna().mean())
     turnover_diff = (monthly["bill_amount"] - monthly["turnover_amt"]).abs()
     turnover_equal_bill_rate = float((turnover_diff <= 1e-6).mean())
-    turnover_usable_for_model = turnover_missing_rate < 0.98 and turnover_equal_bill_rate < 0.98
+    turnover_usable_for_model = "turnover_amt" in cols and turnover_missing_rate < 0.98 and turnover_equal_bill_rate < 0.98
+    raw_ratio_config = dict(normalize_derived_features_config(derived_features_config).get("feature_ratio", {}))
+    ratio_explicitly_enabled = str(raw_ratio_config.get("enabled", "auto")).strip().lower() in {"true", "1", "yes", "evet"}
+    if ratio_explicitly_enabled and "turnover_amt" not in cols:
+        raise ValueError(
+            "model.derived_features.feature_ratio is enabled, but its denominator column could not be resolved."
+        )
+    if ratio_explicitly_enabled and not turnover_usable_for_model:
+        raise ValueError(
+            "model.derived_features.feature_ratio is enabled, but the denominator is missing, zero, "
+            "or effectively identical to the main metric feature."
+        )
+    ratio_settings = feature_ratio_settings(
+        derived_features_config,
+        cols,
+        denominator_usable=bool(turnover_usable_for_model),
+    )
+    ratio_enabled = bool(ratio_settings["enabled"])
     monthly["turnover_for_model"] = np.where(turnover_usable_for_model, monthly["turnover_amt"], np.nan)
     monthly["active_subscriber_bucket"] = pd.cut(
         monthly["active_subscriber"],
@@ -680,7 +731,7 @@ def prepare_source_frame(
     monthly["log_bill"] = np.where(monthly["valid_bill_for_model"], np.log1p(monthly["bill_amount"]), np.nan)
     monthly["turnover_positive_flag"] = monthly["turnover_for_model"].astype(float).gt(0)
     monthly["log_turnover"] = np.where(monthly["turnover_positive_flag"], np.log1p(monthly["turnover_for_model"]), np.nan)
-    monthly["bill_to_turnover_log_ratio"] = monthly["log_bill"] - monthly["log_turnover"]
+    monthly["bill_to_turnover_log_ratio"] = np.where(ratio_enabled, monthly["log_bill"] - monthly["log_turnover"], np.nan)
 
     monthly = monthly.sort_values(["customer_id", "invoice_month"]).reset_index(drop=True)
     if monthly["customer_id"].nunique(dropna=False) == len(monthly):
@@ -716,7 +767,17 @@ def prepare_source_frame(
         "turnover_usable_for_model": bool(turnover_usable_for_model),
         "turnover_missing_rate": turnover_missing_rate,
         "turnover_missing_or_zero_rate": float(monthly["turnover_amt"].fillna(0).le(0).mean()),
+        "derived_features": normalize_derived_features_config(derived_features_config),
+        "feature_ratio": ratio_settings,
+        "feature_ratio_enabled": bool(ratio_settings["enabled"]),
+        "feature_ratio_signal_enabled": bool(ratio_settings["use_as_anomaly_signal"]),
+        "feature_ratio_peer_enabled": bool(ratio_settings["use_as_peer_variable"]),
+        "behavior_peer_enabled": behavior_peer_enabled(derived_features_config),
     }
+    monthly.attrs["profile"] = profile
+    monthly.attrs["derived_features"] = profile["derived_features"]
+    monthly.attrs["feature_ratio"] = ratio_settings
+    monthly.attrs["behavior_peer_enabled"] = profile["behavior_peer_enabled"]
     return monthly, profile
 
 
@@ -725,10 +786,16 @@ def read_source(
     encoding: str,
     sep: str,
     column_map: dict[str, str] | None = None,
+    derived_features_config: Mapping[str, Any] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     detected_encoding, detected_sep = detect_read_options(input_path, encoding, sep)
     raw = pd.read_csv(input_path, sep=detected_sep, decimal=",", encoding=detected_encoding)
-    monthly, profile = prepare_source_frame(raw, column_map=column_map, source_name=str(input_path))
+    monthly, profile = prepare_source_frame(
+        raw,
+        column_map=column_map,
+        source_name=str(input_path),
+        derived_features_config=derived_features_config,
+    )
     profile["detected_encoding"] = detected_encoding
     profile["detected_separator"] = detected_sep
     return monthly, profile
@@ -1634,6 +1701,7 @@ def score_scoring_month(
     support_thresholds: adaptive.PeerSupportThresholds | None = None,
     scoring_weights: Mapping[str, Any] | None = None,
     score_aggregation: Mapping[str, Any] | None = None,
+    derived_features_config: Mapping[str, Any] | None = None,
 ) -> ModelRun:
     history_raw = prepared.loc[prepared["invoice_month"].lt(scoring_month)].copy()
     scoring_raw = prepared.loc[prepared["invoice_month"].eq(scoring_month)].copy()
@@ -1643,9 +1711,16 @@ def score_scoring_month(
     edges = fit_turnover_edges(history_raw)
     history = assign_turnover_bucket(history_raw, edges)
     scoring = assign_turnover_bucket(scoring_raw, edges)
-    behavior = build_behavior_clusters(history)
-    history = assign_behavior_clusters(history, behavior)
-    scoring = assign_behavior_clusters(scoring, behavior)
+    profile = prepared.attrs.get("profile", {}) if hasattr(prepared, "attrs") else {}
+    effective_derived = derived_features_config or profile.get("derived_features", {})
+    ratio_settings = profile.get("feature_ratio") or feature_ratio_settings(effective_derived, None)
+    ratio_signal_enabled = bool(ratio_settings.get("use_as_anomaly_signal", False))
+    ratio_peer_enabled = bool(ratio_settings.get("use_as_peer_variable", False))
+    behavior_enabled = bool(profile.get("behavior_peer_enabled", behavior_peer_enabled(effective_derived)))
+    if behavior_enabled:
+        behavior = build_behavior_clusters(history)
+        history = assign_behavior_clusters(history, behavior)
+        scoring = assign_behavior_clusters(scoring, behavior)
     scoring["_row_id"] = np.arange(len(scoring))
 
     scoring_ord = int(scoring["month_ord"].iloc[0])
@@ -1663,7 +1738,7 @@ def score_scoring_month(
     aggregation_config = merged_score_aggregation(score_aggregation)
     peer_levels = adaptive.build_adaptive_peer_candidates(
         scoring,
-        has_turnover_signal=bool(history["turnover_for_model"].notna().any()),
+        has_turnover_signal=bool(ratio_peer_enabled and history["turnover_for_model"].notna().any()),
         config=peer_rules,
     )
 
@@ -1787,10 +1862,15 @@ def score_scoring_month(
             np.nan,
         )
         selected["turnover_intensity_z"] = np.where(
-            selected["bill_to_turnover_log_ratio"].notna() & selected["ratio_n"].ge(MIN_RATIO_ROWS),
+            ratio_signal_enabled & selected["bill_to_turnover_log_ratio"].notna() & selected["ratio_n"].ge(MIN_RATIO_ROWS),
             (selected["bill_to_turnover_log_ratio"] - selected["ratio_median"]) / np.maximum(selected["ratio_mad"].astype(float), MIN_LOG_SCALE),
             np.nan,
         )
+        selected["ratio_numerator_source_col"] = str(ratio_settings.get("numerator_source_col", "bill_amount"))
+        selected["ratio_denominator_source_col"] = str(ratio_settings.get("denominator_source_col", ""))
+        selected["feature_ratio_enabled"] = bool(ratio_settings.get("enabled", False))
+        selected["feature_ratio_signal_enabled"] = ratio_signal_enabled
+        selected["feature_ratio_peer_enabled"] = ratio_peer_enabled
         selected["self_history_z"] = np.where(
             selected["prior_n"].ge(MIN_SELF_HISTORY_ROWS),
             (selected["log_bill"] - selected["prior_median"]) / np.maximum(selected["prior_mad"].astype(float), MIN_LOG_SCALE),
@@ -1841,7 +1921,7 @@ def score_scoring_month(
         selected["is_disconnected_customer"] = selected["gap_months_before_scoring"].fillna(999).ge(2) | selected[
             "prior_12_coverage"
         ].lt(0.50)
-        selected["model_fill_policy"] = "NO_AMOUNT_FILLING"
+        selected["model_fill_policy"] = "NO_MAIN_METRIC_FILLING"
         selected["scoreability_status"] = np.select(
             [
                 selected["is_new_customer_in_scoring_month"],
@@ -1954,7 +2034,7 @@ def score_scoring_month(
         not_scored["not_scored_reason"] = np.where(
             not_scored["valid_bill_for_model"],
             "INSUFFICIENT_PEER_SUPPORT",
-            "INVALID_BILL_AMOUNT",
+            "INVALID_MAIN_METRIC",
         )
         not_scored["is_new_customer_in_scoring_month"] = not_scored["prior_n"].fillna(0).eq(0)
         not_scored["gap_months_before_scoring"] = np.where(
@@ -1973,9 +2053,9 @@ def score_scoring_month(
         not_scored["scoreability_status"] = np.where(
             not_scored["valid_bill_for_model"],
             "NOT_SCORED_INSUFFICIENT_PEER_SUPPORT",
-            "NOT_SCORED_INVALID_BILL_AMOUNT",
+            "NOT_SCORED_INVALID_MAIN_METRIC",
         )
-        not_scored["model_fill_policy"] = "NO_AMOUNT_FILLING"
+        not_scored["model_fill_policy"] = "NO_MAIN_METRIC_FILLING"
 
     if len(scores):
         scores = label_scores(scores, watch_top_rate, high_top_rate)
@@ -2016,6 +2096,11 @@ def score_scoring_month(
             "active_subscriber_missing_flag",
             "bill_amount",
             "turnover_amt",
+            "ratio_numerator_source_col",
+            "ratio_denominator_source_col",
+            "feature_ratio_enabled",
+            "feature_ratio_signal_enabled",
+            "feature_ratio_peer_enabled",
             "log_bill",
             "expected_log_bill",
             "expected_bill_amount",
@@ -2154,9 +2239,9 @@ def label_scores(scores: pd.DataFrame, watch_top_rate: float, high_top_rate: flo
     out["anomaly_label"] = "NORMAL"
     out.loc[watch & out["anomaly_direction"].eq("HIGH"), "anomaly_label"] = "WATCHLIST_HIGH"
     out.loc[watch & out["anomaly_direction"].eq("LOW"), "anomaly_label"] = "WATCHLIST_LOW"
-    out.loc[high & out["anomaly_direction"].eq("HIGH"), "anomaly_label"] = "HIGH_BILL_ANOMALY"
-    out.loc[high & out["anomaly_direction"].eq("LOW"), "anomaly_label"] = "LOW_BILL_ANOMALY"
-    out["is_high_anomaly"] = out["anomaly_label"].isin(["HIGH_BILL_ANOMALY", "LOW_BILL_ANOMALY"])
+    out.loc[high & out["anomaly_direction"].eq("HIGH"), "anomaly_label"] = "HIGH_MAIN_METRIC_ANOMALY"
+    out.loc[high & out["anomaly_direction"].eq("LOW"), "anomaly_label"] = "LOW_MAIN_METRIC_ANOMALY"
+    out["is_high_anomaly"] = out["anomaly_label"].isin(["HIGH_MAIN_METRIC_ANOMALY", "LOW_MAIN_METRIC_ANOMALY"])
     out["is_watchlist_or_anomaly"] = out["anomaly_label"].ne("NORMAL")
     return out
 
@@ -2172,7 +2257,7 @@ def build_reason_codes(row: pd.Series) -> str:
         reasons.append("PEER_TREND_JUMP" if peer_trend_z > 0 else "PEER_TREND_DROP")
     turnover_z = row.get("turnover_intensity_z", np.nan)
     if pd.notna(turnover_z) and abs(float(turnover_z)) >= 2.5:
-        reasons.append("TURNOVER_INTENSITY_HIGH" if turnover_z > 0 else "TURNOVER_INTENSITY_LOW")
+        reasons.append("FEATURE_RATIO_HIGH" if turnover_z > 0 else "FEATURE_RATIO_LOW")
     self_z = row.get("self_history_z", np.nan)
     if pd.notna(self_z) and abs(float(self_z)) >= 2.5:
         reasons.append("SELF_HISTORY_JUMP" if self_z > 0 else "SELF_HISTORY_DROP")
@@ -2368,8 +2453,8 @@ def action_label(row: pd.Series) -> str:
     if label.startswith("WATCHLIST"):
         return f"WATCHLIST_{direction}"
     if row.get("evidence_strength") == "strong":
-        return f"LIKELY_{direction}_AMOUNT_ANOMALY"
-    return f"REVIEW_{direction}_AMOUNT_ANOMALY"
+        return f"LIKELY_{direction}_MAIN_METRIC_ANOMALY"
+    return f"REVIEW_{direction}_MAIN_METRIC_ANOMALY"
 
 
 def fmt_num(value: Any, digits: int = 2) -> str:
@@ -2392,7 +2477,7 @@ def reason_explanation(row: pd.Series) -> str:
     if label == "NORMAL":
         trend_text = "" if not score_trend or pd.isna(score_trend) else f" Score trend={score_trend}."
         return (
-            "No material amount anomaly. "
+            "No material main metric anomaly. "
             f"Actual/expected ratio={fmt_num(ratio, 3)}, score={fmt_num(row.get('final_anomaly_score'), 1)}, "
             f"confidence={fmt_num(row.get('confidence'), 1)}.{trend_text}"
         )
@@ -2404,15 +2489,15 @@ def reason_explanation(row: pd.Series) -> str:
     elif "SPARSE_HISTORY" in action:
         lead = "Review required: customer history is too sparse, so decision is mainly peer-based."
     elif "LOW_CONFIDENCE" in action:
-        lead = "Review required: amount signal exists but support/confidence is low."
+        lead = "Review required: main metric signal exists but support/confidence is low."
     elif action.startswith("LIKELY_HIGH"):
-        lead = "Likely high amount anomaly: bill is materially above customer/peer expectation."
+        lead = "Likely high main metric anomaly: value is materially above customer/peer expectation."
     elif action.startswith("LIKELY_LOW"):
-        lead = "Likely low amount anomaly: bill is materially below customer/peer expectation."
+        lead = "Likely low main metric anomaly: value is materially below customer/peer expectation."
     elif action.startswith("WATCHLIST"):
-        lead = "Watchlist: amount differs from expectation but does not meet high-anomaly action strength."
+        lead = "Watchlist: main metric differs from expectation but does not meet high-anomaly action strength."
     else:
-        lead = "Review amount anomaly: amount differs materially from expectation."
+        lead = "Review main metric anomaly: value differs materially from expectation."
 
     trend_text = "" if not score_trend or pd.isna(score_trend) else f" Score trend={score_trend}."
     return (
@@ -2521,10 +2606,10 @@ def build_diagnostic_tables(prepared: pd.DataFrame, run: ModelRun, backtest_summ
                 "scoring_use": "branch is used only when support thresholds pass",
             },
             {
-                "requirement": "No amount filling",
+                "requirement": "No main metric filling",
                 "status": "YES",
                 "fields": "model_fill_policy",
-                "scoring_use": "bill amount is not filled/interpolated for scoring",
+                "scoring_use": "main metric is not filled/interpolated for scoring",
             },
             {
                 "requirement": "New customer flag",
@@ -2807,8 +2892,8 @@ def write_report_note(output_dir: Path, source_stem: str, summary: dict[str, Any
             "Customer self-history is active where prior history is sufficient, and data-gap score is reported separately."
         )
         limitation_text = (
-            "Amount anomaly and data-gap anomaly are separate. A row can have a high data_gap_score because the customer "
-            "history is sparse even when the bill amount is not an amount anomaly."
+            "Main metric anomaly and data-gap anomaly are separate. A row can have a high data_gap_score because the customer "
+            "history is sparse even when the main metric is not anomalous."
         )
     else:
         history_text = (
@@ -2820,24 +2905,18 @@ def write_report_note(output_dir: Path, source_stem: str, summary: dict[str, Any
             "This file does not contain recurring customer histories. Treat customer-level conclusions as peer-relative "
             "invoice anomalies, not confirmed customer time-series anomalies, until a stable customer key is supplied."
         )
-    turnover_text = (
-        "Turnover intensity: bill-to-turnover log ratio z-score when positive turnover has enough peer support."
-        if summary["profile"].get("turnover_usable_for_model", True)
-        else (
-            "Turnover intensity: disabled because TURNOVER_AMT is effectively identical to FATURA_TTR, "
-            "which would leak bill amount into peer segmentation."
-        )
+    ratio_cfg = dict(summary["profile"].get("feature_ratio", {}))
+    ratio_text = (
+        "Feature ratio: enabled; main metric is compared with selected reference feature "
+        f"{ratio_cfg.get('denominator_source_col', 'n/a')} when peer support is sufficient."
+        if summary["profile"].get("feature_ratio_signal_enabled", False)
+        else "Feature ratio: disabled; no ratio-derived signal is used in final evidence aggregation."
     )
     peer_text = (
-        "Peer hierarchy: branch + sector + segment + turnover + active-subscriber is tried first, "
+        "Peer hierarchy: selected segment variables and enabled derived peer variables are tried first, "
         "then broader fallbacks down to global. A narrow peer is used only when support thresholds pass."
-        if summary["profile"].get("turnover_usable_for_model", True)
-        else (
-            "Peer hierarchy: branch + sector + segment + active-subscriber is tried first, "
-            "then broader fallbacks down to global. A narrow peer is used only when support thresholds pass."
-        )
     )
-    note = f"""# Fatura Peer Anomaly Technical Note
+    note = f"""# Generic Peer Anomaly Technical Note
 
 ## Technical summary
 
@@ -2855,12 +2934,12 @@ Scoring month is {summary["scoring_month_label"]}. The model trained only on pri
 - {peer_text}
 - Expected value: recent peer level plus historical month-of-year adjustment, fit only from months before the scoring month.
 - Customer-first layer: when enough customer history exists, customer self-history, customer trend, and customer same-month seasonality receive higher combined weight than peer signals.
-- Peer fallback layer: when customer history is sparse or missing, peer history, peer trend, current-month peer distribution, and turnover intensity carry the score.
+- Peer fallback layer: when customer history is sparse or missing, peer history, peer trend, current-month peer distribution, and enabled feature-ratio evidence carry the score.
 - Current peer check: same scoring-month peer robust z-score, used only for batch monthly scoring.
-- {turnover_text}
-- Score: weighted robust ensemble of customer self-history, customer trend, customer seasonality, historical peer, peer trend, current peer, and turnover intensity when available.
+- {ratio_text}
+- Score: evidence aggregation of customer self-history, customer trend, customer seasonality, recent regime, historical peer, peer trend, current peer, and enabled feature-ratio signal when available.
 - Data gap: separate score from gap months and prior 12-month coverage.
-- Action labels: likely amount anomaly is reserved for rows with sufficient evidence; low confidence, sparse history, and peer/self-history conflicts are routed to review labels.
+- Action labels: likely main-metric anomaly is reserved for rows with sufficient evidence; low confidence, sparse history, and peer/self-history conflicts are routed to review labels.
 - Score trend diagnostic: previous-month model score deltas are reported as diagnostic-only fields and are not used in the final score.
 - Diagnostics: customer_logic_audit and audited_customer_series show the customer-level evidence behind each decision.
 
@@ -2922,6 +3001,7 @@ def attach_prior_score_diagnostic(
     support_thresholds: adaptive.PeerSupportThresholds | None = None,
     scoring_weights: Mapping[str, Any] | None = None,
     score_aggregation: Mapping[str, Any] | None = None,
+    derived_features_config: Mapping[str, Any] | None = None,
 ) -> ModelRun:
     prior_months = sorted(m for m in prepared["invoice_month"].unique().tolist() if m < run.scoring_month)
     if not prior_months or len(run.scores) == 0:
@@ -2937,6 +3017,7 @@ def attach_prior_score_diagnostic(
         support_thresholds=support_thresholds,
         scoring_weights=scoring_weights,
         score_aggregation=score_aggregation,
+        derived_features_config=derived_features_config,
     )
     if len(previous_run.scores) == 0:
         return run

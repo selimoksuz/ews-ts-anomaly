@@ -35,7 +35,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --help|-h)
-      exec "$(dirname "$0")/run_configured_anomaly_pipeline.sh" --help
+      exec "$(dirname "$0")/run_anomaly_pipeline.sh" --help
       ;;
     *)
       echo "Unknown argument: $1" >&2
@@ -62,4 +62,4 @@ if [[ -n "$HEARTBEAT_SECONDS" ]]; then
   ARGS+=("--heartbeat-seconds" "$HEARTBEAT_SECONDS")
 fi
 
-exec "$(dirname "$0")/run_configured_anomaly_pipeline.sh" "${ARGS[@]}"
+exec "$(dirname "$0")/run_anomaly_pipeline.sh" "${ARGS[@]}"

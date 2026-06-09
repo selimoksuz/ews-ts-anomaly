@@ -5,12 +5,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fatura_anomaly_implementation import run_implementation_scoring
+from anomaly_implementation import run_implementation_scoring
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Development-friendly runner for the monthly invoice anomaly decision outputs."
+        description="Development-friendly runner for monthly single-variable anomaly decision outputs."
     )
     parser.add_argument("--input", default="data/raw/encrypted_final.csv")
     parser.add_argument("--output-dir", default="outputs/development")

@@ -16,8 +16,6 @@ ROLE_HINTS = {
     "customer_segment": ("segmentad", "segment", "customer_segment", "musteri_segment"),
     "sector": ("ref_altfaaliyet", "altfaaliyet", "faaliyet", "sector", "sektor"),
     "branch_id": ("sube_kd", "sube", "branch", "branch_id"),
-    "turnover_amt": ("turnover_amt", "turnover", "ciro"),
-    "active_subscriber": ("aktif_abone", "active_subscriber", "abone"),
 }
 
 VARIABLE_TOKEN_ALIASES = {
@@ -70,6 +68,47 @@ def _matches_hint(column: str, hints: tuple[str, ...]) -> bool:
     return any(_clean_key(hint) in clean for hint in hints)
 
 
+def _as_mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def derived_features_from_config(config: dict[str, Any]) -> dict[str, Any]:
+    model = _as_mapping(config.get("model", {}))
+    raw = _as_mapping(model.get("derived_features", config.get("derived_features", {})))
+    if "ratio_feature" in raw and "feature_ratio" not in raw:
+        raw["feature_ratio"] = raw["ratio_feature"]
+    return raw
+
+
+def _resolve_variable_reference(reference: Any, role_map: dict[str, str], groups: dict[str, list[str]]) -> str | None:
+    if reference is None:
+        return None
+    text = str(reference).strip()
+    lowered = text.lower()
+    if lowered in {"", "none", "null", "false"}:
+        return None
+    if lowered in {"main_feature", "target_variable", "amount_variable", "bill_amount"}:
+        return role_map.get("bill_amount")
+    if text in role_map:
+        return role_map[text]
+    for values in groups.values():
+        if text in values:
+            return text
+    return text
+
+
+def _ratio_feature_config(config: dict[str, Any]) -> dict[str, Any]:
+    raw = derived_features_from_config(config)
+    ratio = raw.get("feature_ratio", {})
+    return dict(ratio) if isinstance(ratio, dict) else {}
+
+
+def _behavior_peer_config(config: dict[str, Any]) -> dict[str, Any]:
+    raw = derived_features_from_config(config)
+    behavior = raw.get("behavior_peer", {})
+    return dict(behavior) if isinstance(behavior, dict) else {}
+
+
 def variable_groups_from_config(config: dict[str, Any]) -> dict[str, list[str]]:
     raw = config.get("variables", {})
     if not isinstance(raw, dict):
@@ -101,17 +140,32 @@ def role_map_from_variable_groups(config: dict[str, Any]) -> dict[str, str]:
     elif features:
         out["bill_amount"] = features[0]
 
-    for role in ("turnover_amt", "active_subscriber"):
-        found = next((col for col in features if _matches_hint(col, ROLE_HINTS[role])), None)
-        if found:
-            out[role] = found
-
     for role in ("customer_segment", "sector", "branch_id"):
         found = next((col for col in segments if _matches_hint(col, ROLE_HINTS[role])), None)
         if found:
             out[role] = found
     if "customer_segment" not in out and segments:
         out["customer_segment"] = segments[0]
+
+    ratio = _ratio_feature_config(config)
+    ratio_enabled = str(ratio.get("enabled", "auto")).strip().lower()
+    denominator = _resolve_variable_reference(ratio.get("denominator"), out, groups)
+    if denominator and ratio_enabled not in {"false", "0", "no", "hayir"}:
+        out["turnover_amt"] = denominator
+
+    bucket_features = derived_features_from_config(config).get("bucket_features", [])
+    if isinstance(bucket_features, list):
+        first_active_like = next(
+            (
+                _resolve_variable_reference(item.get("source"), out, groups)
+                for item in bucket_features
+                if isinstance(item, dict)
+                and str(item.get("internal_role", "")).strip().lower() in {"active_subscriber", "exposure_feature"}
+            ),
+            None,
+        )
+        if first_active_like:
+            out["active_subscriber"] = first_active_like
     return out
 
 
@@ -138,10 +192,15 @@ def peer_variable_names_from_config(config: dict[str, Any]) -> list[str]:
     peers: list[str] = []
     for column in groups["segment_variables"]:
         peers.append(reverse_role_map.get(column, column))
-    if "turnover_amt" in role_map:
+    ratio = _ratio_feature_config(config)
+    ratio_peer_enabled = str(ratio.get("use_as_peer_variable", True)).strip().lower() not in {"false", "0", "no", "hayir"}
+    if "turnover_amt" in role_map and ratio_peer_enabled:
         peers.append("turnover_bucket")
     if "active_subscriber" in role_map:
         peers.append("active_subscriber_bucket")
+    behavior = _behavior_peer_config(config)
+    if bool(behavior.get("enabled", False)) and bool(behavior.get("use_as_peer_variable", True)):
+        peers.append("behavior_cluster")
     return list(dict.fromkeys(peers))
 
 

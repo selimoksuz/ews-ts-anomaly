@@ -6,7 +6,7 @@ param(
 )
 
 $argsList = @(
-    "src\configured_anomaly_pipeline.py",
+    "src\anomaly_pipeline.py",
     "--config", $ConfigPath
 )
 

@@ -15,18 +15,12 @@ variables:
     - SEGMENTAD
     - REF_ALTFAALIYET
     - SUBE_KD
-  # Ilk feature skorlanan ana tutardir. Digerleri destek/operatif feature olarak kullanilir.
+  # Ilk feature skorlanan ana metriktir. Diger feature'lar tek basina kullanilmaz;
+  # aktif kullanilacaksa model.derived_features altinda acikca referans verilir.
   feature_variables:
     - FATURA_TTR
     - TURNOVER_AMT
     - AKTIF_ABONE
-
-# Legacy format. Yeni kullanimda gerek yok; eski entegrasyonlar icin desteklenir.
-# columns:
-#   required:
-#     customer_id: MUSTERINO
-#     invoice_month: DONEM_AY
-#     bill_amount: FATURA_TTR
 
 model:
   # Skorlanacak ay. "last" kaynak datadaki en son donemi kullanir.
@@ -40,6 +34,26 @@ model:
   high_top_rate: 0.0075
   # Onceki ay skoru sadece diagnostik olarak hesaplanir; final karara direkt target gibi girmez.
   include_prior_score_diagnostic: true
+  derived_features:
+    # Ana metrigin baska bir referans feature'a orani. Ornek: ana_metrik / referans_feature.
+    # Baska bir proses icin sadece denominator kolonunu degistir veya enabled: false yap.
+    feature_ratio:
+      enabled: true
+      numerator: main_feature
+      denominator: TURNOVER_AMT
+      use_as_peer_variable: true
+      use_as_anomaly_signal: true
+    # Musteri gecmis davranisindan level/volatilite/trend cluster'i uretip peer adayi olarak kullanir.
+    # Default kapali; acilirsa sadece scoring ayindan onceki gecmisle hesaplanir.
+    behavior_peer:
+      enabled: false
+      use_as_peer_variable: true
+    # Ek numeric feature'i bucket'a cevirip peer adayi yapmak icin kullanilir.
+    # internal_role: exposure_feature simdilik tek generic exposure bucket'ina map edilir.
+    bucket_features:
+      - source: AKTIF_ABONE
+        internal_role: exposure_feature
+        use_as_peer_variable: true
   score_aggregation:
     # Evidence-first skor konsolidasyonu. Sinyalleri agirlikli ortalama yerine p-value kanitiyle toplar.
     method: directional_empirical_evidence
@@ -144,6 +158,7 @@ peer_selection:
       - nan
       - None
     turnover_bucket:
+      - turnover_missing
       - turnover_unknown
       - ""
       - nan
