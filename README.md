@@ -11,11 +11,22 @@ Target kullanmadan aylik tutar anomalisi skorlayan, customer-first ve peer-aware
 - Karar tablosu ve detay tablosu uretir.
 - CSV veya Oracle input okuyabilir, lokal veya Oracle output yazabilir.
 
+## Dokumanlar
+
+- [Model Documentation](docs/model_documentation.md)
+- [Implementation Documentation](docs/implementation_documentation.md)
+
 ## Kurulum
 
 ```powershell
 python -m pip install -r requirements.txt
 Copy-Item configs\data_source.example.yaml configs\data_source.yaml
+```
+
+```bash
+python3 -m pip install -r requirements.txt
+cp configs/data_source.example.yaml configs/data_source.yaml
+chmod +x scripts/*.sh
 ```
 
 `configs\data_source.yaml` dosyasini kendi ortamindaki CSV veya Oracle bilgileriyle doldur. Bu dosya bilerek git'e alinmaz.
@@ -24,6 +35,10 @@ Copy-Item configs\data_source.example.yaml configs\data_source.yaml
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\run_pipeline.ps1 -SkipPeerQualityReport
+```
+
+```bash
+./scripts/run_pipeline.sh --skip-peer-quality-report
 ```
 
 ## Oracle input + Oracle output run
@@ -41,6 +56,10 @@ Sonra:
 powershell -ExecutionPolicy Bypass -File scripts\run_oracle.ps1 -SkipPeerQualityReport
 ```
 
+```bash
+./scripts/run_oracle.sh --skip-peer-quality-report
+```
+
 ## Outputlar
 
 - Decision table: input ham kolonlari + `ANOMALI_FLAG` + `ANOMALI_NEDENI`
@@ -52,6 +71,10 @@ Optimizasyonlar benchmark ile dogrulanmadan kabul edilmez.
 
 ```powershell
 python scripts\benchmark_score_aggregation.py --config configs\anomaly.yaml
+```
+
+```bash
+python3 scripts/benchmark_score_aggregation.py --config configs/anomaly.yaml
 ```
 
 Benchmark hem runtime kazancini hem de eski/yeni skor esdegerligini kontrol eder.

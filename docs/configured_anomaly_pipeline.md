@@ -43,16 +43,28 @@ CSV/local run:
 powershell -ExecutionPolicy Bypass -File scripts\run_pipeline.ps1
 ```
 
+```bash
+./scripts/run_pipeline.sh
+```
+
 Oracle output run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\run_oracle.ps1
 ```
 
+```bash
+./scripts/run_oracle.sh
+```
+
 Raporu atlayarak hizli scoring:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\run_pipeline.ps1 -SkipPeerQualityReport
+```
+
+```bash
+./scripts/run_pipeline.sh --skip-peer-quality-report
 ```
 
 ## Oracle Write Mode

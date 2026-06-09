@@ -4,27 +4,32 @@ Bu sistem target'siz aylik fatura anomalisi skorlar. Supervised target yoktur.
 
 ## Run Komutu
 
+Bu handoff eski detaylari korur. Guncel metodoloji icin `docs/model_documentation.md`, guncel calistirma ve operasyon icin `docs/implementation_documentation.md` esas alinmalidir.
+
 ```powershell
-python src\fatura_anomaly_implementation.py `
-  --input data\raw\encrypted_final.csv `
-  --output-dir outputs\production `
-  --decision-output-dir outputs\production\decision_table `
-  --detail-output-dir outputs\analysis\decision_detail `
-  --contract-output-dir outputs\production\contracts `
-  --scoring-month last `
-  --include-prior-score-diagnostic
+powershell -ExecutionPolicy Bypass -File scripts\run_pipeline.ps1 -SkipPeerQualityReport
+```
+
+```bash
+./scripts/run_pipeline.sh --skip-peer-quality-report
+```
+
+Dogudan Python:
+
+```bash
+python3 src/configured_anomaly_pipeline.py --config configs/anomaly.yaml --skip-peer-quality-report
 ```
 
 `--scoring-month last` dosyadaki son ayi implementasyon/OOT ayi kabul eder. Mevcut run'da bu ay `2026-03`.
 
 ## Klasor Duzeni
 
-- `data\raw`: Ham input CSV dosyalari.
-- `outputs\production\decision_table`: Implementasyon/aksiyon icin ana karar tablosu.
-- `outputs\production\contracts`: Run sozlesmesi ve cikti path bilgisi.
-- `outputs\analysis\decision_detail`: Musteri-ay detay kanit tablosu.
-- `outputs\analysis\peer_quality_report`: Peer kalite Excel/HTML/CSV analizleri.
-- `outputs\archive\old_runs`: Eski deneme ve backtest ciktilari.
+- `data/raw`: Ham input CSV dosyalari.
+- `outputs/production/decision_table`: Implementasyon/aksiyon icin ana karar tablosu.
+- `outputs/production/contracts`: Run sozlesmesi ve cikti path bilgisi.
+- `outputs/analysis/decision_detail`: Musteri-ay detay kanit tablosu.
+- `outputs/analysis/peer_quality_report`: Peer kalite Excel/HTML/CSV analizleri.
+- `outputs/archive/old_runs`: Eski deneme ve backtest ciktilari.
 
 ## Ana Ciktilar
 
@@ -34,7 +39,7 @@ Sistem sadece iki ana tablo uretir.
 
 Path:
 
-`outputs\production\decision_table\encrypted_final_anomaly_decisions_202603.csv`
+`outputs/production/decision_table/encrypted_final_anomaly_decisions_202603.csv`
 
 Grain:
 
@@ -63,7 +68,7 @@ Bu tablo decision-making icin yalindir. Skor, peer, guven, trend, sezon, temsil 
 
 Path:
 
-`outputs\analysis\decision_detail\encrypted_final_anomaly_decision_detail_202603.csv`
+`outputs/analysis/decision_detail/encrypted_final_anomaly_decision_detail_202603.csv`
 
 Grain:
 
@@ -215,7 +220,7 @@ Mevcut primary karar katmani Isolation Forest degildir. Sebep: bu problemde targ
 
 ## Current Validation Snapshot
 
-Mevcut `data\raw\encrypted_final.csv` run sonucu:
+Mevcut `data/raw/encrypted_final.csv` run sonucu:
 
 - Scoring ayi: `2026-03`
 - Train rows: `775191`
@@ -311,14 +316,35 @@ Oracle driver:
 python -m pip install --user oracledb
 ```
 
+```bash
+python3 -m pip install --user oracledb
+```
+
 Mevcut ortamda `oracledb` kuruludur.
 
 ### Onerilen Oracle Run
 
 Tablo adlari ve `write_mode` `configs/data_source.yaml` icindeki `oracle_output` sink'i altinda netlestirilir. Hangi kaynagin okunacagi `configs/data_source.yaml` icindeki `active_source` ile secilir. Yazmak icin:
 
+Windows:
+
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\run_oracle.ps1
+powershell -ExecutionPolicy Bypass -File scripts\run_oracle.ps1 -SkipPeerQualityReport
+```
+
+Linux/macOS:
+
+```bash
+./scripts/run_oracle.sh --skip-peer-quality-report
+```
+
+Dogudan Python:
+
+```bash
+python3 src/configured_anomaly_pipeline.py \
+  --config configs/anomaly.yaml \
+  --enable-oracle-output \
+  --skip-peer-quality-report
 ```
 
 `delete_insert` decision tablosunda ayni `DONEM_AY` kayitlarini siler, sonra yeni run'i yazar. Detail tablosunda `MODEL_DONEM_AY` ayni skor kosusunu temsil eder; bu alan silinip yeniden yazilir.
@@ -334,20 +360,34 @@ Not:
 
 Decision tablosunda skorlanan ay `DONEM_AY` alanidir ve ekstra run kolonu tutulmaz. Detail tablosu musteri-ay serisi oldugu icin `MODEL_DONEM_AY` run anahtari olarak tutulur.
 
-### Hazir PowerShell Script
+### Hazir Scriptler
 
-Ayni komut su script ile de calistirilabilir:
+Windows:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\run_oracle.ps1
 ```
 
-Parametreli ornek:
+Linux/macOS:
+
+```bash
+./scripts/run_oracle.sh
+```
+
+Windows parametreli ornek:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\run_oracle.ps1 `
   -ConfigPath configs\anomaly.yaml `
   -DataSourceConfigPath configs\data_source.yaml
+```
+
+Linux/macOS parametreli ornek:
+
+```bash
+./scripts/run_oracle.sh \
+  --config configs/anomaly.yaml \
+  --data-source-config configs/data_source.yaml
 ```
 
 ## Oracle Notu
