@@ -1193,10 +1193,17 @@ def aggregate_evidence_row(row: pd.Series, config: Mapping[str, Any]) -> pd.Seri
     primary_family = "customer" if customer["p_value"] <= peer["p_value"] else "peer"
     primary = customer if primary_family == "customer" else peer
     secondary = peer if primary_family == "customer" else customer
-    secondary_signal_name = secondary["primary_signal"] if secondary["direction"] == direction and secondary["p_value"] < 1.0 else ""
+    secondary_signal_name = (
+        secondary["primary_signal"]
+        if secondary["p_value"] < 1.0 and (secondary["direction"] == direction or driver == "CUSTOMER_PEER_CONFLICT")
+        else ""
+    )
     customer_weight = 0.0
     peer_weight = 0.0
     if driver == "CUSTOMER_PEER_COMBINED":
+        customer_weight = 0.50
+        peer_weight = 0.50
+    elif driver == "CUSTOMER_PEER_CONFLICT":
         customer_weight = 0.50
         peer_weight = 0.50
     elif driver.startswith("CUSTOMER"):
@@ -1456,14 +1463,19 @@ def vectorized_evidence_aggregation(frame: pd.DataFrame, config: Mapping[str, An
     secondary_signal = np.where(primary_is_customer, peer["signal"], customer["signal"])
     secondary_direction = np.where(primary_is_customer, peer["direction"], customer["direction"])
     secondary_p = np.where(primary_is_customer, peer["p"], customer["p"])
-    secondary_signal = np.where((secondary_direction == direction) & (secondary_p < 1.0), secondary_signal, "")
+    secondary_signal = np.where(
+        (secondary_p < 1.0) & ((secondary_direction == direction) | conflict_driver),
+        secondary_signal,
+        "",
+    )
     secondary_p = np.where(secondary_signal != "", secondary_p, np.nan)
 
     customer_weight = np.zeros(n_rows, dtype=float)
     peer_weight = np.zeros(n_rows, dtype=float)
     customer_weight[combined] = 0.50
     peer_weight[combined] = 0.50
-    customer_weight[conflict_driver] = 1.0
+    customer_weight[conflict_driver] = 0.50
+    peer_weight[conflict_driver] = 0.50
     customer_weight[customer_driver] = 1.0
     peer_weight[peer_driver] = 1.0
     remaining = ~(combined | conflict_driver | customer_driver | peer_driver)
