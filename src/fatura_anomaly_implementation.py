@@ -25,6 +25,7 @@ SIGNAL_COLUMNS = [
     ("self_history", "self_history_z", "self_history_score", "musterinin kendi gecmisi"),
     ("customer_trend", "customer_trend_z", "customer_trend_score", "musteri trendi"),
     ("customer_seasonal", "customer_seasonal_z", "customer_seasonal_score", "musteri sezonalligi"),
+    ("customer_recent_regime", "customer_recent_regime_z", "customer_recent_regime_score", "musterinin son 3 ay rejimi"),
 ]
 
 PEER_KEY_COLUMNS = [
@@ -88,6 +89,8 @@ MODEL_DECISION_RENAME = {
     "prior_median_bill": "MUSTERI_GECMIS_MEDYAN_FATURA_TTR",
     "customer_trend_expected_bill": "MUSTERI_TREND_BEKLENEN_FATURA_TTR",
     "customer_seasonal_expected_bill": "MUSTERI_SEZON_BEKLENEN_FATURA_TTR",
+    "customer_recent3_median_bill": "MUSTERI_SON3_AY_MEDYAN_FATURA_TTR",
+    "customer_recent3_range_log": "MUSTERI_SON3_AY_RANGE_LOG",
     "peer_trend_expected_bill": "PEER_TREND_BEKLENEN_FATURA_TTR",
     "peer_group_level_name": "PEER_SEVIYE",
     "peer_group_columns": "PEER_KOLONLARI",
@@ -115,6 +118,8 @@ MODEL_DECISION_RENAME = {
     "customer_trend_score": "MUSTERI_TREND_SKORU",
     "customer_seasonal_z": "MUSTERI_SEZON_Z",
     "customer_seasonal_score": "MUSTERI_SEZON_SKORU",
+    "customer_recent_regime_z": "MUSTERI_SON3_REJIM_Z",
+    "customer_recent_regime_score": "MUSTERI_SON3_REJIM_SKORU",
     "customer_signal_score": "MUSTERI_SINYAL_SKORU",
     "peer_signal_score": "PEER_SINYAL_SKORU",
     "customer_family_p_value": "MUSTERI_AILE_P_DEGERI",
@@ -160,6 +165,7 @@ MODEL_DECISION_RENAME = {
     "self_history_final_weight": "MUSTERI_GECMIS_AGIRLIK",
     "customer_trend_final_weight": "MUSTERI_TREND_AGIRLIK",
     "customer_seasonal_final_weight": "MUSTERI_SEZON_AGIRLIK",
+    "customer_recent_regime_final_weight": "MUSTERI_SON3_REJIM_AGIRLIK",
     "historical_peer_final_weight": "GECMIS_PEER_AGIRLIK",
     "current_peer_final_weight": "GUNCEL_PEER_AGIRLIK",
     "peer_trend_final_weight": "PEER_TREND_AGIRLIK",
@@ -172,6 +178,7 @@ MODEL_DECISION_RENAME = {
     "prior_12_n": "SON_12_AY_FATURA_ADET",
     "customer_trend_n": "MUSTERI_TREND_ADET",
     "customer_seasonal_n": "MUSTERI_SEZON_ADET",
+    "customer_recent3_n": "MUSTERI_SON3_AY_ADET",
     "model_fill_policy": "MODEL_DOLDURMA_POLITIKASI",
 }
 
@@ -410,6 +417,12 @@ def strongest_signal_detail(row: pd.Series) -> str:
             f"Skorlanan fatura {fmt_num(actual)}; musterinin gecmis medyani "
             f"{fmt_num(prior)}; fatura/kendi medyan orani {fmt_num(safe_ratio(actual, prior), 3)}."
         )
+    if signal_name == "customer_recent_regime":
+        recent = row.get("customer_recent3_median_bill", np.nan)
+        return (
+            f"Skorlanan fatura {fmt_num(actual)}; musterinin son 3 ay medyani "
+            f"{fmt_num(recent)}; fatura/son 3 ay medyan orani {fmt_num(safe_ratio(actual, recent), 3)}."
+        )
     if signal_name == "current_peer":
         current_peer = row.get("current_peer_median_bill", np.nan)
         return (
@@ -612,6 +625,8 @@ def build_detail_context(scores: pd.DataFrame, not_scored: pd.DataFrame) -> pd.D
         "peer_trend_expected_bill",
         "customer_trend_expected_bill",
         "customer_seasonal_expected_bill",
+        "customer_recent3_median_bill",
+        "customer_recent3_range_log",
         "actual_to_expected_ratio",
         "bill_to_turnover_ratio",
         "historical_peer_z",
@@ -621,6 +636,7 @@ def build_detail_context(scores: pd.DataFrame, not_scored: pd.DataFrame) -> pd.D
         "self_history_z",
         "customer_trend_z",
         "customer_seasonal_z",
+        "customer_recent_regime_z",
         "historical_peer_score",
         "current_peer_score",
         "peer_trend_score",
@@ -628,6 +644,7 @@ def build_detail_context(scores: pd.DataFrame, not_scored: pd.DataFrame) -> pd.D
         "self_history_score",
         "customer_trend_score",
         "customer_seasonal_score",
+        "customer_recent_regime_score",
         "customer_signal_score",
         "peer_signal_score",
         "customer_family_p_value",
@@ -673,6 +690,7 @@ def build_detail_context(scores: pd.DataFrame, not_scored: pd.DataFrame) -> pd.D
         "self_history_final_weight",
         "customer_trend_final_weight",
         "customer_seasonal_final_weight",
+        "customer_recent_regime_final_weight",
         "historical_peer_final_weight",
         "current_peer_final_weight",
         "peer_trend_final_weight",
@@ -707,6 +725,7 @@ def build_detail_context(scores: pd.DataFrame, not_scored: pd.DataFrame) -> pd.D
         "prior_12_n",
         "customer_trend_n",
         "customer_seasonal_n",
+        "customer_recent3_n",
         "prior_12_coverage",
         "gap_months_before_scoring",
         "data_gap_score",
@@ -954,6 +973,8 @@ def build_detail_table(
         "scoring_customer_prior_median_bill",
         "customer_trend_expected_bill",
         "customer_seasonal_expected_bill",
+        "customer_recent3_median_bill",
+        "customer_recent3_range_log",
         "peer_trend_expected_bill",
         "actual_to_expected_ratio",
         "anomaly_score",
@@ -989,6 +1010,8 @@ def build_detail_table(
         "customer_trend_score",
         "customer_seasonal_z",
         "customer_seasonal_score",
+        "customer_recent_regime_z",
+        "customer_recent_regime_score",
         "customer_signal_score",
         "peer_signal_score",
         "customer_family_p_value",
@@ -1034,6 +1057,7 @@ def build_detail_table(
         "self_history_final_weight",
         "customer_trend_final_weight",
         "customer_seasonal_final_weight",
+        "customer_recent_regime_final_weight",
         "historical_peer_final_weight",
         "current_peer_final_weight",
         "peer_trend_final_weight",
@@ -1115,6 +1139,8 @@ def build_detail_table(
         "scoring_customer_prior_median_bill": "MUSTERI_GECMIS_MEDYAN_FATURA_TTR",
         "customer_trend_expected_bill": "MUSTERI_TREND_BEKLENEN_FATURA_TTR",
         "customer_seasonal_expected_bill": "MUSTERI_SEZON_BEKLENEN_FATURA_TTR",
+        "customer_recent3_median_bill": "MUSTERI_SON3_AY_MEDYAN_FATURA_TTR",
+        "customer_recent3_range_log": "MUSTERI_SON3_AY_RANGE_LOG",
         "peer_trend_expected_bill": "PEER_TREND_BEKLENEN_FATURA_TTR",
         "actual_to_expected_ratio": "GERCEK_BEKLENEN_ORANI",
         "historical_peer_z": "GECMIS_PEER_Z",
@@ -1131,6 +1157,8 @@ def build_detail_table(
         "customer_trend_score": "MUSTERI_TREND_SKORU",
         "customer_seasonal_z": "MUSTERI_SEZON_Z",
         "customer_seasonal_score": "MUSTERI_SEZON_SKORU",
+        "customer_recent_regime_z": "MUSTERI_SON3_REJIM_Z",
+        "customer_recent_regime_score": "MUSTERI_SON3_REJIM_SKORU",
         "customer_signal_score": "MUSTERI_SINYAL_SKORU",
         "peer_signal_score": "PEER_SINYAL_SKORU",
         "customer_family_p_value": "MUSTERI_AILE_P_DEGERI",
@@ -1176,6 +1204,7 @@ def build_detail_table(
         "self_history_final_weight": "MUSTERI_GECMIS_AGIRLIK",
         "customer_trend_final_weight": "MUSTERI_TREND_AGIRLIK",
         "customer_seasonal_final_weight": "MUSTERI_SEZON_AGIRLIK",
+        "customer_recent_regime_final_weight": "MUSTERI_SON3_REJIM_AGIRLIK",
         "historical_peer_final_weight": "GECMIS_PEER_AGIRLIK",
         "current_peer_final_weight": "GUNCEL_PEER_AGIRLIK",
         "peer_trend_final_weight": "PEER_TREND_AGIRLIK",
@@ -1189,6 +1218,7 @@ def build_detail_table(
         "prior_12_n": "SON_12_AY_FATURA_ADET",
         "customer_trend_n": "MUSTERI_TREND_ADET",
         "customer_seasonal_n": "MUSTERI_SEZON_ADET",
+        "customer_recent3_n": "MUSTERI_SON3_AY_ADET",
         "prior_12_coverage": "SON_12_AY_KAPSAMA",
         "gap_months_before_scoring": "SON_GAP_AY_ADET",
         "data_gap_score": "DATA_GAP_SKORU",

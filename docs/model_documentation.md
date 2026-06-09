@@ -36,6 +36,7 @@ Model once musterinin kendi datasinin yeterli olup olmadigina bakar:
 - Kendi gecmis medyani
 - Musteri trend beklentisi
 - Ayni ay/sezon beklentisi
+- Stabil son 3 ay rejimi
 - Son 12 ay kapsama
 - Scoring ayindan onceki gap
 
@@ -65,6 +66,7 @@ Customer family:
 - `self_history`
 - `customer_trend`
 - `customer_seasonal`
+- `customer_recent_regime`
 
 Peer family:
 
@@ -74,6 +76,8 @@ Peer family:
 - `turnover_intensity`
 
 Her sinyal robust z-score, empirical p-value ve evidence score ile degerlendirilir.
+
+`customer_recent_regime` sadece son 3 calendar ayin tamami mevcutsa ve bu 3 ay kendi icinde stabilse aktif olur. Amaci eski uzun tarihsel seviyenin yeni kisa rejimi bastirdigi veya scoring ayinin stabil son 3 aydan sert koptugu vakalari yakalamaktir. Bu kosullar saglanmazsa sinyal `NaN` kalir ve skora girmez.
 
 ## Evidence Aggregation
 
@@ -97,6 +101,7 @@ Decision reason en guclu sinyalden baslar. Ornek:
 - Ana neden: fatura/turnover yogunlugu
 - Ana neden: musteri trendi
 - Ana neden: musteri sezonalligi
+- Ana neden: musterinin son 3 ay rejimi
 
 Detail tabloda driver, p-value, z-score, beklenen tutarlar, peer metrikleri ve data quality alanlari birlikte bulunur.
 

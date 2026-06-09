@@ -45,6 +45,19 @@ active_source: oracle_input
 
 Output sink secimi `active_sink` ile yapilir. Oracle yazimi icin sink tanimi yeterli degildir; run komutunda ayrica Oracle output flag'i verilmelidir.
 
+Son 3 ay musteri rejimi sinyali `configs/anomaly.yaml` icinde yonetilir:
+
+```yaml
+model:
+  score_aggregation:
+    recent_regime:
+      enabled: true
+      min_recent_months: 3
+      max_recent_range_log: 0.35
+```
+
+Bu sinyal sadece son 3 calendar ay tam ve stabilse skora girer; aksi halde karar surecine etki etmez.
+
 ## Lokal CSV Run
 
 Windows:

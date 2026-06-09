@@ -28,6 +28,10 @@ model:
       min_peer_objective_score: 60.0
       min_peer_distribution_score: 35.0
       coarse_peer_review_only: true
+    recent_regime:
+      enabled: true
+      min_recent_months: 3
+      max_recent_range_log: 0.35
     confidence:
       customer_driver_floor: 55.0
       peer_driver_floor: 45.0

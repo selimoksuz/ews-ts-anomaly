@@ -79,6 +79,8 @@ MIN_SELF_HISTORY_ROWS = 2
 MIN_CUSTOMER_TREND_ROWS = 6
 MIN_CUSTOMER_SEASONAL_ROWS = 2
 MIN_BEHAVIOR_HISTORY_ROWS = 6
+MIN_CUSTOMER_RECENT_REGIME_ROWS = 3
+MAX_CUSTOMER_RECENT_REGIME_RANGE_LOG = 0.35
 MIN_PEER_DISTRIBUTION_SCORE = 35.0
 MIN_LOG_SCALE = 0.20
 Z_SCORE_CAP = 3.0
@@ -137,6 +139,11 @@ DEFAULT_SCORE_AGGREGATION: dict[str, Any] = {
         "min_peer_distribution_score": 35.0,
         "coarse_peer_review_only": True,
     },
+    "recent_regime": {
+        "enabled": True,
+        "min_recent_months": MIN_CUSTOMER_RECENT_REGIME_ROWS,
+        "max_recent_range_log": MAX_CUSTOMER_RECENT_REGIME_RANGE_LOG,
+    },
     "confidence": {
         "customer_driver_floor": 55.0,
         "peer_driver_floor": 45.0,
@@ -160,6 +167,12 @@ SIGNAL_DEFINITIONS: tuple[dict[str, str], ...] = (
         "family": "customer",
         "z_col": "customer_seasonal_z",
         "score_col": "customer_seasonal_score",
+    },
+    {
+        "name": "customer_recent_regime",
+        "family": "customer",
+        "z_col": "customer_recent_regime_z",
+        "score_col": "customer_recent_regime_score",
     },
     {"name": "historical_peer", "family": "peer", "z_col": "historical_peer_z", "score_col": "historical_peer_score"},
     {"name": "current_peer", "family": "peer", "z_col": "current_peer_z", "score_col": "current_peer_score"},
@@ -742,6 +755,11 @@ def build_self_stats(history: pd.DataFrame, scoring_ord: int) -> pd.DataFrame:
             "customer_seasonal_n",
             "customer_seasonal_median",
             "customer_seasonal_mad",
+            "customer_recent3_n",
+            "customer_recent3_median",
+            "customer_recent3_mad",
+            "customer_recent3_min",
+            "customer_recent3_max",
         ]
     )
     if len(valid) == 0:
@@ -761,6 +779,18 @@ def build_self_stats(history: pd.DataFrame, scoring_ord: int) -> pd.DataFrame:
         "log_bill",
         "customer_seasonal",
     )
+    customer_recent3 = robust_group_stats(
+        valid.loc[valid["month_ord"].between(scoring_ord - 3, scoring_ord - 1)],
+        ["customer_id"],
+        "log_bill",
+        "customer_recent3",
+    )
+    customer_recent3_range = (
+        valid.loc[valid["month_ord"].between(scoring_ord - 3, scoring_ord - 1)]
+        .groupby("customer_id", dropna=False)
+        .agg(customer_recent3_min=("log_bill", "min"), customer_recent3_max=("log_bill", "max"))
+        .reset_index()
+    )
     recent_12 = (
         valid.loc[valid["month_ord"].between(scoring_ord - 12, scoring_ord - 1)]
         .groupby("customer_id", dropna=False)
@@ -773,8 +803,11 @@ def build_self_stats(history: pd.DataFrame, scoring_ord: int) -> pd.DataFrame:
     out = base.merge(recent_12, on="customer_id", how="left")
     out = out.merge(customer_trend, on="customer_id", how="left")
     out = out.merge(customer_seasonal, on="customer_id", how="left")
+    out = out.merge(customer_recent3, on="customer_id", how="left")
+    out = out.merge(customer_recent3_range, on="customer_id", how="left")
     out = out.merge(last, on="customer_id", how="left")
     out["prior_12_n"] = out["prior_12_n"].fillna(0).astype(float)
+    out["customer_recent3_n"] = out["customer_recent3_n"].fillna(0).astype(float)
     return out
 
 
@@ -1660,6 +1693,14 @@ def score_scoring_month(
             np.expm1(selected["customer_seasonal_median"]),
             np.nan,
         )
+        selected["customer_recent3_median_bill"] = np.where(
+            selected["customer_recent3_median"].notna(),
+            np.expm1(selected["customer_recent3_median"]),
+            np.nan,
+        )
+        selected["customer_recent3_range_log"] = (
+            selected["customer_recent3_max"].astype(float) - selected["customer_recent3_min"].astype(float)
+        )
         selected["historical_scale"] = np.nanmax(
             np.vstack(
                 [
@@ -1700,6 +1741,23 @@ def score_scoring_month(
             / np.maximum(selected["customer_seasonal_mad"].astype(float), MIN_LOG_SCALE),
             np.nan,
         )
+        recent_regime_config = dict(aggregation_config.get("recent_regime", {}))
+        recent_regime_ok = (
+            bool(recent_regime_config.get("enabled", True))
+            & selected["customer_recent3_n"].fillna(0).ge(
+                float(recent_regime_config.get("min_recent_months", MIN_CUSTOMER_RECENT_REGIME_ROWS))
+            )
+            & selected["customer_recent3_range_log"].le(
+                float(recent_regime_config.get("max_recent_range_log", MAX_CUSTOMER_RECENT_REGIME_RANGE_LOG))
+            )
+            & selected["customer_recent3_median"].notna()
+        )
+        selected["customer_recent_regime_z"] = np.where(
+            recent_regime_ok,
+            (selected["log_bill"] - selected["customer_recent3_median"])
+            / np.maximum(selected["customer_recent3_mad"].astype(float), MIN_LOG_SCALE),
+            np.nan,
+        )
         selected["gap_months_before_scoring"] = np.where(
             selected["last_month_ord"].notna(),
             np.maximum(selected["month_ord"].astype(float) - selected["last_month_ord"].astype(float) - 1.0, 0.0),
@@ -1724,6 +1782,7 @@ def score_scoring_month(
                 selected["prior_n"].fillna(0).lt(MIN_SELF_HISTORY_ROWS),
                 selected["customer_trend_z"].notna() & selected["customer_seasonal_z"].notna(),
                 selected["customer_trend_z"].notna(),
+                selected["customer_recent_regime_z"].notna(),
                 selected["self_history_z"].notna(),
             ],
             [
@@ -1731,6 +1790,7 @@ def score_scoring_month(
                 "PEER_ONLY_SPARSE_CUSTOMER_HISTORY",
                 "CUSTOMER_TREND_AND_SEASONAL_AVAILABLE",
                 "CUSTOMER_TREND_AVAILABLE",
+                "CUSTOMER_RECENT_REGIME_AVAILABLE",
                 "CUSTOMER_HISTORY_AVAILABLE",
             ],
             default="PEER_ONLY_NO_CUSTOMER_HISTORY",
@@ -1743,6 +1803,7 @@ def score_scoring_month(
         self_component = score_from_z(selected["self_history_z"])
         customer_trend_component = score_from_z(selected["customer_trend_z"])
         customer_seasonal_component = score_from_z(selected["customer_seasonal_z"])
+        customer_recent_regime_component = score_from_z(selected["customer_recent_regime_z"])
 
         has_self = selected["self_history_z"].notna().to_numpy()
         has_customer_trend = selected["customer_trend_z"].notna().to_numpy()
@@ -1756,6 +1817,7 @@ def score_scoring_month(
         selected["self_history_score"] = self_component
         selected["customer_trend_score"] = customer_trend_component
         selected["customer_seasonal_score"] = customer_seasonal_component
+        selected["customer_recent_regime_score"] = customer_recent_regime_component
 
         selected["customer_explainability_score"] = [
             customer_explainability_score(
@@ -1897,6 +1959,8 @@ def score_scoring_month(
             "peer_trend_expected_bill",
             "customer_trend_expected_bill",
             "customer_seasonal_expected_bill",
+            "customer_recent3_median_bill",
+            "customer_recent3_range_log",
             "actual_to_expected_ratio",
             "bill_to_turnover_ratio",
             "historical_peer_z",
@@ -1906,6 +1970,7 @@ def score_scoring_month(
             "self_history_z",
             "customer_trend_z",
             "customer_seasonal_z",
+            "customer_recent_regime_z",
             "historical_peer_score",
             "current_peer_score",
             "peer_trend_score",
@@ -1913,6 +1978,7 @@ def score_scoring_month(
             "self_history_score",
             "customer_trend_score",
             "customer_seasonal_score",
+            "customer_recent_regime_score",
             "customer_signal_score",
             "peer_signal_score",
             "customer_family_p_value",
@@ -1950,6 +2016,7 @@ def score_scoring_month(
             "self_history_final_weight",
             "customer_trend_final_weight",
             "customer_seasonal_final_weight",
+            "customer_recent_regime_final_weight",
             "historical_peer_final_weight",
             "current_peer_final_weight",
             "peer_trend_final_weight",
@@ -1981,6 +2048,7 @@ def score_scoring_month(
             "prior_12_n",
             "customer_trend_n",
             "customer_seasonal_n",
+            "customer_recent3_n",
             "prior_12_coverage",
             "gap_months_before_scoring",
             "data_gap_score",
@@ -2050,6 +2118,11 @@ def build_reason_codes(row: pd.Series) -> str:
     customer_seasonal_z = row.get("customer_seasonal_z", np.nan)
     if pd.notna(customer_seasonal_z) and abs(float(customer_seasonal_z)) >= 2.5:
         reasons.append("CUSTOMER_SEASONAL_JUMP" if customer_seasonal_z > 0 else "CUSTOMER_SEASONAL_DROP")
+    customer_recent_regime_z = row.get("customer_recent_regime_z", np.nan)
+    if pd.notna(customer_recent_regime_z) and abs(float(customer_recent_regime_z)) >= 2.5:
+        reasons.append(
+            "CUSTOMER_RECENT_REGIME_JUMP" if customer_recent_regime_z > 0 else "CUSTOMER_RECENT_REGIME_DROP"
+        )
     if has_peer_self_conflict(row) and "PEER_SELF_CONFLICT" not in reasons:
         reasons.append("PEER_SELF_CONFLICT")
     if has_customer_peer_mismatch(row):
@@ -2097,7 +2170,10 @@ def strongest_signed_signal(row: pd.Series, cols: list[str]) -> float:
 
 def has_peer_self_conflict(row: pd.Series) -> bool:
     peer_signal = strongest_signed_signal(row, ["historical_peer_z", "current_peer_z", "peer_trend_z", "turnover_intensity_z"])
-    customer_signal = strongest_signed_signal(row, ["self_history_z", "customer_trend_z", "customer_seasonal_z"])
+    customer_signal = strongest_signed_signal(
+        row,
+        ["self_history_z", "customer_trend_z", "customer_seasonal_z", "customer_recent_regime_z"],
+    )
     if abs(peer_signal) >= 2.5 and abs(customer_signal) >= 2.5 and (peer_signal * customer_signal) < 0:
         return True
     if abs(customer_signal) < 2.5:
@@ -2112,7 +2188,7 @@ def has_customer_peer_mismatch(row: pd.Series) -> bool:
     if numeric_or_default(row, "prior_n", 0.0) < MIN_CUSTOMER_TREND_ROWS:
         return False
     peer_signal = max_abs_signal(row, ["historical_peer_z", "current_peer_z", "peer_trend_z", "turnover_intensity_z"])
-    customer_signal = max_abs_signal(row, ["self_history_z", "customer_trend_z", "customer_seasonal_z"])
+    customer_signal = max_abs_signal(row, ["self_history_z", "customer_trend_z", "customer_seasonal_z", "customer_recent_regime_z"])
     return peer_signal >= 2.5 and customer_signal < 1.5
 
 
@@ -2126,7 +2202,7 @@ def peer_alignment(row: pd.Series) -> tuple[str, str, float, float]:
     )
     customer_signal = strongest_signed_signal(
         row,
-        ["self_history_z", "customer_trend_z", "customer_seasonal_z"],
+        ["self_history_z", "customer_trend_z", "customer_seasonal_z", "customer_recent_regime_z"],
     )
     peer_abs = abs(peer_signal)
     customer_abs = abs(customer_signal)
@@ -2188,6 +2264,7 @@ def evidence_strength(row: pd.Series) -> str:
         "self_history_z",
         "customer_trend_z",
         "customer_seasonal_z",
+        "customer_recent_regime_z",
     ]:
         value = row.get(col, np.nan)
         if pd.notna(value) and abs(float(value)) >= 2.5:
@@ -2483,6 +2560,8 @@ def build_diagnostic_tables(prepared: pd.DataFrame, run: ModelRun, backtest_summ
             "peer_trend_expected_bill",
             "customer_trend_expected_bill",
             "customer_seasonal_expected_bill",
+            "customer_recent3_median_bill",
+            "customer_recent3_range_log",
             "actual_to_expected_ratio",
             "turnover_amt",
             "bill_to_turnover_ratio",
@@ -2505,9 +2584,11 @@ def build_diagnostic_tables(prepared: pd.DataFrame, run: ModelRun, backtest_summ
             "self_history_z",
             "customer_trend_z",
             "customer_seasonal_z",
+            "customer_recent_regime_z",
             "prior_n",
             "customer_trend_n",
             "customer_seasonal_n",
+            "customer_recent3_n",
             "prior_12_coverage",
             "gap_months_before_scoring",
             "data_gap_score",
