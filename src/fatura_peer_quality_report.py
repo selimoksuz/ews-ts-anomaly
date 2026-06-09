@@ -25,6 +25,16 @@ NORMALIZED_TO_OUTPUT = {
 }
 
 
+def normalize_merge_key(frame: pd.DataFrame, column: str) -> pd.DataFrame:
+    if column not in frame.columns:
+        raise KeyError(f"Required merge key is missing: {column}")
+    out = frame.copy()
+    key = out[column].astype("string").str.strip()
+    key = key.mask(key.str.lower().isin(["", "nan", "none", "null", "<na>"]), pd.NA)
+    out[column] = key
+    return out
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build peer quality analysis report from anomaly outputs.")
     parser.add_argument("--input", default="data/raw/encrypted_final.csv")
@@ -110,7 +120,9 @@ def load_scoring_keys(
 
 
 def add_peer_instance_keys(decisions: pd.DataFrame, scoring_keys: pd.DataFrame) -> pd.DataFrame:
-    out = decisions.merge(scoring_keys, on="MUSTERINO", how="left")
+    decision_keys = normalize_merge_key(decisions, "MUSTERINO")
+    scoring_keys = normalize_merge_key(scoring_keys, "MUSTERINO")
+    out = decision_keys.merge(scoring_keys, on="MUSTERINO", how="left")
     if "DAVRANIS_CLUSTER" not in out.columns and "DAVRANIS_CLUSTER_REBUILT" in out.columns:
         out["DAVRANIS_CLUSTER"] = out["DAVRANIS_CLUSTER_REBUILT"]
     out["AKTIF_ABONE_BUCKET"] = out["AKTIF_ABONE_BUCKET"].fillna("active_unknown")
