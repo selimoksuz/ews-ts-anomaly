@@ -1,0 +1,97 @@
+data_source_config_path: configs/data_source.yaml
+
+columns:
+  required: {}
+
+model:
+  scoring_month: last
+  rolling_window_months: 36
+  watch_top_rate: 0.030
+  high_top_rate: 0.0075
+  include_prior_score_diagnostic: true
+  score_aggregation:
+    method: directional_empirical_evidence
+    family_combination: simes
+    max_signals_per_family: 3
+    min_abs_z_for_evidence: 0.50
+    min_p_value: 0.001
+    evidence_thresholds:
+      strong_signal_p: 0.01
+      moderate_signal_p: 0.05
+      conflict_signal_p: 0.05
+    customer_reliability:
+      strong_min_prior_n: 6
+      strong_min_coverage_12m: 0.50
+      strong_max_gap_months: 1
+      partial_min_prior_n: 2
+    peer_reliability:
+      min_peer_objective_score: 60.0
+      min_peer_distribution_score: 35.0
+      coarse_peer_review_only: true
+    confidence:
+      customer_driver_floor: 55.0
+      peer_driver_floor: 45.0
+      combined_driver_bonus: 8.0
+      same_direction_bonus: 5.0
+      conflict_penalty: 20.0
+      data_gap_penalty_weight: 0.25
+      data_gap_penalty_cap: 25.0
+      distribution_penalty_floor: 60.0
+      distribution_penalty_weight: 0.35
+      no_self_history_cap: 75.0
+      coarse_peer_cap: 65.0
+
+peer_selection:
+  priority_variables: auto
+  mandatory_variables:
+    - customer_segment
+  fallback_variables:
+    - sector
+    - turnover_bucket
+    - active_subscriber_bucket
+  include_global: true
+  max_variables_per_peer: 6
+  candidate_strategy: priority_path
+  selection_mode: objective
+  objective_weights:
+    representability: 0.25
+    distribution: 0.20
+    stability: 0.15
+    specificity: 0.30
+    support: 0.10
+  max_inferred_cardinality: 250
+  exclude_variables: []
+  blocked_values:
+    behavior_cluster:
+      - behavior_unknown
+      - ""
+      - nan
+      - None
+    turnover_bucket:
+      - turnover_unknown
+      - ""
+      - nan
+      - None
+
+peer_support:
+  min_history_rows: 120
+  min_season_rows: 15
+  min_recent_rows: 25
+  min_current_rows: 20
+  min_distribution_score: 35.0
+  strong_history_rows: 800
+  strong_season_rows: 100
+  strong_recent_rows: 150
+  strong_current_rows: 120
+
+outputs:
+  base_dir: outputs/production
+  decision_dir: outputs/production/decision_table
+  detail_dir: outputs/analysis/decision_detail
+  contract_dir: outputs/production/contracts
+  staging_dir: outputs/staging
+
+reports:
+  peer_quality:
+    enabled: true
+    output_dir: outputs/analysis/peer_quality_report

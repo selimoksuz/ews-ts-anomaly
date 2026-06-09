@@ -1,0 +1,1724 @@
+from __future__ import annotations
+
+import argparse
+import configparser
+import json
+from pathlib import Path
+import re
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+import adaptive_peer_selection as adaptive
+import fatura_peer_anomaly_model as core
+
+
+SIGNAL_COLUMNS = [
+    ("historical_peer", "historical_peer_z", "historical_peer_score", "gecmis peer beklentisi"),
+    ("current_peer", "current_peer_z", "current_peer_score", "ayni ay peer medyani"),
+    ("peer_trend", "peer_trend_z", "peer_trend_score", "peer trendi"),
+    ("turnover_intensity", "turnover_intensity_z", "turnover_intensity_score", "fatura/turnover yogunlugu"),
+    ("self_history", "self_history_z", "self_history_score", "musterinin kendi gecmisi"),
+    ("customer_trend", "customer_trend_z", "customer_trend_score", "musteri trendi"),
+    ("customer_seasonal", "customer_seasonal_z", "customer_seasonal_score", "musteri sezonalligi"),
+]
+
+PEER_KEY_COLUMNS = [
+    "branch_id",
+    "sector",
+    "customer_segment",
+    "turnover_bucket",
+    "active_subscriber_bucket",
+    "behavior_cluster",
+    "_global_key",
+]
+
+DEFAULT_ORACLE_INFO_DIR = Path(r"C:\Users\Acer\dc_all_pipe\oracle_info")
+ORACLE_IDENTIFIER_MAX_LEN = 30
+LONG_TEXT_COLUMNS = {
+    "anomaly_reason_sentence",
+    "decision_reason_sentence",
+    "month_level_comment",
+    "reason_codes",
+    "ANOMALI_NEDENI",
+    "AYLIK_YORUM",
+    "NEDEN_KODLARI",
+    "peer_selection_reason",
+    "PEER_SECIM_GEREKCESI",
+}
+
+LOGICAL_TO_NORMALIZED = {
+    "branch_id": "branch_id",
+    "customer_id": "customer_id",
+    "customer_segment": "customer_segment",
+    "invoice_month": "invoice_month",
+    "sector": "sector",
+    "active_subscriber": "active_subscriber",
+    "bill_amount": "bill_amount",
+    "turnover_amt": "turnover_amt",
+}
+
+MODEL_DECISION_RENAME = {
+    "operational_decision": "OPERASYON_KARARI",
+    "anomaly_label": "ANOMALI_ETIKETI",
+    "anomaly_direction": "ANOMALI_YONU",
+    "action_label": "AKSIYON_KARARI",
+    "final_anomaly_score": "ANOMALI_SKORU",
+    "confidence": "GUVEN_SKORU",
+    "strongest_signal_name": "ANA_SINYAL_KODU",
+    "strongest_signal_label": "ANA_SINYAL",
+    "strongest_signal_z": "ANA_SINYAL_Z",
+    "strongest_signal_score_pct": "ANA_SINYAL_SKORU",
+    "evidence_strength": "KANIT_GUCU",
+    "signal_consistency": "SINYAL_TUTARLILIGI",
+    "peer_alignment_status": "PEER_UYUM_DURUMU",
+    "peer_alignment_direction": "PEER_FARK_YONU",
+    "peer_alignment_peer_z": "PEER_FARK_Z",
+    "peer_alignment_customer_z": "MUSTERI_FARK_Z",
+    "scoreability_status": "VERI_YETERLILIK_DURUMU",
+    "human_readable_reason": "ANOMALI_NEDENI",
+    "reason_codes": "NEDEN_KODLARI",
+    "expected_bill_amount": "BEKLENEN_FATURA_TTR",
+    "actual_to_expected_ratio": "GERCEK_BEKLENEN_ORANI",
+    "current_peer_median_bill": "PEER_GUNCEL_MEDYAN_FATURA_TTR",
+    "prior_median_bill": "MUSTERI_GECMIS_MEDYAN_FATURA_TTR",
+    "customer_trend_expected_bill": "MUSTERI_TREND_BEKLENEN_FATURA_TTR",
+    "customer_seasonal_expected_bill": "MUSTERI_SEZON_BEKLENEN_FATURA_TTR",
+    "peer_trend_expected_bill": "PEER_TREND_BEKLENEN_FATURA_TTR",
+    "peer_group_level_name": "PEER_SEVIYE",
+    "peer_group_columns": "PEER_KOLONLARI",
+    "prior_n": "MUSTERI_GECMIS_AY_ADET",
+    "prior_12_coverage": "SON_12_AY_KAPSAMA",
+    "gap_months_before_scoring": "SON_GAP_AY_ADET",
+    "data_gap_score": "DATA_GAP_SKORU",
+    "is_new_customer_in_scoring_month": "YENI_MUSTERI_MI",
+    "is_disconnected_customer": "KESIK_SERI_MI",
+    "previous_score_month": "ONCEKI_SKOR_DONEM_AY",
+    "previous_final_anomaly_score": "ONCEKI_ANOMALI_SKORU",
+    "score_delta_vs_previous_month": "ONCEKI_AYA_GORE_SKOR_FARKI",
+    "score_trend_diagnostic": "SKOR_TREND_DIAGNOSTIGI",
+    "historical_peer_z": "GECMIS_PEER_Z",
+    "historical_peer_score": "GECMIS_PEER_SKORU",
+    "current_peer_z": "GUNCEL_PEER_Z",
+    "current_peer_score": "GUNCEL_PEER_SKORU",
+    "peer_trend_z": "PEER_TREND_Z",
+    "peer_trend_score": "PEER_TREND_SKORU",
+    "turnover_intensity_z": "TURNOVER_YOGUNLUK_Z",
+    "turnover_intensity_score": "TURNOVER_YOGUNLUK_SKORU",
+    "self_history_z": "MUSTERI_GECMIS_Z",
+    "self_history_score": "MUSTERI_GECMIS_SKORU",
+    "customer_trend_z": "MUSTERI_TREND_Z",
+    "customer_trend_score": "MUSTERI_TREND_SKORU",
+    "customer_seasonal_z": "MUSTERI_SEZON_Z",
+    "customer_seasonal_score": "MUSTERI_SEZON_SKORU",
+    "customer_signal_score": "MUSTERI_SINYAL_SKORU",
+    "peer_signal_score": "PEER_SINYAL_SKORU",
+    "customer_family_p_value": "MUSTERI_AILE_P_DEGERI",
+    "peer_family_p_value": "PEER_AILE_P_DEGERI",
+    "customer_family_direction": "MUSTERI_AILE_YONU",
+    "peer_family_direction": "PEER_AILE_YONU",
+    "customer_reliability_status": "MUSTERI_GUVENILIRLIK_DURUMU",
+    "peer_reliability_status": "PEER_GUVENILIRLIK_DURUMU",
+    "primary_signal_name": "PRIMARY_SINYAL_KODU",
+    "primary_signal_family": "PRIMARY_SINYAL_AILESI",
+    "primary_signal_p_value": "PRIMARY_SINYAL_P_DEGERI",
+    "primary_signal_score": "PRIMARY_SINYAL_SKORU",
+    "secondary_signal_name": "SECONDARY_SINYAL_KODU",
+    "secondary_signal_p_value": "SECONDARY_SINYAL_P_DEGERI",
+    "evidence_driver": "EVIDENCE_DRIVER",
+    "evidence_conflict_flag": "EVIDENCE_CONFLICT_FLAG",
+    "customer_explainability_score": "MUSTERI_ACIKLANABILIRLIK_SKORU",
+    "customer_explainability_status": "MUSTERI_ACIKLANABILIRLIK_DURUMU",
+    "peer_representability_score": "PEER_TEMSIL_SKORU",
+    "peer_representability_status": "PEER_TEMSIL_DURUMU",
+    "peer_objective_score": "PEER_OBJECTIVE_SKORU",
+    "peer_support_score": "PEER_DESTEK_SKORU",
+    "peer_stability_score": "PEER_STABILITE_SKORU",
+    "peer_specificity_score": "PEER_SPESIFIKLIK_SKORU",
+    "peer_eligible_candidate_count": "PEER_UYGUN_ADAY_ADET",
+    "peer_distribution_quality_score": "PEER_DAGILIM_SKORU",
+    "peer_distribution_status": "PEER_DAGILIM_DURUMU",
+    "peer_log_ratio_skew": "PEER_LOG_ORAN_SKEW",
+    "peer_log_ratio_kurtosis": "PEER_LOG_ORAN_KURTOSIS",
+    "peer_tail_rate": "PEER_TAIL_RATE",
+    "peer_selection_reason": "PEER_SECIM_GEREKCESI",
+    "scoring_strategy": "SKORLAMA_STRATEJISI",
+    "behavior_cluster": "DAVRANIS_CLUSTER",
+    "behavior_history_n": "DAVRANIS_GECMIS_ADET",
+    "behavior_level_bucket": "DAVRANIS_SEVIYE_BUCKET",
+    "behavior_volatility_bucket": "DAVRANIS_VOLATILITE_BUCKET",
+    "behavior_trend_bucket": "DAVRANIS_TREND_BUCKET",
+    "behavior_median_bill": "DAVRANIS_MEDYAN_FATURA_TTR",
+    "behavior_volatility_log": "DAVRANIS_VOLATILITE_LOG",
+    "behavior_trend_slope": "DAVRANIS_TREND_SLOPE",
+    "customer_final_weight": "MUSTERI_FINAL_AGIRLIK",
+    "peer_final_weight": "PEER_FINAL_AGIRLIK",
+    "self_history_final_weight": "MUSTERI_GECMIS_AGIRLIK",
+    "customer_trend_final_weight": "MUSTERI_TREND_AGIRLIK",
+    "customer_seasonal_final_weight": "MUSTERI_SEZON_AGIRLIK",
+    "historical_peer_final_weight": "GECMIS_PEER_AGIRLIK",
+    "current_peer_final_weight": "GUNCEL_PEER_AGIRLIK",
+    "peer_trend_final_weight": "PEER_TREND_AGIRLIK",
+    "turnover_intensity_final_weight": "TURNOVER_YOGUNLUK_AGIRLIK",
+    "hist_n": "PEER_GECMIS_ADET",
+    "moy_n": "PEER_SEZON_AY_ADET",
+    "recent_n": "PEER_RECENT_ADET",
+    "current_n": "PEER_GUNCEL_ADET",
+    "ratio_n": "PEER_TURNOVER_ORAN_ADET",
+    "prior_12_n": "SON_12_AY_FATURA_ADET",
+    "customer_trend_n": "MUSTERI_TREND_ADET",
+    "customer_seasonal_n": "MUSTERI_SEZON_ADET",
+    "model_fill_policy": "MODEL_DOLDURMA_POLITIKASI",
+}
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Production monthly scoring entrypoint for invoice anomalies.")
+    parser.add_argument(
+        "--input",
+        default="data/raw/encrypted_final.csv",
+        help="CSV containing historical months plus the scoring month.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="outputs/production",
+        help="Fallback output directory when separate output dirs are not provided.",
+    )
+    parser.add_argument("--decision-output-dir", default=None, help="Directory for the production decision table.")
+    parser.add_argument("--detail-output-dir", default=None, help="Directory for the customer/peer detail table.")
+    parser.add_argument("--contract-output-dir", default=None, help="Directory for the implementation contract JSON.")
+    parser.add_argument("--encoding", default="auto")
+    parser.add_argument("--sep", default="auto")
+    parser.add_argument("--scoring-month", default="last", help="YYYYMM or 'last'.")
+    parser.add_argument("--rolling-window-months", type=int, default=36)
+    parser.add_argument("--watch-top-rate", type=float, default=0.030)
+    parser.add_argument("--high-top-rate", type=float, default=0.0075)
+    parser.add_argument("--include-prior-score-diagnostic", action="store_true")
+    parser.add_argument("--write-oracle", action="store_true", help="Write decision/detail outputs to Oracle.")
+    parser.add_argument("--oracle-info-dir", default=str(DEFAULT_ORACLE_INFO_DIR))
+    parser.add_argument("--oracle-config-file", default="ora_config.ini")
+    parser.add_argument("--oracle-job-file", default="job.ini")
+    parser.add_argument("--oracle-section", default=None)
+    parser.add_argument("--oracle-owner", default=None)
+    parser.add_argument("--oracle-decision-table", default="ANOMALY_DECISIONS")
+    parser.add_argument("--oracle-detail-table", default="ANOMALY_DECISION_DETAIL")
+    parser.add_argument(
+        "--oracle-write-mode",
+        choices=["append", "delete_insert", "truncate_insert", "replace"],
+        default=None,
+        help="append uses INI if_exists/default append; delete_insert deletes same scoring_month before insert.",
+    )
+    parser.add_argument("--oracle-chunksize", type=int, default=None)
+    parser.add_argument("--oracle-no-create-table", action="store_true")
+    return parser.parse_args()
+
+
+def fmt_num(value: Any, digits: int = 2) -> str:
+    if pd.isna(value):
+        return "n/a"
+    return f"{float(value):.{digits}f}"
+
+
+def input_column_map(profile: dict[str, Any]) -> dict[str, str]:
+    configured = profile.get("input_column_map")
+    if isinstance(configured, dict):
+        return {str(k): str(v) for k, v in configured.items()}
+    return {
+        "branch_id": "SUBE_KD",
+        "customer_id": profile.get("customer_id_column", "MUSTERINO"),
+        "customer_segment": "SEGMENTAD",
+        "invoice_month": "DONEM_AY",
+        "sector": "REF_ALTFAALIYET",
+        "active_subscriber": "AKTIF_ABONE",
+        "bill_amount": "FATURA_TTR",
+        "turnover_amt": "TURNOVER_AMT",
+    }
+
+
+def restore_input_columns(frame: pd.DataFrame, profile: dict[str, Any]) -> pd.DataFrame:
+    col_map = input_column_map(profile)
+    out = pd.DataFrame(index=frame.index)
+    for logical, normalized in LOGICAL_TO_NORMALIZED.items():
+        source_name = col_map.get(logical)
+        if not source_name or normalized not in frame.columns:
+            continue
+        out[source_name] = frame[normalized]
+    return out
+
+
+def input_output_columns(profile: dict[str, Any], available_columns: list[str]) -> list[str]:
+    source_columns = [str(col) for col in profile.get("source_columns", [])]
+    if source_columns:
+        return [col for col in source_columns if col in available_columns]
+    preferred = ["SUBE_KD", "MUSTERINO", "KVKK_CUST", "SEGMENTAD", "DONEM_AY", "REF_ALTFAALIYET", "AKTIF_ABONE", "FATURA_TTR", "TURNOVER_AMT"]
+    return [col for col in preferred if col in available_columns]
+
+
+def source_columns_for_scoring(prepared: pd.DataFrame, profile: dict[str, Any], scoring_month: int) -> pd.DataFrame:
+    source_columns = [col for col in profile.get("source_columns", []) if col in prepared.columns]
+    if not source_columns:
+        return pd.DataFrame()
+    columns = list(dict.fromkeys(["customer_id", "invoice_month", *source_columns]))
+    source_rows = prepared.loc[prepared["invoice_month"].eq(scoring_month), columns].copy()
+    return source_rows.drop_duplicates(["customer_id", "invoice_month"], keep="last")
+
+
+def apply_source_column_policy(
+    profile: dict[str, Any],
+    output_source_columns: list[str] | None = None,
+    exclude_source_columns: list[str] | None = None,
+) -> dict[str, Any]:
+    out = dict(profile)
+    source_columns = [str(col) for col in out.get("source_columns", [])]
+    if output_source_columns is not None:
+        allowed = set(str(col) for col in output_source_columns)
+        source_columns = [col for col in source_columns if col in allowed]
+    excluded = set(str(col) for col in (exclude_source_columns or []))
+    if excluded:
+        source_columns = [col for col in source_columns if col not in excluded]
+    out["source_columns"] = source_columns
+    return out
+
+
+def peer_role_exclusions(profile: dict[str, Any]) -> list[str]:
+    normalized_names = set(LOGICAL_TO_NORMALIZED.values())
+    source_map = profile.get("input_column_map", {})
+    if not isinstance(source_map, dict):
+        return []
+    return [
+        str(source_col)
+        for source_col in source_map.values()
+        if source_col and str(source_col) not in normalized_names
+    ]
+
+
+def add_model_period(frame: pd.DataFrame, scoring_month: int) -> pd.DataFrame:
+    out = frame.copy()
+    out["MODEL_DONEM_AY"] = int(scoring_month)
+    return out
+
+
+def anomaly_flag_from_label(label: Any) -> int:
+    return 0 if str(label) in {"NORMAL", "NOT_SCORED", "nan", "None"} else 1
+
+
+def operational_decision(action_label: Any, anomaly_label: Any, is_scored: bool = True) -> str:
+    if not is_scored:
+        return "NOT_SCORED"
+    action = str(action_label)
+    label = str(anomaly_label)
+    if action == "NORMAL" or label == "NORMAL":
+        return "NORMAL"
+    if action.startswith("LIKELY_"):
+        return "LIKELY_ANOMALY"
+    if action.startswith("WATCHLIST"):
+        return "WATCHLIST"
+    if "PEER_ASSIGNMENT_MISMATCH" in action:
+        return "REVIEW_PEER_ASSIGNMENT"
+    if "PEER_SELF_CONFLICT" in action:
+        return "REVIEW_SIGNAL_CONFLICT"
+    if "LOW_CONFIDENCE" in action or "SPARSE_HISTORY" in action:
+        return "REVIEW_LOW_CONFIDENCE"
+    return "REVIEW_AMOUNT_ANOMALY"
+
+
+def strongest_signal(row: pd.Series) -> tuple[str, str, float, float]:
+    primary_signal = row.get("primary_signal_name", "")
+    if isinstance(primary_signal, str) and primary_signal:
+        signal_lookup = {signal_name: (z_col, score_col, signal_label) for signal_name, z_col, score_col, signal_label in SIGNAL_COLUMNS}
+        if primary_signal in signal_lookup:
+            z_col, score_col, signal_label = signal_lookup[primary_signal]
+            score = row.get("primary_signal_score", row.get(score_col, np.nan))
+            return (primary_signal, signal_label, row.get(z_col, np.nan), score)
+    best = ("none", "major sinyal yok", np.nan, 0.0)
+    direction = str(row.get("anomaly_direction", "NONE"))
+    candidates: list[tuple[str, str, float, float]] = []
+    for signal_name, z_col, score_col, signal_label in SIGNAL_COLUMNS:
+        score = row.get(score_col, np.nan)
+        if pd.isna(score):
+            continue
+        z_value = row.get(z_col, np.nan)
+        if pd.isna(z_value):
+            continue
+        candidate = (signal_name, signal_label, float(z_value), float(score))
+        candidates.append(candidate)
+        aligned = (
+            direction == "NONE"
+            or (direction == "LOW" and float(z_value) < 0)
+            or (direction == "HIGH" and float(z_value) > 0)
+        )
+        if aligned and float(score) >= float(best[3]):
+            best = candidate
+    if best[0] == "none" and candidates:
+        best = max(candidates, key=lambda item: item[3])
+    return best
+
+
+def safe_ratio(numerator: Any, denominator: Any) -> float:
+    if pd.isna(numerator) or pd.isna(denominator):
+        return float("nan")
+    denom = float(denominator)
+    if abs(denom) < 1e-9:
+        return float("nan")
+    return float(numerator) / denom
+
+
+def decision_label_text(row: pd.Series) -> str:
+    label = str(row.get("anomaly_label", "NORMAL"))
+    action = str(row.get("action_label", "NORMAL"))
+    if label == "NORMAL":
+        return "anomali degil"
+    if "PEER_ASSIGNMENT_MISMATCH" in action:
+        return "peer atama review"
+    if "PEER_SELF_CONFLICT" in action:
+        return "sinyal celiskisi review"
+    if "LOW_CONFIDENCE" in action or "SPARSE_HISTORY" in action:
+        return "dusuk guven review"
+    if action.startswith("WATCHLIST"):
+        return "watchlist"
+    if label == "HIGH_BILL_ANOMALY" or action.startswith("LIKELY_HIGH"):
+        return "yuksek fatura anomalisi"
+    if label == "LOW_BILL_ANOMALY" or action.startswith("LIKELY_LOW"):
+        return "dusuk fatura anomalisi"
+    return "anomali review"
+
+
+def strongest_signal_detail(row: pd.Series) -> str:
+    signal_name = str(row.get("strongest_signal_name", "none"))
+    actual = row.get("bill_amount", np.nan)
+    expected = row.get("expected_bill_amount", np.nan)
+
+    if signal_name == "customer_seasonal":
+        seasonal = row.get("customer_seasonal_expected_bill", np.nan)
+        return (
+            f"Skorlanan fatura {fmt_num(actual)}; musterinin ayni sezon beklentisi "
+            f"{fmt_num(seasonal)}; fatura/sezonsal beklenti orani {fmt_num(safe_ratio(actual, seasonal), 3)}."
+        )
+    if signal_name == "customer_trend":
+        trend = row.get("customer_trend_expected_bill", np.nan)
+        return (
+            f"Skorlanan fatura {fmt_num(actual)}; musterinin trend beklentisi "
+            f"{fmt_num(trend)}; fatura/trend beklenti orani {fmt_num(safe_ratio(actual, trend), 3)}."
+        )
+    if signal_name == "self_history":
+        prior = row.get("prior_median_bill", np.nan)
+        return (
+            f"Skorlanan fatura {fmt_num(actual)}; musterinin gecmis medyani "
+            f"{fmt_num(prior)}; fatura/kendi medyan orani {fmt_num(safe_ratio(actual, prior), 3)}."
+        )
+    if signal_name == "current_peer":
+        current_peer = row.get("current_peer_median_bill", np.nan)
+        return (
+            f"Skorlanan fatura {fmt_num(actual)}; ayni ay peer medyani "
+            f"{fmt_num(current_peer)}; fatura/current peer orani {fmt_num(safe_ratio(actual, current_peer), 3)}."
+        )
+    if signal_name == "historical_peer":
+        return (
+            f"Skorlanan fatura {fmt_num(actual)}; peer beklenen fatura "
+            f"{fmt_num(expected)}; fatura/peer beklenen orani {fmt_num(safe_ratio(actual, expected), 3)}."
+        )
+    if signal_name == "peer_trend":
+        peer_trend = row.get("peer_trend_expected_bill", np.nan)
+        return (
+            f"Skorlanan fatura {fmt_num(actual)}; peer trend beklentisi "
+            f"{fmt_num(peer_trend)}; fatura/peer trend orani {fmt_num(safe_ratio(actual, peer_trend), 3)}."
+        )
+    if signal_name == "turnover_intensity":
+        bill_turnover = row.get("bill_to_turnover_ratio", np.nan)
+        return (
+            f"Skorlanan fatura {fmt_num(actual)}; turnover {fmt_num(row.get('turnover_amt', np.nan))}; "
+            f"fatura/turnover orani {fmt_num(bill_turnover, 6)}."
+        )
+    return (
+        f"Skorlanan fatura {fmt_num(actual)}; beklenen fatura {fmt_num(expected)}; "
+        f"fatura/beklenen orani {fmt_num(safe_ratio(actual, expected), 3)}."
+    )
+
+
+def augment_scores_for_outputs(scores: pd.DataFrame) -> pd.DataFrame:
+    if len(scores) == 0:
+        return scores.copy()
+    out = scores.copy()
+    signal_rows = out.apply(strongest_signal, axis=1, result_type="expand")
+    signal_rows.columns = [
+        "strongest_signal_name",
+        "strongest_signal_label",
+        "strongest_signal_z",
+        "strongest_signal_score_pct",
+    ]
+    out = pd.concat([out.reset_index(drop=True), signal_rows.reset_index(drop=True)], axis=1)
+    out["operational_decision"] = out.apply(
+        lambda row: operational_decision(row.get("action_label"), row.get("anomaly_label"), True),
+        axis=1,
+    )
+    out["is_amount_anomaly"] = out["anomaly_label"].isin(["HIGH_BILL_ANOMALY", "LOW_BILL_ANOMALY"])
+    out["human_readable_reason"] = out.apply(build_human_reason, axis=1)
+    return out
+
+
+def build_human_reason(row: pd.Series) -> str:
+    label = str(row.get("anomaly_label", "NORMAL"))
+    score = row.get("final_anomaly_score", np.nan)
+    confidence = row.get("confidence", np.nan)
+    signal = row.get("strongest_signal_label", "major sinyal yok")
+    signal_score = row.get("strongest_signal_score_pct", np.nan)
+    signal_detail = strongest_signal_detail(row)
+    decision = decision_label_text(row)
+
+    if label == "NORMAL":
+        return (
+            f"Ana sinyal: {signal} ({fmt_num(signal_score, 1)}%). {signal_detail} "
+            f"Karar: {decision}; skor {fmt_num(score, 1)}, guven {fmt_num(confidence, 1)}%."
+        )
+
+    return (
+        f"Ana neden: {signal} ({fmt_num(signal_score, 1)}%). {signal_detail} "
+        f"Karar: {decision}; skor {fmt_num(score, 1)}, guven {fmt_num(confidence, 1)}%."
+    )
+
+
+def build_not_scored_reason(row: pd.Series) -> str:
+    reason = row.get("not_scored_reason", "UNKNOWN")
+    return (
+        f"Skorlanamadi: {reason}. Fatura tutari doldurulmadi; bu musteri icin secilebilir peer destegi "
+        "veya gecerli fatura bilgisi yeterli olmadigi icin anomali karari uretilemedi."
+    )
+
+
+def build_decision_table(
+    scores: pd.DataFrame,
+    not_scored: pd.DataFrame,
+    profile: dict[str, Any],
+    scoring_month: int,
+    prepared: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    scored = scores.copy()
+    scored["ANOMALI_FLAG"] = scored["anomaly_label"].map(anomaly_flag_from_label).astype(int)
+    source_rows = source_columns_for_scoring(prepared, profile, scoring_month) if prepared is not None else pd.DataFrame()
+    source_column_names = set(str(col) for col in profile.get("source_columns", []))
+    internal_key_cols = [col for col in ["customer_id", "invoice_month"] if col not in source_column_names]
+    if len(source_rows):
+        scored_out = scored[["customer_id", "invoice_month"]].merge(source_rows, on=["customer_id", "invoice_month"], how="left")
+        scored_out = scored_out.drop(columns=internal_key_cols, errors="ignore")
+    else:
+        scored_out = restore_input_columns(scored, profile)
+    scored_out["ANOMALI_FLAG"] = scored["ANOMALI_FLAG"].to_numpy()
+    scored_out["ANOMALI_NEDENI"] = scored["human_readable_reason"].to_numpy()
+
+    pieces = [scored_out]
+
+    if len(not_scored):
+        ns = not_scored.copy()
+        ns["ANOMALI_FLAG"] = 0
+        ns["operational_decision"] = "NOT_SCORED"
+        ns["anomaly_label"] = "NOT_SCORED"
+        ns["anomaly_direction"] = "NONE"
+        ns["action_label"] = "NOT_SCORED"
+        ns["human_readable_reason"] = ns.apply(build_not_scored_reason, axis=1)
+
+        if len(source_rows):
+            ns_out = ns[["customer_id", "invoice_month"]].merge(source_rows, on=["customer_id", "invoice_month"], how="left")
+            ns_out = ns_out.drop(columns=internal_key_cols, errors="ignore")
+        else:
+            ns_out = restore_input_columns(ns, profile)
+        ns_out["ANOMALI_FLAG"] = ns["ANOMALI_FLAG"].to_numpy()
+        ns_out["ANOMALI_NEDENI"] = ns["human_readable_reason"].to_numpy()
+        pieces.append(ns_out)
+
+    out = pd.concat(pieces, ignore_index=True, sort=False)
+    input_cols = input_output_columns(profile, list(out.columns))
+    output_cols = input_cols + ["ANOMALI_FLAG", "ANOMALI_NEDENI"]
+    source_names = input_column_map(profile)
+    sort_cols = [
+        col
+        for col in [source_names.get("customer_id", "MUSTERINO"), source_names.get("invoice_month", "DONEM_AY")]
+        if col in out.columns
+    ]
+    if sort_cols:
+        return out[output_cols].sort_values(sort_cols).reset_index(drop=True)
+    return out[output_cols].reset_index(drop=True)
+
+
+def month_range(start_period: int, end_period: int) -> list[int]:
+    start_year, start_month = divmod(int(start_period), 100)
+    end_year, end_month = divmod(int(end_period), 100)
+    periods: list[int] = []
+    year, month = start_year, start_month
+    while (year, month) <= (end_year, end_month):
+        periods.append(year * 100 + month)
+        month += 1
+        if month == 13:
+            year += 1
+            month = 1
+    return periods
+
+
+def build_peer_monthly_stats(prepared: pd.DataFrame, peer_group_columns: list[str]) -> dict[str, pd.DataFrame]:
+    valid = prepared.loc[prepared["valid_bill_for_model"] & prepared["bill_amount"].notna()].copy()
+    valid["bill_to_turnover_ratio"] = np.where(
+        valid["turnover_for_model"].astype(float).gt(0),
+        valid["bill_amount"] / valid["turnover_for_model"].astype(float),
+        np.nan,
+    )
+    out: dict[str, pd.DataFrame] = {}
+    for group_cols_text in sorted(set(col for col in peer_group_columns if isinstance(col, str) and col)):
+        cols = [] if group_cols_text == "global" else group_cols_text.split("+")
+        key_cols = ["_global_key"] if not cols else cols
+        stats = (
+            valid.groupby(["invoice_month", *key_cols], dropna=False)
+            .agg(
+                peer_month_row_count=("customer_id", "size"),
+                peer_month_customer_count=("customer_id", "nunique"),
+                peer_month_bill_median=("bill_amount", "median"),
+                peer_month_bill_mean=("bill_amount", "mean"),
+                peer_month_turnover_median=("turnover_for_model", "median"),
+                peer_month_bill_to_turnover_median=("bill_to_turnover_ratio", "median"),
+            )
+            .reset_index()
+        )
+        stats = stats.rename(columns={col: f"peer_key_{col}" for col in key_cols})
+        stats["peer_group_columns"] = group_cols_text
+        out[group_cols_text] = stats
+    return out
+
+
+def build_detail_context(scores: pd.DataFrame, not_scored: pd.DataFrame) -> pd.DataFrame:
+    dynamic_peer_cols = sorted(
+        {
+            col
+            for cols_text in scores.get("peer_group_columns", pd.Series(dtype=object)).dropna().astype(str)
+            for col in ([] if cols_text == "global" else cols_text.split("+"))
+            if col in scores.columns
+        }
+    )
+    scored_cols = [
+        "customer_id",
+        "invoice_month",
+        "calendar_month",
+        "branch_id",
+        "customer_segment",
+        "sector",
+        "turnover_bucket",
+        "active_subscriber_bucket",
+        "bill_amount",
+        "turnover_amt",
+        "expected_bill_amount",
+        "current_peer_median_bill",
+        "prior_median_bill",
+        "peer_trend_expected_bill",
+        "customer_trend_expected_bill",
+        "customer_seasonal_expected_bill",
+        "actual_to_expected_ratio",
+        "bill_to_turnover_ratio",
+        "historical_peer_z",
+        "current_peer_z",
+        "peer_trend_z",
+        "turnover_intensity_z",
+        "self_history_z",
+        "customer_trend_z",
+        "customer_seasonal_z",
+        "historical_peer_score",
+        "current_peer_score",
+        "peer_trend_score",
+        "turnover_intensity_score",
+        "self_history_score",
+        "customer_trend_score",
+        "customer_seasonal_score",
+        "customer_signal_score",
+        "peer_signal_score",
+        "customer_family_p_value",
+        "peer_family_p_value",
+        "customer_family_direction",
+        "peer_family_direction",
+        "customer_reliability_status",
+        "peer_reliability_status",
+        "primary_signal_name",
+        "primary_signal_family",
+        "primary_signal_p_value",
+        "primary_signal_score",
+        "secondary_signal_name",
+        "secondary_signal_p_value",
+        "evidence_driver",
+        "evidence_conflict_flag",
+        "customer_explainability_score",
+        "customer_explainability_status",
+        "peer_representability_score",
+        "peer_representability_status",
+        "peer_objective_score",
+        "peer_support_score",
+        "peer_stability_score",
+        "peer_specificity_score",
+        "peer_eligible_candidate_count",
+        "peer_distribution_quality_score",
+        "peer_distribution_status",
+        "peer_log_ratio_skew",
+        "peer_log_ratio_kurtosis",
+        "peer_tail_rate",
+        "peer_selection_reason",
+        "scoring_strategy",
+        "behavior_cluster",
+        "behavior_history_n",
+        "behavior_level_bucket",
+        "behavior_volatility_bucket",
+        "behavior_trend_bucket",
+        "behavior_median_bill",
+        "behavior_volatility_log",
+        "behavior_trend_slope",
+        "customer_final_weight",
+        "peer_final_weight",
+        "self_history_final_weight",
+        "customer_trend_final_weight",
+        "customer_seasonal_final_weight",
+        "historical_peer_final_weight",
+        "current_peer_final_weight",
+        "peer_trend_final_weight",
+        "turnover_intensity_final_weight",
+        "final_anomaly_score",
+        "confidence",
+        "anomaly_direction",
+        "anomaly_label",
+        "action_label",
+        "operational_decision",
+        "evidence_strength",
+        "signal_consistency",
+        "peer_alignment_status",
+        "peer_alignment_direction",
+        "peer_alignment_peer_z",
+        "peer_alignment_customer_z",
+        "scoreability_status",
+        "reason_codes",
+        "human_readable_reason",
+        "strongest_signal_name",
+        "strongest_signal_label",
+        "strongest_signal_z",
+        "strongest_signal_score_pct",
+        "peer_group_level_name",
+        "peer_group_columns",
+        "hist_n",
+        "moy_n",
+        "recent_n",
+        "current_n",
+        "ratio_n",
+        "prior_n",
+        "prior_12_n",
+        "customer_trend_n",
+        "customer_seasonal_n",
+        "prior_12_coverage",
+        "gap_months_before_scoring",
+        "data_gap_score",
+        "is_new_customer_in_scoring_month",
+        "is_disconnected_customer",
+        "model_fill_policy",
+        "previous_score_month",
+        "previous_final_anomaly_score",
+        "score_delta_vs_previous_month",
+        "score_trend_diagnostic",
+    ]
+    scored_cols.extend(col for col in dynamic_peer_cols if col not in scored_cols)
+    scored = scores[[col for col in scored_cols if col in scores.columns]].copy()
+    scored["is_scored"] = True
+
+    if len(not_scored):
+        ns = not_scored.copy()
+        ns["is_scored"] = False
+        ns["anomaly_label"] = "NOT_SCORED"
+        ns["action_label"] = "NOT_SCORED"
+        ns["operational_decision"] = "NOT_SCORED"
+        ns["evidence_strength"] = "not_scored"
+        ns["signal_consistency"] = "not_scored"
+        ns["human_readable_reason"] = ns.apply(build_not_scored_reason, axis=1)
+        ns["reason_codes"] = ns.get("not_scored_reason", "NOT_SCORED")
+        for col in scored_cols:
+            if col not in ns.columns:
+                ns[col] = np.nan
+        scored = pd.concat([scored, ns[[col for col in scored.columns if col in ns.columns]]], ignore_index=True, sort=False)
+
+    rename = {
+        "invoice_month": "scoring_invoice_month",
+        "calendar_month": "scoring_calendar_month",
+        "branch_id": "scoring_branch_id",
+        "customer_segment": "scoring_customer_segment",
+        "sector": "scoring_sector",
+        "turnover_bucket": "scoring_turnover_bucket",
+        "active_subscriber_bucket": "scoring_active_subscriber_bucket",
+        "bill_amount": "scoring_bill_amount",
+        "turnover_amt": "scoring_turnover_amt",
+        "expected_bill_amount": "scoring_peer_expected_bill_amount",
+        "prior_median_bill": "scoring_customer_prior_median_bill",
+        "human_readable_reason": "decision_reason_sentence",
+        "final_anomaly_score": "anomaly_score",
+        "confidence": "confidence_pct",
+    }
+    context = scored.rename(columns=rename)
+    peer_key_columns = list(dict.fromkeys([*PEER_KEY_COLUMNS, *dynamic_peer_cols]))
+    for col in peer_key_columns:
+        source = rename.get(col, col)
+        if source in context.columns:
+            context[f"peer_key_{col}"] = context[source]
+        elif col == "_global_key":
+            context[f"peer_key_{col}"] = "ALL"
+        else:
+            context[f"peer_key_{col}"] = np.nan
+    context["peer_key__global_key"] = "ALL"
+    return context
+
+
+def build_month_comment(row: pd.Series) -> str:
+    if bool(row.get("is_scoring_month", False)):
+        return row.get("decision_reason_sentence", "")
+    if bool(row.get("customer_bill_missing_flag", False)):
+        return "Bu ay musteri faturasi yok; tutar doldurulmadi ve gap/coverage bilgisinde takip edilir."
+    ratio = row.get("customer_vs_peer_month_ratio", np.nan)
+    if pd.isna(ratio):
+        return "Bu ay musteri faturasi var; peer medyani hesaplanamadigi icin aylik peer karsilastirmasi yok."
+    percentile = row.get("customer_vs_peer_ratio_percentile", np.nan)
+    reference_n = row.get("customer_vs_peer_ratio_reference_n", np.nan)
+    if pd.notna(percentile):
+        return (
+            f"Gecmis ayda fatura/peer orani {fmt_num(ratio, 2)}; secili peer oran "
+            f"dagiliminda persentil {fmt_num(float(percentile) * 100, 1)} "
+            f"(referans n={fmt_num(reference_n, 0)})."
+        )
+    return f"Gecmis ayda musteri faturasi peer medyanina yakin; oran {fmt_num(ratio, 2)}."
+
+
+def add_peer_ratio_context(detail: pd.DataFrame) -> pd.DataFrame:
+    out = detail.copy()
+    out["customer_vs_peer_ratio_percentile"] = np.nan
+    out["customer_vs_peer_ratio_reference_n"] = np.nan
+
+    scoring = out["is_scoring_month"].fillna(False)
+    missing = out["customer_bill_missing_flag"].fillna(False)
+    ratio = out["customer_vs_peer_month_ratio"]
+    valid_mask = ~scoring & ~missing & ratio.notna() & ratio.astype(float).gt(0)
+    if not bool(valid_mask.any()):
+        return out
+
+    work = out.loc[valid_mask].copy()
+    work["_log_ratio"] = np.log(work["customer_vs_peer_month_ratio"].astype(float).clip(lower=1e-9))
+    peer_key_cols = [
+        col
+        for col in out.columns
+        if col.startswith("peer_key_") and work[col].notna().any()
+    ]
+    group_cols = ["peer_group_level_name", "peer_group_columns", *peer_key_cols]
+    group_size = work.groupby(group_cols, dropna=False)["_log_ratio"].transform("size")
+    group_pct = work.groupby(group_cols, dropna=False)["_log_ratio"].rank(pct=True, method="average")
+
+    out.loc[work.index, "customer_vs_peer_ratio_percentile"] = group_pct.astype(float)
+    out.loc[work.index, "customer_vs_peer_ratio_reference_n"] = group_size.astype(float)
+    return out
+
+
+def assign_month_comments(detail: pd.DataFrame) -> pd.Series:
+    comments = pd.Series("Gecmis ayda musteri faturasi peer medyanina yakin.", index=detail.index, dtype=object)
+    scoring = detail["is_scoring_month"].fillna(False)
+    missing = detail["customer_bill_missing_flag"].fillna(False) & ~scoring
+    ratio = detail["customer_vs_peer_month_ratio"]
+    comments.loc[missing] = "Bu ay musteri faturasi yok; tutar doldurulmadi ve gap/coverage bilgisinde takip edilir."
+    comments.loc[ratio.isna() & ~missing & ~scoring] = (
+        "Bu ay musteri faturasi var; peer medyani hesaplanamadigi icin aylik peer karsilastirmasi yok."
+    )
+    contextual = ~missing & ~scoring & ratio.notna() & detail["customer_vs_peer_ratio_percentile"].notna()
+    comments.loc[contextual] = (
+        "Gecmis ayda fatura/peer orani "
+        + ratio.loc[contextual].map(lambda value: fmt_num(value, 2))
+        + "; secili peer oran dagiliminda persentil "
+        + (detail.loc[contextual, "customer_vs_peer_ratio_percentile"] * 100).map(lambda value: fmt_num(value, 1))
+        + " (referans n="
+        + detail.loc[contextual, "customer_vs_peer_ratio_reference_n"].map(lambda value: fmt_num(value, 0))
+        + ")."
+    )
+    comments.loc[scoring] = detail.loc[scoring, "decision_reason_sentence"].fillna("")
+    return comments
+
+
+def merge_peer_stats(detail: pd.DataFrame, peer_stats: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    if not peer_stats:
+        return detail
+    detail = detail.copy()
+    detail["_detail_row_id"] = np.arange(len(detail))
+    pieces: list[pd.DataFrame] = []
+    handled = pd.Series(False, index=detail.index)
+    peer_stat_cols = [
+        "peer_month_row_count",
+        "peer_month_customer_count",
+        "peer_month_bill_median",
+        "peer_month_bill_mean",
+        "peer_month_turnover_median",
+        "peer_month_bill_to_turnover_median",
+    ]
+    for group_cols_text, stats in peer_stats.items():
+        mask = detail["peer_group_columns"].eq(group_cols_text)
+        if not bool(mask.any()):
+            continue
+        cols = [] if group_cols_text == "global" else group_cols_text.split("+")
+        key_cols = ["_global_key"] if not cols else cols
+        merge_keys = ["invoice_month", *[f"peer_key_{col}" for col in key_cols]]
+        sub = detail.loc[mask].merge(stats, on=merge_keys, how="left", suffixes=("", "_peer_stats"))
+        pieces.append(sub)
+        handled.loc[mask] = True
+
+    rest = detail.loc[~handled].copy()
+    for col in peer_stat_cols:
+        rest[col] = np.nan
+    pieces.append(rest)
+    out = pd.concat(pieces, ignore_index=True, sort=False)
+    return out.sort_values("_detail_row_id").drop(columns=["_detail_row_id"])
+
+
+def build_detail_table(
+    prepared: pd.DataFrame,
+    scores: pd.DataFrame,
+    not_scored: pd.DataFrame,
+    scoring_month: int,
+    profile: dict[str, Any],
+) -> pd.DataFrame:
+    history = prepared.copy()
+    edges = core.fit_turnover_edges(history.loc[history["invoice_month"].lt(scoring_month)])
+    history = core.assign_turnover_bucket(history, edges)
+    behavior = core.build_behavior_clusters(history.loc[history["invoice_month"].lt(scoring_month)])
+    history = core.assign_behavior_clusters(history, behavior)
+    history["bill_to_turnover_ratio"] = np.where(
+        history["turnover_for_model"].astype(float).gt(0),
+        history["bill_amount"] / history["turnover_for_model"].astype(float),
+        np.nan,
+    )
+
+    context = build_detail_context(scores, not_scored)
+    periods = month_range(int(history["invoice_month"].min()), int(scoring_month))
+    month_frame = pd.DataFrame({"invoice_month": periods})
+    month_frame["calendar_month"] = month_frame["invoice_month"].map(core.period_label)
+    first_month = (
+        history.groupby("customer_id", dropna=False)["invoice_month"]
+        .min()
+        .reset_index(name="customer_first_invoice_month")
+    )
+    customers = context[["customer_id"]].drop_duplicates().merge(first_month, on="customer_id", how="left")
+    customers["customer_first_invoice_month"] = customers["customer_first_invoice_month"].fillna(scoring_month).astype(int)
+    grid = customers.merge(month_frame, how="cross")
+    grid = grid.loc[grid["invoice_month"].ge(grid["customer_first_invoice_month"])].drop(
+        columns=["customer_first_invoice_month"]
+    )
+
+    series_cols = [
+        "customer_id",
+        "invoice_month",
+        "branch_id",
+        "customer_segment",
+        "sector",
+        "active_subscriber",
+        "active_subscriber_bucket",
+        "active_subscriber_missing_flag",
+        "turnover_bucket",
+        "bill_amount",
+        "turnover_amt",
+        "bill_to_turnover_ratio",
+        "source_row_count",
+        "customer_obs_count_total",
+        "month_gap_from_previous",
+    ]
+    customer_series = history[[col for col in series_cols if col in history.columns]].rename(
+        columns={
+            "branch_id": "customer_month_branch_id",
+            "customer_segment": "customer_month_segment",
+            "sector": "customer_month_sector",
+            "active_subscriber": "customer_month_active_subscriber",
+            "active_subscriber_bucket": "customer_month_active_subscriber_bucket",
+            "active_subscriber_missing_flag": "customer_month_active_subscriber_missing_flag",
+            "turnover_bucket": "customer_month_turnover_bucket",
+            "bill_amount": "customer_bill_amount",
+            "turnover_amt": "customer_turnover_amt",
+            "bill_to_turnover_ratio": "customer_bill_to_turnover_ratio",
+        }
+    )
+    detail = grid.merge(customer_series, on=["customer_id", "invoice_month"], how="left")
+    detail = detail.merge(context, on="customer_id", how="left")
+    detail["is_scoring_month"] = detail["invoice_month"].eq(scoring_month)
+    detail["customer_bill_missing_flag"] = detail["customer_bill_amount"].isna()
+
+    peer_stats = build_peer_monthly_stats(history, context["peer_group_columns"].dropna().astype(str).tolist())
+    detail = merge_peer_stats(detail, peer_stats)
+    detail["customer_vs_peer_month_ratio"] = detail["customer_bill_amount"] / detail["peer_month_bill_median"].clip(lower=1e-6)
+    detail = add_peer_ratio_context(detail)
+    detail["month_level_comment"] = assign_month_comments(detail)
+
+    scoring_only_cols = [
+        "scoring_bill_amount",
+        "scoring_peer_expected_bill_amount",
+        "current_peer_median_bill",
+        "scoring_customer_prior_median_bill",
+        "customer_trend_expected_bill",
+        "customer_seasonal_expected_bill",
+        "peer_trend_expected_bill",
+        "actual_to_expected_ratio",
+        "anomaly_score",
+        "confidence_pct",
+        "anomaly_label",
+        "anomaly_direction",
+        "operational_decision",
+        "action_label",
+        "evidence_strength",
+        "signal_consistency",
+        "peer_alignment_status",
+        "peer_alignment_direction",
+        "peer_alignment_peer_z",
+        "peer_alignment_customer_z",
+        "scoreability_status",
+        "reason_codes",
+        "decision_reason_sentence",
+        "strongest_signal_name",
+        "strongest_signal_label",
+        "strongest_signal_z",
+        "strongest_signal_score_pct",
+        "historical_peer_z",
+        "historical_peer_score",
+        "current_peer_z",
+        "current_peer_score",
+        "peer_trend_z",
+        "peer_trend_score",
+        "turnover_intensity_z",
+        "turnover_intensity_score",
+        "self_history_z",
+        "self_history_score",
+        "customer_trend_z",
+        "customer_trend_score",
+        "customer_seasonal_z",
+        "customer_seasonal_score",
+        "customer_signal_score",
+        "peer_signal_score",
+        "customer_family_p_value",
+        "peer_family_p_value",
+        "customer_family_direction",
+        "peer_family_direction",
+        "customer_reliability_status",
+        "peer_reliability_status",
+        "primary_signal_name",
+        "primary_signal_family",
+        "primary_signal_p_value",
+        "primary_signal_score",
+        "secondary_signal_name",
+        "secondary_signal_p_value",
+        "evidence_driver",
+        "evidence_conflict_flag",
+        "customer_explainability_score",
+        "customer_explainability_status",
+        "peer_representability_score",
+        "peer_representability_status",
+        "peer_objective_score",
+        "peer_support_score",
+        "peer_stability_score",
+        "peer_specificity_score",
+        "peer_eligible_candidate_count",
+        "peer_distribution_quality_score",
+        "peer_distribution_status",
+        "peer_log_ratio_skew",
+        "peer_log_ratio_kurtosis",
+        "peer_tail_rate",
+        "peer_selection_reason",
+        "scoring_strategy",
+        "behavior_cluster",
+        "behavior_history_n",
+        "behavior_level_bucket",
+        "behavior_volatility_bucket",
+        "behavior_trend_bucket",
+        "behavior_median_bill",
+        "behavior_volatility_log",
+        "behavior_trend_slope",
+        "customer_final_weight",
+        "peer_final_weight",
+        "self_history_final_weight",
+        "customer_trend_final_weight",
+        "customer_seasonal_final_weight",
+        "historical_peer_final_weight",
+        "current_peer_final_weight",
+        "peer_trend_final_weight",
+        "turnover_intensity_final_weight",
+        "previous_score_month",
+        "previous_final_anomaly_score",
+        "score_delta_vs_previous_month",
+        "score_trend_diagnostic",
+    ]
+    non_scoring_mask = ~detail["is_scoring_month"]
+    for col in scoring_only_cols:
+        if col in detail.columns:
+            if pd.api.types.is_bool_dtype(detail[col]):
+                detail[col] = detail[col].astype("boolean")
+                detail.loc[non_scoring_mask, col] = pd.NA
+            else:
+                detail.loc[non_scoring_mask, col] = np.nan
+
+    source_names = input_column_map(profile)
+    out = pd.DataFrame(index=detail.index)
+    for logical, source_name in source_names.items():
+        if logical == "customer_id":
+            out[source_name] = detail["customer_id"]
+        elif logical == "invoice_month":
+            out[source_name] = detail["invoice_month"]
+        elif logical == "branch_id":
+            out[source_name] = detail["customer_month_branch_id"]
+        elif logical == "customer_segment":
+            out[source_name] = detail["customer_month_segment"]
+        elif logical == "sector":
+            out[source_name] = detail["customer_month_sector"]
+        elif logical == "active_subscriber":
+            out[source_name] = detail["customer_month_active_subscriber"]
+        elif logical == "bill_amount":
+            out[source_name] = detail["customer_bill_amount"]
+        elif logical == "turnover_amt":
+            out[source_name] = detail["customer_turnover_amt"]
+
+    out["FATURA_EKSIK_MI"] = detail["customer_bill_missing_flag"]
+    out["MUSTERI_FATURA_TURNOVER_ORANI"] = detail["customer_bill_to_turnover_ratio"]
+    out["MUSTERI_TOPLAM_AY_ADET"] = detail["customer_obs_count_total"]
+    out["ONCEKI_AYA_GAP"] = detail["month_gap_from_previous"]
+    out["PEER_SEVIYE"] = detail["peer_group_level_name"]
+    out["PEER_KOLONLARI"] = detail["peer_group_columns"]
+    out["PEER_AYLIK_MUSTERI_ADET"] = detail["peer_month_customer_count"]
+    out["PEER_AYLIK_SATIR_ADET"] = detail["peer_month_row_count"]
+    out["PEER_AYLIK_FATURA_MEDYAN"] = detail["peer_month_bill_median"]
+    out["PEER_AYLIK_FATURA_ORTALAMA"] = detail["peer_month_bill_mean"]
+    out["PEER_AYLIK_TURNOVER_MEDYAN"] = detail["peer_month_turnover_median"]
+    out["PEER_AYLIK_FATURA_TURNOVER_MEDYAN"] = detail["peer_month_bill_to_turnover_median"]
+    out["MUSTERI_PEER_FATURA_ORANI"] = detail["customer_vs_peer_month_ratio"]
+    out["MUSTERI_PEER_ORAN_PCTL"] = detail["customer_vs_peer_ratio_percentile"]
+    out["MUSTERI_PEER_ORAN_REF_N"] = detail["customer_vs_peer_ratio_reference_n"]
+    out["AYLIK_YORUM"] = detail["month_level_comment"]
+
+    scoring_metric_map = {
+        "anomaly_score": "ANOMALI_SKORU",
+        "confidence_pct": "GUVEN_SKORU",
+        "anomaly_label": "ANOMALI_ETIKETI",
+        "anomaly_direction": "ANOMALI_YONU",
+        "operational_decision": "OPERASYON_KARARI",
+        "action_label": "AKSIYON_KARARI",
+        "evidence_strength": "KANIT_GUCU",
+        "signal_consistency": "SINYAL_TUTARLILIGI",
+        "peer_alignment_status": "PEER_UYUM_DURUMU",
+        "peer_alignment_direction": "PEER_FARK_YONU",
+        "peer_alignment_peer_z": "PEER_FARK_Z",
+        "peer_alignment_customer_z": "MUSTERI_FARK_Z",
+        "scoreability_status": "VERI_YETERLILIK_DURUMU",
+        "reason_codes": "NEDEN_KODLARI",
+        "decision_reason_sentence": "ANOMALI_NEDENI",
+        "strongest_signal_name": "ANA_SINYAL_KODU",
+        "strongest_signal_label": "ANA_SINYAL",
+        "strongest_signal_z": "ANA_SINYAL_Z",
+        "strongest_signal_score_pct": "ANA_SINYAL_SKORU",
+        "scoring_bill_amount": "SKORLANAN_FATURA_TTR",
+        "scoring_peer_expected_bill_amount": "BEKLENEN_FATURA_TTR",
+        "current_peer_median_bill": "PEER_GUNCEL_MEDYAN_FATURA_TTR",
+        "scoring_customer_prior_median_bill": "MUSTERI_GECMIS_MEDYAN_FATURA_TTR",
+        "customer_trend_expected_bill": "MUSTERI_TREND_BEKLENEN_FATURA_TTR",
+        "customer_seasonal_expected_bill": "MUSTERI_SEZON_BEKLENEN_FATURA_TTR",
+        "peer_trend_expected_bill": "PEER_TREND_BEKLENEN_FATURA_TTR",
+        "actual_to_expected_ratio": "GERCEK_BEKLENEN_ORANI",
+        "historical_peer_z": "GECMIS_PEER_Z",
+        "historical_peer_score": "GECMIS_PEER_SKORU",
+        "current_peer_z": "GUNCEL_PEER_Z",
+        "current_peer_score": "GUNCEL_PEER_SKORU",
+        "peer_trend_z": "PEER_TREND_Z",
+        "peer_trend_score": "PEER_TREND_SKORU",
+        "turnover_intensity_z": "TURNOVER_YOGUNLUK_Z",
+        "turnover_intensity_score": "TURNOVER_YOGUNLUK_SKORU",
+        "self_history_z": "MUSTERI_GECMIS_Z",
+        "self_history_score": "MUSTERI_GECMIS_SKORU",
+        "customer_trend_z": "MUSTERI_TREND_Z",
+        "customer_trend_score": "MUSTERI_TREND_SKORU",
+        "customer_seasonal_z": "MUSTERI_SEZON_Z",
+        "customer_seasonal_score": "MUSTERI_SEZON_SKORU",
+        "customer_signal_score": "MUSTERI_SINYAL_SKORU",
+        "peer_signal_score": "PEER_SINYAL_SKORU",
+        "customer_family_p_value": "MUSTERI_AILE_P_DEGERI",
+        "peer_family_p_value": "PEER_AILE_P_DEGERI",
+        "customer_family_direction": "MUSTERI_AILE_YONU",
+        "peer_family_direction": "PEER_AILE_YONU",
+        "customer_reliability_status": "MUSTERI_GUVENILIRLIK_DURUMU",
+        "peer_reliability_status": "PEER_GUVENILIRLIK_DURUMU",
+        "primary_signal_name": "PRIMARY_SINYAL_KODU",
+        "primary_signal_family": "PRIMARY_SINYAL_AILESI",
+        "primary_signal_p_value": "PRIMARY_SINYAL_P_DEGERI",
+        "primary_signal_score": "PRIMARY_SINYAL_SKORU",
+        "secondary_signal_name": "SECONDARY_SINYAL_KODU",
+        "secondary_signal_p_value": "SECONDARY_SINYAL_P_DEGERI",
+        "evidence_driver": "EVIDENCE_DRIVER",
+        "evidence_conflict_flag": "EVIDENCE_CONFLICT_FLAG",
+        "customer_explainability_score": "MUSTERI_ACIKLANABILIRLIK_SKORU",
+        "customer_explainability_status": "MUSTERI_ACIKLANABILIRLIK_DURUMU",
+        "peer_representability_score": "PEER_TEMSIL_SKORU",
+        "peer_representability_status": "PEER_TEMSIL_DURUMU",
+        "peer_objective_score": "PEER_OBJECTIVE_SKORU",
+        "peer_support_score": "PEER_DESTEK_SKORU",
+        "peer_stability_score": "PEER_STABILITE_SKORU",
+        "peer_specificity_score": "PEER_SPESIFIKLIK_SKORU",
+        "peer_eligible_candidate_count": "PEER_UYGUN_ADAY_ADET",
+        "peer_distribution_quality_score": "PEER_DAGILIM_SKORU",
+        "peer_distribution_status": "PEER_DAGILIM_DURUMU",
+        "peer_log_ratio_skew": "PEER_LOG_ORAN_SKEW",
+        "peer_log_ratio_kurtosis": "PEER_LOG_ORAN_KURTOSIS",
+        "peer_tail_rate": "PEER_TAIL_RATE",
+        "peer_selection_reason": "PEER_SECIM_GEREKCESI",
+        "scoring_strategy": "SKORLAMA_STRATEJISI",
+        "behavior_cluster": "DAVRANIS_CLUSTER",
+        "behavior_history_n": "DAVRANIS_GECMIS_ADET",
+        "behavior_level_bucket": "DAVRANIS_SEVIYE_BUCKET",
+        "behavior_volatility_bucket": "DAVRANIS_VOLATILITE_BUCKET",
+        "behavior_trend_bucket": "DAVRANIS_TREND_BUCKET",
+        "behavior_median_bill": "DAVRANIS_MEDYAN_FATURA_TTR",
+        "behavior_volatility_log": "DAVRANIS_VOLATILITE_LOG",
+        "behavior_trend_slope": "DAVRANIS_TREND_SLOPE",
+        "customer_final_weight": "MUSTERI_FINAL_AGIRLIK",
+        "peer_final_weight": "PEER_FINAL_AGIRLIK",
+        "self_history_final_weight": "MUSTERI_GECMIS_AGIRLIK",
+        "customer_trend_final_weight": "MUSTERI_TREND_AGIRLIK",
+        "customer_seasonal_final_weight": "MUSTERI_SEZON_AGIRLIK",
+        "historical_peer_final_weight": "GECMIS_PEER_AGIRLIK",
+        "current_peer_final_weight": "GUNCEL_PEER_AGIRLIK",
+        "peer_trend_final_weight": "PEER_TREND_AGIRLIK",
+        "turnover_intensity_final_weight": "TURNOVER_YOGUNLUK_AGIRLIK",
+        "hist_n": "PEER_GECMIS_ADET",
+        "moy_n": "PEER_SEZON_AY_ADET",
+        "recent_n": "PEER_RECENT_ADET",
+        "current_n": "PEER_GUNCEL_ADET",
+        "ratio_n": "PEER_TURNOVER_ORAN_ADET",
+        "prior_n": "MUSTERI_GECMIS_AY_ADET",
+        "prior_12_n": "SON_12_AY_FATURA_ADET",
+        "customer_trend_n": "MUSTERI_TREND_ADET",
+        "customer_seasonal_n": "MUSTERI_SEZON_ADET",
+        "prior_12_coverage": "SON_12_AY_KAPSAMA",
+        "gap_months_before_scoring": "SON_GAP_AY_ADET",
+        "data_gap_score": "DATA_GAP_SKORU",
+        "is_new_customer_in_scoring_month": "YENI_MUSTERI_MI",
+        "is_disconnected_customer": "KESIK_SERI_MI",
+        "model_fill_policy": "MODEL_DOLDURMA_POLITIKASI",
+        "previous_score_month": "ONCEKI_SKOR_DONEM_AY",
+        "previous_final_anomaly_score": "ONCEKI_ANOMALI_SKORU",
+        "score_delta_vs_previous_month": "ONCEKI_AYA_GORE_SKOR_FARKI",
+        "score_trend_diagnostic": "SKOR_TREND_DIAGNOSTIGI",
+    }
+    for source_col, output_col in scoring_metric_map.items():
+        if source_col in detail.columns:
+            out[output_col] = detail[source_col]
+    out["MODEL_DONEM_AY"] = int(scoring_month)
+    invoice_source_col = source_names.get("invoice_month", "DONEM_AY")
+    anomaly_flag = pd.Series(np.nan, index=out.index, dtype=object)
+    scoring_rows = out[invoice_source_col].eq(scoring_month)
+    anomaly_flag.loc[scoring_rows] = 0
+    anomaly_flag.loc[
+        out.get("ANOMALI_ETIKETI", pd.Series(index=out.index, dtype=object)).notna()
+        & ~out.get("ANOMALI_ETIKETI", pd.Series(index=out.index, dtype=object)).isin(["NORMAL", "NOT_SCORED"])
+    ] = 1
+    out["ANOMALI_FLAG"] = anomaly_flag
+
+    input_cols = input_output_columns(profile, list(out.columns))
+    model_cols = [col for col in out.columns if col not in input_cols]
+    return out[input_cols + model_cols].sort_values([source_names.get("customer_id", "MUSTERINO"), source_names.get("invoice_month", "DONEM_AY")])
+
+
+def add_run_columns(frame: pd.DataFrame, scoring_month: int) -> pd.DataFrame:
+    out = frame.copy()
+    out.insert(0, "scoring_month", int(scoring_month))
+    out.insert(1, "scoring_calendar_month", core.period_label(scoring_month))
+    return out
+
+
+def read_oracle_job_config(info_dir: Path, job_file: str) -> dict[str, str]:
+    path = info_dir / job_file
+    if not path.exists():
+        return {}
+    parser = configparser.ConfigParser()
+    parser.read(path, encoding="utf-8")
+    if not parser.has_section("JOB"):
+        return {}
+    return {key: value for key, value in parser["JOB"].items()}
+
+
+def read_oracle_connection_config(info_dir: Path, config_file: str, section: str | None) -> tuple[str, dict[str, str]]:
+    path = info_dir / config_file
+    if not path.exists():
+        raise FileNotFoundError(f"Oracle config file not found: {path}")
+
+    parser = configparser.ConfigParser()
+    parser.read(path, encoding="utf-8")
+    selected_section = section
+    if selected_section is None:
+        sections = parser.sections()
+        if len(sections) != 1:
+            raise ValueError("Oracle section must be provided when config has multiple sections.")
+        selected_section = sections[0]
+
+    if not parser.has_section(selected_section):
+        raise ValueError(f"Oracle config section not found: {selected_section}")
+    cfg = {key: value for key, value in parser[selected_section].items()}
+    required = ["user", "password", "host", "port", "service_name"]
+    missing = [key for key in required if not cfg.get(key)]
+    if missing:
+        raise ValueError(f"Oracle config missing required keys: {missing}")
+    return selected_section, cfg
+
+
+def direct_oracle_connection_config(connection_config: dict[str, Any] | None) -> tuple[str, dict[str, str]] | None:
+    if not connection_config:
+        return None
+    cfg = {str(key): str(value) for key, value in connection_config.items() if value is not None}
+    has_direct_dsn = bool(cfg.get("dsn"))
+    has_host_dsn = all(cfg.get(key) for key in ["host", "port", "service_name"])
+    if not (cfg.get("user") and cfg.get("password") and (has_direct_dsn or has_host_dsn)):
+        return None
+    selected_section = cfg.get("section") or "YAML_DIRECT"
+    return selected_section, cfg
+
+
+def resolve_oracle_connection_config(
+    info_dir: Path,
+    config_file: str,
+    section: str | None,
+    connection_config: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, str]]:
+    direct = direct_oracle_connection_config(connection_config)
+    if direct is not None:
+        return direct
+    return read_oracle_connection_config(info_dir, config_file, section)
+
+
+def oracle_dsn(conn_cfg: dict[str, str]) -> str:
+    try:
+        import oracledb
+    except ImportError as exc:
+        raise RuntimeError("Oracle yazimi icin Python paketi gerekli: pip install oracledb") from exc
+    if conn_cfg.get("dsn"):
+        return str(conn_cfg["dsn"])
+    return oracledb.makedsn(conn_cfg["host"], int(conn_cfg["port"]), service_name=conn_cfg["service_name"])
+
+
+def validate_oracle_identifier(value: str, label: str) -> str:
+    normalized = str(value).strip().upper()
+    if not re.fullmatch(r"[A-Z][A-Z0-9_$#]{0,29}", normalized):
+        raise ValueError(f"Invalid Oracle {label}: {value!r}")
+    return normalized
+
+
+def oracle_column_name(column: str) -> str:
+    candidate = re.sub(r"[^A-Za-z0-9_$#]", "_", column).upper()
+    if not re.match(r"^[A-Z]", candidate):
+        candidate = f"C_{candidate}"
+    return candidate[:ORACLE_IDENTIFIER_MAX_LEN]
+
+
+def oracle_column_map(columns: list[str]) -> dict[str, str]:
+    used: set[str] = set()
+    out: dict[str, str] = {}
+    for column in columns:
+        base = oracle_column_name(column)
+        candidate = base
+        counter = 1
+        while candidate in used:
+            suffix = f"_{counter}"
+            candidate = f"{base[: ORACLE_IDENTIFIER_MAX_LEN - len(suffix)]}{suffix}"
+            counter += 1
+        used.add(candidate)
+        out[column] = candidate
+    return out
+
+
+def oracle_dtype_for_series(name: str, series: pd.Series) -> str:
+    if name in LONG_TEXT_COLUMNS:
+        return "CLOB"
+    if pd.api.types.is_bool_dtype(series):
+        return "NUMBER(1)"
+    if pd.api.types.is_integer_dtype(series):
+        return "NUMBER(38)"
+    if pd.api.types.is_float_dtype(series):
+        return "NUMBER"
+    return "VARCHAR2(4000 CHAR)"
+
+
+def dataframe_for_oracle(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, str], dict[str, str]]:
+    out = frame.copy()
+    bool_cols = [col for col in out.columns if pd.api.types.is_bool_dtype(out[col])]
+    for col in bool_cols:
+        out[col] = out[col].astype("Int64")
+    col_map = oracle_column_map(list(out.columns))
+    dtype_map = {col_map[col]: oracle_dtype_for_series(col, frame[col]) for col in frame.columns}
+    out = out.rename(columns=col_map)
+    out = out.astype(object).where(pd.notna(out), None)
+    return out, col_map, dtype_map
+
+
+def oracle_table_exists(connection: Any, owner: str, table: str) -> bool:
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "select count(*) from all_tables where owner = :owner and table_name = :table_name",
+            {"owner": owner, "table_name": table},
+        )
+        return int(cursor.fetchone()[0]) > 0
+
+
+def oracle_table_columns(connection: Any, owner: str, table: str) -> set[str]:
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            select column_name
+            from all_tab_columns
+            where owner = :owner and table_name = :table_name
+            """,
+            {"owner": owner, "table_name": table},
+        )
+        return {str(row[0]).upper() for row in cursor.fetchall()}
+
+
+def create_oracle_table(connection: Any, owner: str, table: str, dtype_map: dict[str, str]) -> None:
+    columns_sql = ",\n  ".join(f"{col} {dtype}" for col, dtype in dtype_map.items())
+    ddl = f"create table {owner}.{table} (\n  {columns_sql}\n)"
+    with connection.cursor() as cursor:
+        cursor.execute(ddl)
+
+
+def drop_oracle_table(connection: Any, owner: str, table: str) -> None:
+    with connection.cursor() as cursor:
+        cursor.execute(f"drop table {owner}.{table} purge")
+
+
+def prepare_oracle_table(
+    connection: Any,
+    owner: str,
+    table: str,
+    dtype_map: dict[str, str],
+    mode: str,
+    create_table: bool,
+    scoring_month: int,
+    table_role: str,
+) -> None:
+    exists = oracle_table_exists(connection, owner, table)
+    if mode == "replace" and exists:
+        drop_oracle_table(connection, owner, table)
+        exists = False
+    if not exists:
+        if not create_table:
+            raise ValueError(f"Oracle table does not exist and create_table is disabled: {owner}.{table}")
+        create_oracle_table(connection, owner, table, dtype_map)
+        return
+
+    missing_columns = set(dtype_map) - oracle_table_columns(connection, owner, table)
+    if missing_columns:
+        if not create_table:
+            raise ValueError(
+                f"Oracle table {owner}.{table} is missing required columns and create_table is disabled: "
+                f"{sorted(missing_columns)}"
+            )
+        drop_oracle_table(connection, owner, table)
+        create_oracle_table(connection, owner, table, dtype_map)
+        return
+
+    with connection.cursor() as cursor:
+        if mode == "truncate_insert":
+            cursor.execute(f"truncate table {owner}.{table}")
+        elif mode == "delete_insert":
+            if "MODEL_DONEM_AY" in dtype_map:
+                cursor.execute(
+                    f"delete from {owner}.{table} where MODEL_DONEM_AY = :scoring_month",
+                    {"scoring_month": scoring_month},
+                )
+            elif table_role == "decision" and "DONEM_AY" in dtype_map:
+                cursor.execute(
+                    f"delete from {owner}.{table} where DONEM_AY = :scoring_month",
+                    {"scoring_month": scoring_month},
+                )
+            else:
+                cursor.execute(f"delete from {owner}.{table}")
+
+
+def insert_oracle_dataframe(connection: Any, owner: str, table: str, frame: pd.DataFrame, chunksize: int) -> int:
+    columns = list(frame.columns)
+    placeholders = ", ".join(f":{idx + 1}" for idx in range(len(columns)))
+    sql = f"insert into {owner}.{table} ({', '.join(columns)}) values ({placeholders})"
+    rows_inserted = 0
+    with connection.cursor() as cursor:
+        for start in range(0, len(frame), chunksize):
+            chunk = frame.iloc[start : start + chunksize]
+            rows = [tuple(row) for row in chunk.itertuples(index=False, name=None)]
+            cursor.executemany(sql, rows)
+            rows_inserted += len(rows)
+    return rows_inserted
+
+
+def write_outputs_to_oracle(
+    decision_table: pd.DataFrame,
+    detail_table: pd.DataFrame,
+    scoring_month: int,
+    info_dir: Path,
+    config_file: str,
+    job_file: str,
+    oracle_section: str | None,
+    owner: str | None,
+    decision_table_name: str,
+    detail_table_name: str,
+    write_mode: str | None,
+    chunksize: int | None,
+    create_table: bool,
+    connection_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    try:
+        import oracledb
+    except ImportError as exc:
+        raise RuntimeError("Oracle yazimi icin Python paketi gerekli: pip install oracledb") from exc
+
+    job_cfg = read_oracle_job_config(info_dir, job_file)
+    section = oracle_section or job_cfg.get("oracle_section")
+    selected_section, conn_cfg = resolve_oracle_connection_config(info_dir, config_file, section, connection_config)
+    owner_candidate = owner or job_cfg.get("output_owner") or job_cfg.get("score_owner")
+    if not owner_candidate:
+        raise ValueError("Oracle owner is required. Provide --oracle-owner or set connection.owner/output.owner in data_source.yaml.")
+    owner_name = validate_oracle_identifier(owner_candidate, "owner")
+    decision_name = validate_oracle_identifier(decision_table_name, "decision table")
+    detail_name = validate_oracle_identifier(detail_table_name, "detail table")
+    mode = write_mode or job_cfg.get("if_exists") or "append"
+    if mode not in {"append", "delete_insert", "truncate_insert", "replace"}:
+        raise ValueError(f"Unsupported Oracle write mode: {mode}")
+    write_chunksize = int(chunksize or job_cfg.get("chunksize") or 10000)
+
+    decision_oracle, decision_col_map, decision_dtypes = dataframe_for_oracle(decision_table)
+    detail_oracle, detail_col_map, detail_dtypes = dataframe_for_oracle(detail_table)
+    dsn = oracle_dsn(conn_cfg)
+
+    with oracledb.connect(user=conn_cfg["user"], password=conn_cfg["password"], dsn=dsn) as connection:
+        prepare_oracle_table(
+            connection,
+            owner_name,
+            decision_name,
+            decision_dtypes,
+            mode,
+            create_table,
+            scoring_month,
+            table_role="decision",
+        )
+        decision_rows = insert_oracle_dataframe(connection, owner_name, decision_name, decision_oracle, write_chunksize)
+        prepare_oracle_table(
+            connection,
+            owner_name,
+            detail_name,
+            detail_dtypes,
+            mode,
+            create_table,
+            scoring_month,
+            table_role="detail",
+        )
+        detail_rows = insert_oracle_dataframe(connection, owner_name, detail_name, detail_oracle, write_chunksize)
+        connection.commit()
+
+    return {
+        "oracle_section": selected_section,
+        "owner": owner_name,
+        "decision_table": decision_name,
+        "detail_table": detail_name,
+        "write_mode": mode,
+        "chunksize": write_chunksize,
+        "decision_rows_inserted": decision_rows,
+        "detail_rows_inserted": detail_rows,
+        "decision_column_map": decision_col_map,
+        "detail_column_map": detail_col_map,
+    }
+
+
+def safe_output_stem(value: str | None) -> str:
+    candidate = re.sub(r"[^A-Za-z0-9_]+", "_", str(value or "anomaly_input")).strip("_")
+    return candidate or "anomaly_input"
+
+
+def apply_rolling_window(prepared: pd.DataFrame, scoring_month: int, rolling_window_months: int | None) -> pd.DataFrame:
+    if rolling_window_months is None or int(rolling_window_months) <= 0:
+        return prepared
+    scoring_ord = core.period_ord(scoring_month)
+    min_ord = scoring_ord - int(rolling_window_months) + 1
+    return prepared.loc[prepared["month_ord"].between(min_ord, scoring_ord)].copy()
+
+
+def run_implementation_scoring(
+    input_path: Path | None,
+    output_dir: Path,
+    decision_output_dir: Path | None = None,
+    detail_output_dir: Path | None = None,
+    contract_output_dir: Path | None = None,
+    source_frame: pd.DataFrame | None = None,
+    input_name: str | None = None,
+    input_column_map: dict[str, str] | None = None,
+    output_source_columns: list[str] | None = None,
+    exclude_source_columns: list[str] | None = None,
+    encoding: str = "auto",
+    sep: str = "auto",
+    scoring_month: str = "last",
+    rolling_window_months: int | None = 36,
+    watch_top_rate: float = 0.030,
+    high_top_rate: float = 0.0075,
+    include_prior_score_diagnostic: bool = False,
+    peer_config: adaptive.PeerSelectionConfig | None = None,
+    support_thresholds: adaptive.PeerSupportThresholds | None = None,
+    scoring_weights: dict[str, Any] | None = None,
+    score_aggregation: dict[str, Any] | None = None,
+    write_oracle: bool = False,
+    oracle_info_dir: Path | None = None,
+    oracle_config_file: str = "ora_config.ini",
+    oracle_job_file: str = "job.ini",
+    oracle_section: str | None = None,
+    oracle_owner: str | None = None,
+    oracle_decision_table: str = "ANOMALY_DECISIONS",
+    oracle_detail_table: str = "ANOMALY_DECISION_DETAIL",
+    oracle_write_mode: str | None = None,
+    oracle_chunksize: int | None = None,
+    oracle_create_table: bool = True,
+    oracle_connection_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    decision_dir = decision_output_dir or output_dir
+    detail_dir = detail_output_dir or output_dir
+    contract_dir = contract_output_dir or output_dir
+    decision_dir.mkdir(parents=True, exist_ok=True)
+    detail_dir.mkdir(parents=True, exist_ok=True)
+    contract_dir.mkdir(parents=True, exist_ok=True)
+
+    if source_frame is not None:
+        prepared, profile = core.prepare_source_frame(source_frame, column_map=input_column_map, source_name=input_name)
+    elif input_path is not None:
+        prepared, profile = core.read_source(input_path, encoding, sep, column_map=input_column_map)
+    else:
+        raise ValueError("Either input_path or source_frame must be provided.")
+    profile = apply_source_column_policy(profile, output_source_columns, exclude_source_columns)
+
+    scoring_month_int = (
+        int(prepared["invoice_month"].max()) if scoring_month == "last" else int(scoring_month)
+    )
+    prepared = apply_rolling_window(prepared, scoring_month_int, rolling_window_months)
+    profile["rolling_window_months"] = rolling_window_months
+    profile["fit_window_period_min"] = int(prepared["invoice_month"].min())
+    profile["fit_window_period_max"] = int(prepared["invoice_month"].max())
+
+    effective_peer_config = adaptive.with_excluded_variables(
+        peer_config or adaptive.PeerSelectionConfig(),
+        peer_role_exclusions(profile),
+    )
+    run = core.score_scoring_month(
+        prepared,
+        scoring_month_int,
+        watch_top_rate,
+        high_top_rate,
+        peer_config=effective_peer_config,
+        support_thresholds=support_thresholds,
+        scoring_weights=scoring_weights,
+        score_aggregation=score_aggregation,
+    )
+    if include_prior_score_diagnostic:
+        run = core.attach_prior_score_diagnostic(
+            prepared,
+            run,
+            watch_top_rate,
+            high_top_rate,
+            peer_config=effective_peer_config,
+            support_thresholds=support_thresholds,
+            scoring_weights=scoring_weights,
+            score_aggregation=score_aggregation,
+        )
+
+    summary = core.summarize_run(run, profile)
+
+    scores_for_outputs = augment_scores_for_outputs(run.scores)
+    decision_table = build_decision_table(scores_for_outputs, run.not_scored, profile, scoring_month_int, prepared=prepared)
+    detail_table = build_detail_table(prepared, scores_for_outputs, run.not_scored, scoring_month_int, profile)
+
+    source_stem = safe_output_stem(input_name or (input_path.stem if input_path is not None else None))
+    decision_path = decision_dir / f"{source_stem}_anomaly_decisions_{scoring_month_int}.csv"
+    detail_path = detail_dir / f"{source_stem}_anomaly_decision_detail_{scoring_month_int}.csv"
+    decision_table.to_csv(decision_path, index=False, encoding="utf-8-sig")
+    detail_table.to_csv(detail_path, index=False, encoding="utf-8-sig")
+
+    oracle_payload: dict[str, Any] | None = None
+    if write_oracle:
+        oracle_payload = write_outputs_to_oracle(
+            decision_table=decision_table,
+            detail_table=detail_table,
+            scoring_month=scoring_month_int,
+            info_dir=oracle_info_dir or DEFAULT_ORACLE_INFO_DIR,
+            config_file=oracle_config_file,
+            job_file=oracle_job_file,
+            oracle_section=oracle_section,
+            owner=oracle_owner,
+            decision_table_name=oracle_decision_table,
+            detail_table_name=oracle_detail_table,
+            write_mode=oracle_write_mode,
+            chunksize=oracle_chunksize,
+            create_table=oracle_create_table,
+            connection_config=oracle_connection_config,
+        )
+
+    payload = {
+        "scoring_month": scoring_month_int,
+        "scoring_month_label": core.period_label(scoring_month_int),
+        "summary": summary,
+        "paths": {
+            "decision_table_csv": str(decision_path),
+            "detail_table_csv": str(detail_path),
+        },
+        "contract": {
+            "target": "none",
+            "amount_filling": "none",
+            "fit_scope": "months before scoring_month only",
+            "rolling_window_months": rolling_window_months,
+            "score_range": "0-100",
+            "previous_score_usage": (
+                "diagnostic only" if include_prior_score_diagnostic else "not calculated in this production run"
+            ),
+            "score_aggregation": core.merged_score_aggregation(score_aggregation),
+            "primary_tables": {
+                "decision_table": "one row per scoring-month customer; raw input columns plus ANOMALI_FLAG and ANOMALI_NEDENI only",
+                "detail_table": "one row per customer-month for scoring customers; customer series, model metrics, selected-peer evidence, and explanations",
+            },
+        },
+    }
+    if oracle_payload is not None:
+        payload["oracle_write"] = {
+            key: value
+            for key, value in oracle_payload.items()
+            if key not in {"decision_column_map", "detail_column_map"}
+        }
+        payload["oracle_column_maps"] = {
+            "decision": oracle_payload["decision_column_map"],
+            "detail": oracle_payload["detail_column_map"],
+        }
+    contract_path = contract_dir / f"{source_stem}_implementation_contract_{scoring_month_int}.json"
+    payload["paths"]["implementation_contract_json"] = str(contract_path)
+    contract_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return payload
+
+
+def main() -> None:
+    args = parse_args()
+    result = run_implementation_scoring(
+        input_path=Path(args.input),
+        output_dir=Path(args.output_dir),
+        decision_output_dir=Path(args.decision_output_dir) if args.decision_output_dir else None,
+        detail_output_dir=Path(args.detail_output_dir) if args.detail_output_dir else None,
+        contract_output_dir=Path(args.contract_output_dir) if args.contract_output_dir else None,
+        encoding=args.encoding,
+        sep=args.sep,
+        scoring_month=args.scoring_month,
+        rolling_window_months=args.rolling_window_months,
+        watch_top_rate=args.watch_top_rate,
+        high_top_rate=args.high_top_rate,
+        include_prior_score_diagnostic=args.include_prior_score_diagnostic,
+        write_oracle=args.write_oracle,
+        oracle_info_dir=Path(args.oracle_info_dir),
+        oracle_config_file=args.oracle_config_file,
+        oracle_job_file=args.oracle_job_file,
+        oracle_section=args.oracle_section,
+        oracle_owner=args.oracle_owner,
+        oracle_decision_table=args.oracle_decision_table,
+        oracle_detail_table=args.oracle_detail_table,
+        oracle_write_mode=args.oracle_write_mode,
+        oracle_chunksize=args.oracle_chunksize,
+        oracle_create_table=not args.oracle_no_create_table,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()

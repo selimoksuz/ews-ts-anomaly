@@ -1,0 +1,42 @@
+active_source: local_csv
+active_sink: local_files
+
+connections:
+  default_oracle:
+    section: ORA_SECTION_NAME
+    user: ORACLE_USER
+    password: ORACLE_PASSWORD
+    host: ORACLE_HOST
+    port: 1521
+    service_name: ORACLE_SERVICE
+    owner: ORACLE_OWNER
+
+sources:
+  local_csv:
+    type: csv
+    path: data/raw/input.csv
+    encoding: auto
+    sep: auto
+    output_columns: all
+    exclude_output_columns: []
+  oracle_input:
+    type: oracle
+    connection: default_oracle
+    owner: ORACLE_OWNER
+    table: ANOMALY_INPUT
+    query: null
+
+sinks:
+  local_files:
+    type: local
+    enabled: true
+  oracle_output:
+    type: oracle
+    connection: default_oracle
+    enabled: false
+    owner: ORACLE_OWNER
+    decision_table: ANOMALY_DECISIONS
+    detail_table: ANOMALY_DECISION_DETAIL
+    write_mode: delete_insert
+    chunksize: 10000
+    create_table: true
