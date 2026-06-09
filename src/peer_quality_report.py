@@ -105,6 +105,12 @@ def safe_div(numerator: pd.Series, denominator: pd.Series | float) -> pd.Series:
     return numerator.astype(float) / np.maximum(pd.Series(denominator, index=numerator.index).astype(float), 1e-9)
 
 
+def numeric_with_default(frame: pd.DataFrame, column: str, default: float) -> pd.Series:
+    if column not in frame.columns:
+        return pd.Series(default, index=frame.index, dtype=float)
+    return pd.to_numeric(frame[column], errors="coerce").fillna(default).astype(float)
+
+
 def build_scoring_context(prepared: pd.DataFrame, scoring_month: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     history = prepared.loc[prepared["invoice_month"].lt(scoring_month)].copy()
     scoring = prepared.loc[prepared["invoice_month"].eq(scoring_month)].copy()
@@ -355,7 +361,7 @@ def summarize_frame(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
     for col in optional_numeric_cols:
         if col not in work.columns:
             work[col] = np.nan
-    work["IS_WATCH_OR_ANOM"] = work["ANOMALI_FLAG"].fillna(0).astype(float)
+    work["IS_WATCH_OR_ANOM"] = numeric_with_default(work, "ANOMALI_FLAG", 0.0)
     work["IS_HIGH_MAIN_METRIC"] = work["ANOMALI_ETIKETI"].isin(
         ["HIGH_MAIN_METRIC_ANOMALY", "HIGH_BILL_ANOMALY"]
     ).astype(float)
@@ -397,11 +403,19 @@ def summarize_frame(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
 
 def weak_peer_review(peer_instance_summary: pd.DataFrame) -> pd.DataFrame:
     work = peer_instance_summary.copy()
+    temsil_skor = numeric_with_default(work, "temsil_skor_medyan", 50.0)
+    dagilim_skor = numeric_with_default(work, "dagilim_skor_medyan", 50.0)
+    anomaly_watch_oran = numeric_with_default(work, "anomaly_watch_oran", 0.0)
+    peer_guncel_adet_min = numeric_with_default(work, "peer_guncel_adet_min", 0.0)
+    work["temsil_skor_medyan"] = temsil_skor
+    work["dagilim_skor_medyan"] = dagilim_skor
+    work["anomaly_watch_oran"] = anomaly_watch_oran
+    work["peer_guncel_adet_min"] = peer_guncel_adet_min
     work["review_skoru"] = (
-        (100 - work["temsil_skor_medyan"].fillna(50)) * 0.35
-        + (100 - work["dagilim_skor_medyan"].fillna(50)) * 0.35
-        + work["anomaly_watch_oran"].fillna(0) * 100 * 0.20
-        + np.where(work["peer_guncel_adet_min"].fillna(0) < 25, 10, 0)
+        (100 - temsil_skor) * 0.35
+        + (100 - dagilim_skor) * 0.35
+        + anomaly_watch_oran * 100 * 0.20
+        + np.where(peer_guncel_adet_min < 25, 10, 0)
     )
     reasons = []
     for _, row in work.iterrows():
