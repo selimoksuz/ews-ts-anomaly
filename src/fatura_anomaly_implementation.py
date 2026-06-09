@@ -1601,6 +1601,9 @@ def run_implementation_scoring(
     oracle_chunksize: int | None = None,
     oracle_create_table: bool = True,
     oracle_connection_config: dict[str, Any] | None = None,
+    write_local_tables: bool = True,
+    write_contract: bool = True,
+    return_output_tables: bool = False,
     progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     def progress(message: str) -> None:
@@ -1608,13 +1611,16 @@ def run_implementation_scoring(
             progress_callback(message)
 
     progress("implementation_prepare_dirs_start")
-    output_dir.mkdir(parents=True, exist_ok=True)
     decision_dir = decision_output_dir or output_dir
     detail_dir = detail_output_dir or output_dir
     contract_dir = contract_output_dir or output_dir
-    decision_dir.mkdir(parents=True, exist_ok=True)
-    detail_dir.mkdir(parents=True, exist_ok=True)
-    contract_dir.mkdir(parents=True, exist_ok=True)
+    if write_local_tables or write_contract:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    if write_local_tables:
+        decision_dir.mkdir(parents=True, exist_ok=True)
+        detail_dir.mkdir(parents=True, exist_ok=True)
+    if write_contract:
+        contract_dir.mkdir(parents=True, exist_ok=True)
     progress("implementation_prepare_dirs_done")
 
     if source_frame is not None:
@@ -1691,12 +1697,18 @@ def run_implementation_scoring(
     )
 
     source_stem = safe_output_stem(input_name or (input_path.stem if input_path is not None else None))
-    decision_path = decision_dir / f"{source_stem}_anomaly_decisions_{scoring_month_int}.csv"
-    detail_path = detail_dir / f"{source_stem}_anomaly_decision_detail_{scoring_month_int}.csv"
-    progress("csv_write_start")
-    decision_table.to_csv(decision_path, index=False, encoding="utf-8-sig")
-    detail_table.to_csv(detail_path, index=False, encoding="utf-8-sig")
-    progress(f"csv_write_done decision_csv={decision_path} detail_csv={detail_path}")
+    paths: dict[str, str] = {}
+    if write_local_tables:
+        decision_path = decision_dir / f"{source_stem}_anomaly_decisions_{scoring_month_int}.csv"
+        detail_path = detail_dir / f"{source_stem}_anomaly_decision_detail_{scoring_month_int}.csv"
+        progress("csv_write_start")
+        decision_table.to_csv(decision_path, index=False, encoding="utf-8-sig")
+        detail_table.to_csv(detail_path, index=False, encoding="utf-8-sig")
+        paths["decision_table_csv"] = str(decision_path)
+        paths["detail_table_csv"] = str(detail_path)
+        progress(f"csv_write_done decision_csv={decision_path} detail_csv={detail_path}")
+    else:
+        progress("csv_write_skipped")
 
     oracle_payload: dict[str, Any] | None = None
     if write_oracle:
@@ -1726,10 +1738,7 @@ def run_implementation_scoring(
         "scoring_month": scoring_month_int,
         "scoring_month_label": core.period_label(scoring_month_int),
         "summary": summary,
-        "paths": {
-            "decision_table_csv": str(decision_path),
-            "detail_table_csv": str(detail_path),
-        },
+        "paths": paths,
         "contract": {
             "target": "none",
             "amount_filling": "none",
@@ -1756,10 +1765,23 @@ def run_implementation_scoring(
             "decision": oracle_payload["decision_column_map"],
             "detail": oracle_payload["detail_column_map"],
         }
-    contract_path = contract_dir / f"{source_stem}_implementation_contract_{scoring_month_int}.json"
-    payload["paths"]["implementation_contract_json"] = str(contract_path)
-    contract_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    progress(f"contract_write_done path={contract_path}")
+    if return_output_tables:
+        payload["_output_tables"] = {
+            "decision": decision_table,
+            "detail": detail_table,
+        }
+    if write_contract:
+        contract_path = contract_dir / f"{source_stem}_implementation_contract_{scoring_month_int}.json"
+        payload["paths"]["implementation_contract_json"] = str(contract_path)
+        contract_payload = {
+            key: value
+            for key, value in payload.items()
+            if key != "_output_tables"
+        }
+        contract_path.write_text(json.dumps(contract_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        progress(f"contract_write_done path={contract_path}")
+    else:
+        progress("contract_write_skipped")
     return payload
 
 

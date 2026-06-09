@@ -11,6 +11,20 @@ Bu akis target kullanmadan aylik tutar anomalisi skorlar. Son ay implementasyon 
 
 CSV mi Oracle mi okunacagina `configs/data_source.yaml` icindeki `active_source` karar verir. Output sink icin `active_sink` kullanilir.
 
+`model.scoring_month` iki sekilde calisir:
+
+```yaml
+model:
+  scoring_month: last
+```
+
+`last`, kaynak datadaki en son donemi skorlar. Belirli bir ay icin `YYYYMM` yaz:
+
+```yaml
+model:
+  scoring_month: 202603
+```
+
 ## Kolon Davranisi
 
 `columns.required` bos kalirsa sistem bilinen alias'lardan musteri/id, ay ve tutar kolonlarini bulmaya calisir. Farkli isimli veri gelirse sadece gerekli roller yazilir:
@@ -56,6 +70,8 @@ powershell -ExecutionPolicy Bypass -File scripts\run_oracle.ps1
 ```bash
 ./scripts/run_oracle.sh
 ```
+
+Oracle source + Oracle sink modunda decision/detail Oracle'a yazilir; lokal decision/detail CSV, contract JSON ve staging snapshot uretilmez. Peer quality raporu aciksa sadece peer analiz dosyalari uretilir.
 
 Raporu atlayarak hizli scoring:
 

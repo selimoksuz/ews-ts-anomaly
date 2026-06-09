@@ -304,7 +304,11 @@ Bu validasyon target bazli accuracy degildir. Target yoktur. Validasyon leakage 
 
 ## Oracle Yazimi
 
-Oracle yazimi opsiyoneldir. CSV ciktilari her durumda uretilir. Yeni akista CSV/Oracle kaynaklari ve output sink ayarlari `configs/data_source.yaml` dosyasindan okunur.
+Oracle yazimi opsiyoneldir. Yeni akista CSV/Oracle kaynaklari ve output sink ayarlari `configs/data_source.yaml` dosyasindan okunur.
+
+Oracle source + Oracle sink run'inda decision/detail tablolari Oracle'a yazilir; lokal decision/detail CSV, contract JSON ve staging source snapshot uretilmez. Peer quality raporu aciksa sadece `outputs/analysis/peer_quality_report` altindaki analiz dosyalari uretilir.
+
+Skor ayini secmek icin `configs/anomaly.yaml` icinde `model.scoring_month` kullanilir. `last` en son donemi skorlar; belirli bir ay icin `YYYYMM` yazilabilir, ornek `202603`.
 
 Oracle connection bilgileri direkt YAML icindedir. INI dosyalari sadece backward-compatible fallback olarak kalir.
 

@@ -45,6 +45,20 @@ active_source: oracle_input
 
 Output sink secimi `active_sink` ile yapilir. Oracle yazimi icin sink tanimi yeterli degildir; run komutunda ayrica Oracle output flag'i verilmelidir.
 
+Skorlanacak ay `configs/anomaly.yaml` icindeki `model.scoring_month` ile secilir:
+
+```yaml
+model:
+  scoring_month: last
+```
+
+`last` kaynak datadaki en buyuk `YYYYMM` donemini skorlar. Sabit ay skorlamak icin `YYYYMM` yazabilirsin:
+
+```yaml
+model:
+  scoring_month: 202603
+```
+
 Son 3 ay musteri rejimi sinyali `configs/anomaly.yaml` icinde yonetilir:
 
 ```yaml
@@ -109,6 +123,10 @@ python3 src/configured_anomaly_pipeline.py \
 ```
 
 ## Outputlar
+
+CSV/local source veya local sink run'larinda decision/detail CSV ve contract JSON uretilir.
+
+Oracle source + Oracle sink run'inda decision/detail zaten Oracle'a yazildigi icin lokal decision/detail CSV, contract JSON ve staging source snapshot uretilmez. Peer quality raporu aciksa sadece `outputs/analysis/peer_quality_report` altindaki analiz CSV/XLSX/HTML/MD dosyalari uretilir.
 
 Decision table:
 

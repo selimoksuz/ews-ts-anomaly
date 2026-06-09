@@ -11,6 +11,7 @@ from typing import Any
 import anomaly_config
 import anomaly_io
 import fatura_anomaly_implementation as implementation
+import fatura_peer_quality_report as peer_quality_report
 
 
 def log_step(message: str) -> None:
@@ -99,6 +100,7 @@ def read_source_frame(
     pipeline_config: dict[str, Any],
     source: dict[str, Any],
     project_root: Path,
+    write_snapshot: bool = True,
 ) -> tuple[Path | None, Any, str, Path | None]:
     source_type = str(source.get("type", "csv")).lower()
     source_name = str(source.get("name") or "anomaly_input")
@@ -109,14 +111,16 @@ def read_source_frame(
         return input_path, None, source.get("name") or input_path.stem, input_path
     if source_type == "oracle":
         frame = anomaly_io.read_oracle_frame({"connection": source.get("connection", {}), "input": source})
-        staging_dir = anomaly_config.output_path(
-            pipeline_config,
-            "staging_dir",
-            project_root,
-            "outputs/staging",
-        )
-        snapshot_path = staging_dir / f"{implementation.safe_output_stem(source_name)}_source_snapshot.csv"
-        anomaly_io.write_source_snapshot(frame, snapshot_path)
+        snapshot_path = None
+        if write_snapshot:
+            staging_dir = anomaly_config.output_path(
+                pipeline_config,
+                "staging_dir",
+                project_root,
+                "outputs/staging",
+            )
+            snapshot_path = staging_dir / f"{implementation.safe_output_stem(source_name)}_source_snapshot.csv"
+            anomaly_io.write_source_snapshot(frame, snapshot_path)
         return None, frame, source_name, snapshot_path
     raise ValueError(f"Unsupported source.type: {source_type}")
 
@@ -177,6 +181,49 @@ def run_peer_quality_report(
     return {"output_dir": str(output_dir), "status": "generated"}
 
 
+def peer_quality_output_dir(pipeline_config: dict[str, Any], project_root: Path) -> Path:
+    reports = pipeline_config.get("reports", {})
+    peer_quality = reports.get("peer_quality", {}) if isinstance(reports, dict) else {}
+    output_dir = anomaly_config.resolve_path(
+        str(peer_quality.get("output_dir", "outputs/analysis/peer_quality_report")),
+        project_root,
+    )
+    if output_dir is None:
+        raise ValueError("peer_quality output_dir is missing.")
+    return output_dir
+
+
+def run_peer_quality_report_from_frames(
+    pipeline_config: dict[str, Any],
+    project_root: Path,
+    source_frame: Any,
+    detail_frame: Any,
+    scoring_month: int,
+    column_map: dict[str, str],
+    source_name: str,
+) -> dict[str, Any]:
+    output_dir = peer_quality_output_dir(pipeline_config, project_root)
+    log_step(f"peer_quality_report_start output_dir={output_dir} mode=in_memory")
+    result = peer_quality_report.generate_peer_quality_report_from_frames(
+        source_frame=source_frame,
+        evidence_frame=detail_frame,
+        output_dir=output_dir,
+        scoring_month=scoring_month,
+        column_map=column_map,
+        source_name=source_name,
+    )
+    log_step("peer_quality_report_done")
+    return {"output_dir": str(output_dir), "status": "generated", **result}
+
+
+def is_oracle_to_oracle(source: dict[str, Any], output_sink: dict[str, Any]) -> bool:
+    return (
+        str(source.get("type", "")).lower() == "oracle"
+        and str(output_sink.get("type", "")).lower() == "oracle"
+        and bool(output_sink.get("enabled", False))
+    )
+
+
 def run_from_config(
     config_path: Path,
     data_source_config_path: str | None = None,
@@ -190,6 +237,7 @@ def run_from_config(
     data_source_config = load_data_source_config(pipeline_config, project_root, data_source_config_path)
     source = selected_data_source(pipeline_config, data_source_config)
     output_sink = selected_output_sink(pipeline_config, data_source_config, enable_oracle_output)
+    oracle_to_oracle = is_oracle_to_oracle(source, output_sink)
     log_step(
         "source_selected "
         f"name={source.get('name')} type={source.get('type', 'csv')} "
@@ -200,10 +248,21 @@ def run_from_config(
     peer_config = anomaly_config.peer_config_from_config(pipeline_config)
     support_thresholds = anomaly_config.support_thresholds_from_config(pipeline_config)
     output_source_columns, exclude_source_columns = anomaly_config.source_column_policy(source)
+    reports_enabled = anomaly_config.bool_config(pipeline_config, ("reports", "peer_quality", "enabled"), True)
+    outputs_config = pipeline_config.get("outputs", {})
+    write_local_tables = bool(outputs_config.get("write_local_tables", not oracle_to_oracle))
+    write_contract = bool(outputs_config.get("write_contract", not oracle_to_oracle))
+    return_output_tables = reports_enabled and not skip_peer_quality_report and oracle_to_oracle
     log_step("source_read_start")
-    input_path, source_frame, input_name, source_snapshot_path = read_source_frame(pipeline_config, source, project_root)
+    input_path, source_frame, input_name, source_snapshot_path = read_source_frame(
+        pipeline_config,
+        source,
+        project_root,
+        write_snapshot=not oracle_to_oracle,
+    )
     if source_frame is not None:
-        log_step(f"source_read_done rows={len(source_frame):,} snapshot={source_snapshot_path}")
+        snapshot_text = f" snapshot={source_snapshot_path}" if source_snapshot_path is not None else " snapshot=skipped"
+        log_step(f"source_read_done rows={len(source_frame):,}{snapshot_text}")
     else:
         log_step(f"source_read_done input_path={input_path}")
     oracle_options = oracle_write_options(output_sink)
@@ -246,17 +305,30 @@ def run_from_config(
         support_thresholds=support_thresholds,
         scoring_weights=model.get("scoring_weights", {}),
         score_aggregation=model.get("score_aggregation", {}),
+        write_local_tables=write_local_tables,
+        write_contract=write_contract,
+        return_output_tables=return_output_tables,
         progress_callback=log_step,
         **oracle_options,
     )
+    output_tables = result.pop("_output_tables", None)
     log_step(
         "model_scoring_done "
         f"scoring_month={result.get('scoring_month')} "
-        f"decision_csv={result.get('paths', {}).get('decision_table_csv')}"
+        f"local_tables_written={write_local_tables}"
     )
 
-    reports_enabled = anomaly_config.bool_config(pipeline_config, ("reports", "peer_quality", "enabled"), True)
-    if reports_enabled and not skip_peer_quality_report and source_snapshot_path is not None:
+    if reports_enabled and not skip_peer_quality_report and source_frame is not None and output_tables is not None:
+        result["peer_quality_report"] = run_peer_quality_report_from_frames(
+            pipeline_config,
+            project_root,
+            source_frame,
+            output_tables["detail"],
+            int(result["scoring_month"]),
+            column_map,
+            input_name,
+        )
+    elif reports_enabled and not skip_peer_quality_report and source_snapshot_path is not None and result.get("paths", {}).get("detail_table_csv"):
         result["peer_quality_report"] = run_peer_quality_report(
             pipeline_config,
             project_root,

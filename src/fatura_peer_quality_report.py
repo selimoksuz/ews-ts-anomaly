@@ -24,7 +24,6 @@ NORMALIZED_TO_OUTPUT = {
     "_global_key": "_GLOBAL_KEY",
 }
 
-
 def normalize_merge_key(frame: pd.DataFrame, column: str) -> pd.DataFrame:
     if column not in frame.columns:
         raise KeyError(f"Required merge key is missing: {column}")
@@ -74,14 +73,7 @@ def safe_div(numerator: pd.Series, denominator: pd.Series | float) -> pd.Series:
     return numerator.astype(float) / np.maximum(pd.Series(denominator, index=numerator.index).astype(float), 1e-9)
 
 
-def load_scoring_keys(
-    input_path: Path,
-    scoring_month: int,
-    encoding: str,
-    sep: str,
-    column_map: dict[str, str] | None = None,
-) -> pd.DataFrame:
-    prepared, _ = core.read_source(input_path, encoding, sep, column_map=column_map)
+def build_scoring_context(prepared: pd.DataFrame, scoring_month: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     history = prepared.loc[prepared["invoice_month"].lt(scoring_month)].copy()
     scoring = prepared.loc[prepared["invoice_month"].eq(scoring_month)].copy()
     edges = core.fit_turnover_edges(history)
@@ -89,7 +81,9 @@ def load_scoring_keys(
     history = core.assign_turnover_bucket(history, edges)
     behavior = core.build_behavior_clusters(history)
     scoring = core.assign_behavior_clusters(scoring, behavior)
+    history = core.assign_behavior_clusters(history, behavior)
     scoring["_global_key"] = "ALL"
+    history["_global_key"] = "ALL"
     out = scoring[
         [
             "customer_id",
@@ -116,7 +110,39 @@ def load_scoring_keys(
             "_global_key": "_GLOBAL_KEY",
         }
     )
-    return out
+    return out, history, scoring
+
+
+def load_scoring_context(
+    input_path: Path,
+    scoring_month: int,
+    encoding: str,
+    sep: str,
+    column_map: dict[str, str] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    prepared, _ = core.read_source(input_path, encoding, sep, column_map=column_map)
+    return build_scoring_context(prepared, scoring_month)
+
+
+def scoring_context_from_source_frame(
+    source_frame: pd.DataFrame,
+    scoring_month: int,
+    column_map: dict[str, str] | None = None,
+    source_name: str | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    prepared, _ = core.prepare_source_frame(source_frame, column_map=column_map, source_name=source_name)
+    return build_scoring_context(prepared, scoring_month)
+
+
+def load_scoring_keys(
+    input_path: Path,
+    scoring_month: int,
+    encoding: str,
+    sep: str,
+    column_map: dict[str, str] | None = None,
+) -> pd.DataFrame:
+    scoring_keys, _, _ = load_scoring_context(input_path, scoring_month, encoding, sep, column_map=column_map)
+    return scoring_keys
 
 
 def add_peer_instance_keys(decisions: pd.DataFrame, scoring_keys: pd.DataFrame) -> pd.DataFrame:
@@ -162,6 +188,87 @@ def add_support_counts_from_reason(decisions: pd.DataFrame) -> pd.DataFrame:
         if col not in out.columns:
             out[col] = text.str.extract(pattern, flags=re.IGNORECASE)[0].astype(float)
     return out
+
+
+def parse_peer_columns(columns_text: Any) -> list[str]:
+    text = str(columns_text)
+    if text in {"", "nan", "None", "global"}:
+        return []
+    return [column for column in text.split("+") if column]
+
+
+def build_normalized_peer_key(row: pd.Series, columns: list[str]) -> str:
+    if not columns:
+        return "global=ALL"
+    return " | ".join(f"{column}={row.get(column, np.nan)}" for column in columns)
+
+
+def aggregate_bill_stats(frame: pd.DataFrame, columns: list[str], level_name: str, prefix: str) -> pd.DataFrame:
+    key = core.group_key(columns)
+    stats_columns = [
+        "PEER_SEVIYE",
+        "PEER_KEY_DEGERLERI",
+        f"{prefix}_ortalama",
+        f"{prefix}_medyan",
+        f"{prefix}_std",
+        f"{prefix}_min",
+        f"{prefix}_max",
+    ]
+    required = set(key + ["valid_bill_for_model", "bill_amount"])
+    if len(frame) == 0 or not required.issubset(frame.columns):
+        return pd.DataFrame(columns=stats_columns)
+
+    valid = frame.loc[frame["valid_bill_for_model"] & frame["bill_amount"].notna(), key + ["bill_amount"]].copy()
+    if len(valid) == 0:
+        return pd.DataFrame(columns=stats_columns)
+
+    stats = (
+        valid.groupby(key, dropna=False)["bill_amount"]
+        .agg(
+            **{
+                f"{prefix}_ortalama": "mean",
+                f"{prefix}_medyan": "median",
+                f"{prefix}_std": lambda values: float(np.std(pd.to_numeric(values, errors="coerce").dropna(), ddof=0)),
+                f"{prefix}_min": "min",
+                f"{prefix}_max": "max",
+            }
+        )
+        .reset_index()
+    )
+    stats["PEER_SEVIYE"] = level_name
+    stats["PEER_KEY_DEGERLERI"] = stats.apply(lambda row: build_normalized_peer_key(row, columns), axis=1)
+    return stats[stats_columns]
+
+
+def add_peer_bill_stats(
+    peer_instance_summary: pd.DataFrame,
+    history: pd.DataFrame,
+    scoring: pd.DataFrame,
+) -> pd.DataFrame:
+    if peer_instance_summary.empty or "PEER_SEVIYE" not in peer_instance_summary.columns:
+        return peer_instance_summary
+
+    stat_frames: list[pd.DataFrame] = []
+    level_columns = peer_instance_summary.loc[:, ["PEER_SEVIYE"]].copy()
+    if "PEER_KOLONLARI" in peer_instance_summary.columns:
+        level_columns["PEER_KOLONLARI"] = peer_instance_summary["PEER_KOLONLARI"]
+    else:
+        level_columns["PEER_KOLONLARI"] = peer_instance_summary["PEER_SEVIYE"]
+
+    for row in level_columns.drop_duplicates().itertuples(index=False):
+        level_name = str(row.PEER_SEVIYE)
+        columns_text = getattr(row, "PEER_KOLONLARI", level_name)
+        columns = parse_peer_columns(columns_text)
+        current_stats = aggregate_bill_stats(scoring, columns, level_name, "peer_guncel_fatura")
+        history_stats = aggregate_bill_stats(history, columns, level_name, "peer_gecmis_fatura")
+        merged = current_stats.merge(history_stats, on=["PEER_SEVIYE", "PEER_KEY_DEGERLERI"], how="outer")
+        stat_frames.append(merged)
+
+    if not stat_frames:
+        return peer_instance_summary
+
+    stats = pd.concat(stat_frames, ignore_index=True).drop_duplicates(["PEER_SEVIYE", "PEER_KEY_DEGERLERI"])
+    return peer_instance_summary.merge(stats, on=["PEER_SEVIYE", "PEER_KEY_DEGERLERI"], how="left")
 
 
 def summarize_frame(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
@@ -318,6 +425,7 @@ def write_markdown_report(
     out_path: Path,
     decisions: pd.DataFrame,
     peer_level_summary: pd.DataFrame,
+    peer_instance_summary: pd.DataFrame,
     status_summary: pd.DataFrame,
     distribution_summary: pd.DataFrame,
     behavior_summary: pd.DataFrame,
@@ -343,6 +451,10 @@ def write_markdown_report(
 
 {markdown_table(peer_level_summary, ["PEER_SEVIYE", "musteri_adet", "musteri_pay", "temsil_skor_medyan", "dagilim_skor_medyan", "peer_guncel_adet_medyan", "anomaly_watch_oran"], 20)}
 
+## Peer Instance Fatura Dagilimi
+
+{markdown_table(peer_instance_summary, ["PEER_SEVIYE", "PEER_KEY_DEGERLERI", "peer_guncel_fatura_medyan", "peer_guncel_fatura_ortalama", "peer_guncel_fatura_std", "peer_guncel_fatura_min", "peer_guncel_fatura_max", "peer_gecmis_fatura_medyan", "peer_gecmis_fatura_ortalama", "peer_gecmis_fatura_std", "peer_gecmis_fatura_min", "peer_gecmis_fatura_max"], 30)}
+
 ## Peer Temsil Durumu
 
 {markdown_table(status_summary, ["PEER_TEMSIL_DURUMU", "musteri_adet", "musteri_pay", "anomaly_watch_oran", "dagilim_skor_medyan", "guven_medyan"], 20)}
@@ -357,7 +469,7 @@ def write_markdown_report(
 
 ## Review Gerektiren Peer Gruplari
 
-{markdown_table(weak_review, ["PEER_SEVIYE", "PEER_KEY_DEGERLERI", "musteri_adet", "review_skoru", "review_nedeni", "temsil_skor_medyan", "dagilim_skor_medyan", "anomaly_watch_oran"], 30)}
+{markdown_table(weak_review, ["PEER_SEVIYE", "PEER_KEY_DEGERLERI", "review_skoru", "review_nedeni", "peer_guncel_fatura_medyan", "peer_guncel_fatura_ortalama", "peer_guncel_fatura_std", "peer_guncel_fatura_min", "peer_guncel_fatura_max", "temsil_skor_medyan", "dagilim_skor_medyan", "anomaly_watch_oran"], 30)}
 
 ## Metod Notu
 
@@ -381,6 +493,7 @@ def write_html_report(
     out_path: Path,
     decisions: pd.DataFrame,
     peer_level_summary: pd.DataFrame,
+    peer_instance_summary: pd.DataFrame,
     status_summary: pd.DataFrame,
     distribution_summary: pd.DataFrame,
     behavior_summary: pd.DataFrame,
@@ -424,6 +537,8 @@ h1, h2 {{ color: #102a43; }}
 <h2>Peer Seviyesi Kapsam ve Temsil</h2>
 {f'<img class="chart" src="{html.escape(charts["peer_level"])}" alt="Peer seviyesi musteri adedi">' if "peer_level" in charts else ""}
 {html_table(peer_level_summary, ["PEER_SEVIYE", "musteri_adet", "musteri_pay", "temsil_skor_medyan", "dagilim_skor_medyan", "peer_guncel_adet_medyan", "anomaly_watch_oran"], 25)}
+<h2>Peer Instance Fatura Dagilimi</h2>
+{html_table(peer_instance_summary, ["PEER_SEVIYE", "PEER_KEY_DEGERLERI", "peer_guncel_fatura_medyan", "peer_guncel_fatura_ortalama", "peer_guncel_fatura_std", "peer_guncel_fatura_min", "peer_guncel_fatura_max", "peer_gecmis_fatura_medyan", "peer_gecmis_fatura_ortalama", "peer_gecmis_fatura_std", "peer_gecmis_fatura_min", "peer_gecmis_fatura_max"], 40)}
 <h2>Peer Temsil Durumu</h2>
 {html_table(status_summary, ["PEER_TEMSIL_DURUMU", "musteri_adet", "musteri_pay", "anomaly_watch_oran", "dagilim_skor_medyan", "guven_medyan"], 20)}
 <h2>Peer Dagilim Kalitesi</h2>
@@ -432,12 +547,105 @@ h1, h2 {{ color: #102a43; }}
 <h2>Behavior Cluster Kapsami</h2>
 {html_table(behavior_summary, ["DAVRANIS_CLUSTER", "musteri_adet", "musteri_pay", "anomaly_watch_oran", "temsil_skor_medyan", "dagilim_skor_medyan"], 30)}
 <h2>Review Gerektiren Peer Gruplari</h2>
-{html_table(weak_review, ["PEER_SEVIYE", "PEER_KEY_DEGERLERI", "musteri_adet", "review_skoru", "review_nedeni", "temsil_skor_medyan", "dagilim_skor_medyan", "anomaly_watch_oran"], 40)}
+{html_table(weak_review, ["PEER_SEVIYE", "PEER_KEY_DEGERLERI", "review_skoru", "review_nedeni", "peer_guncel_fatura_medyan", "peer_guncel_fatura_ortalama", "peer_guncel_fatura_std", "peer_guncel_fatura_min", "peer_guncel_fatura_max", "temsil_skor_medyan", "dagilim_skor_medyan", "anomaly_watch_oran"], 40)}
 <div class="note"><strong>Metod notu:</strong> Peer merkez olcusu medyan, sapma olcusu MAD tabanli robust scale, skor olcusu modified robust z-score'dur. Ortalama ve standart sapma ana karar parametresi degildir.</div>
 </body>
 </html>
 """
     out_path.write_text(html_body, encoding="utf-8")
+
+
+def build_peer_quality_tables(
+    decisions: pd.DataFrame,
+    scoring_keys: pd.DataFrame,
+    history: pd.DataFrame,
+    scoring: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    enriched = add_peer_instance_keys(decisions, scoring_keys)
+    enriched = add_support_counts_from_reason(enriched)
+    peer_level_summary = summarize_frame(enriched, ["PEER_SEVIYE"])
+    peer_instance_summary = summarize_frame(enriched, ["PEER_SEVIYE", "PEER_KOLONLARI", "PEER_KEY_DEGERLERI"])
+    peer_instance_summary = add_peer_bill_stats(peer_instance_summary, history, scoring)
+    status_summary = summarize_frame(enriched, ["PEER_TEMSIL_DURUMU"])
+    distribution_summary = summarize_frame(enriched, ["PEER_DAGILIM_DURUMU"])
+    behavior_summary = summarize_frame(enriched, ["DAVRANIS_CLUSTER"])
+    weak_review = weak_peer_review(peer_instance_summary)
+    return peer_level_summary, peer_instance_summary, status_summary, distribution_summary, behavior_summary, weak_review
+
+
+def write_peer_quality_outputs(
+    out_dir: Path,
+    scoring_month: int,
+    decisions: pd.DataFrame,
+    peer_level_summary: pd.DataFrame,
+    peer_instance_summary: pd.DataFrame,
+    status_summary: pd.DataFrame,
+    distribution_summary: pd.DataFrame,
+    behavior_summary: pd.DataFrame,
+    weak_review: pd.DataFrame,
+) -> dict[str, Any]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tables = {
+        "peer_level_summary": peer_level_summary,
+        "peer_instance_summary": peer_instance_summary,
+        "peer_representability_summary": status_summary,
+        "peer_distribution_summary": distribution_summary,
+        "behavior_cluster_summary": behavior_summary,
+        "weak_peer_review": weak_review,
+    }
+    write_csvs(out_dir, tables)
+    write_excel(out_dir / f"peer_quality_report_{scoring_month}.xlsx", tables)
+    charts = write_charts(out_dir, peer_level_summary, distribution_summary)
+    write_markdown_report(
+        out_dir / f"peer_quality_report_{scoring_month}.md",
+        decisions,
+        peer_level_summary,
+        peer_instance_summary,
+        status_summary,
+        distribution_summary,
+        behavior_summary,
+        weak_review,
+    )
+    write_html_report(
+        out_dir / f"peer_quality_report_{scoring_month}.html",
+        decisions,
+        peer_level_summary,
+        peer_instance_summary,
+        status_summary,
+        distribution_summary,
+        behavior_summary,
+        weak_review,
+        charts,
+    )
+    return {
+        "scoring_month": int(scoring_month),
+        "output_dir": str(out_dir),
+        "decision_rows": int(len(decisions)),
+        "peer_levels": int(decisions["PEER_SEVIYE"].nunique(dropna=True)),
+        "peer_instances": int(len(peer_instance_summary)),
+        "behavior_peer_rows": int(decisions["PEER_SEVIYE"].astype(str).str.contains("behavior", na=False).sum()),
+        "weak_peer_review_rows": int(len(weak_review)),
+    }
+
+
+def generate_peer_quality_report_from_frames(
+    source_frame: pd.DataFrame,
+    evidence_frame: pd.DataFrame,
+    output_dir: Path,
+    scoring_month: int,
+    column_map: dict[str, str] | None = None,
+    source_name: str | None = None,
+) -> dict[str, Any]:
+    decisions = evidence_frame.loc[evidence_frame["DONEM_AY"].astype(int).eq(scoring_month)].copy()
+    scoring_keys, history, scoring = scoring_context_from_source_frame(
+        source_frame,
+        scoring_month,
+        column_map=column_map,
+        source_name=source_name,
+    )
+    tables = build_peer_quality_tables(decisions, scoring_keys, history, scoring)
+    result = write_peer_quality_outputs(output_dir, scoring_month, decisions, *tables)
+    return result
 
 
 def main() -> None:
@@ -454,58 +662,15 @@ def main() -> None:
         scoring_month = int(args.scoring_month)
     decisions = decisions.loc[decisions["DONEM_AY"].astype(int).eq(scoring_month)].copy()
     column_map = json.loads(args.column_map_json) if args.column_map_json else None
-    scoring_keys = load_scoring_keys(input_path, scoring_month, args.encoding, args.sep, column_map=column_map)
-    decisions = add_peer_instance_keys(decisions, scoring_keys)
-    decisions = add_support_counts_from_reason(decisions)
-
-    peer_level_summary = summarize_frame(decisions, ["PEER_SEVIYE"])
-    peer_instance_summary = summarize_frame(decisions, ["PEER_SEVIYE", "PEER_KEY_DEGERLERI"])
-    status_summary = summarize_frame(decisions, ["PEER_TEMSIL_DURUMU"])
-    distribution_summary = summarize_frame(decisions, ["PEER_DAGILIM_DURUMU"])
-    behavior_summary = summarize_frame(decisions, ["DAVRANIS_CLUSTER"])
-    weak_review = weak_peer_review(peer_instance_summary)
-
-    tables = {
-        "peer_level_summary": peer_level_summary,
-        "peer_instance_summary": peer_instance_summary,
-        "peer_representability_summary": status_summary,
-        "peer_distribution_summary": distribution_summary,
-        "behavior_cluster_summary": behavior_summary,
-        "weak_peer_review": weak_review,
-    }
-    write_csvs(out_dir, tables)
-    write_excel(out_dir / f"peer_quality_report_{scoring_month}.xlsx", tables)
-    charts = write_charts(out_dir, peer_level_summary, distribution_summary)
-    write_markdown_report(
-        out_dir / f"peer_quality_report_{scoring_month}.md",
-        decisions,
-        peer_level_summary,
-        status_summary,
-        distribution_summary,
-        behavior_summary,
-        weak_review,
+    scoring_keys, history, scoring = load_scoring_context(
+        input_path,
+        scoring_month,
+        args.encoding,
+        args.sep,
+        column_map=column_map,
     )
-    write_html_report(
-        out_dir / f"peer_quality_report_{scoring_month}.html",
-        decisions,
-        peer_level_summary,
-        status_summary,
-        distribution_summary,
-        behavior_summary,
-        weak_review,
-        charts,
-    )
-    print(
-        {
-            "scoring_month": scoring_month,
-            "output_dir": str(out_dir),
-            "decision_rows": int(len(decisions)),
-            "peer_levels": int(decisions["PEER_SEVIYE"].nunique(dropna=True)),
-            "peer_instances": int(decisions["PEER_KEY_DEGERLERI"].nunique(dropna=True)),
-            "behavior_peer_rows": int(decisions["PEER_SEVIYE"].astype(str).str.contains("behavior", na=False).sum()),
-            "weak_peer_review_rows": int(len(weak_review)),
-        }
-    )
+    tables = build_peer_quality_tables(decisions, scoring_keys, history, scoring)
+    print(write_peer_quality_outputs(out_dir, scoring_month, decisions, *tables))
 
 
 if __name__ == "__main__":
