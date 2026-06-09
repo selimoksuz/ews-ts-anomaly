@@ -60,9 +60,6 @@ Decision table operasyonel tablodur:
 Detail table analiz tablosudur:
 
 - Musteri-ay seri gorunumu.
-- `DETAY_SATIR_TIPI`: `HISTORY_MONTH` veya `SCORING_MONTH`.
-- `SKOR_KOLON_DURUMU`: history satirlarinda skor kolonlarinin neden bos oldugunu, scoring satirinda skorlanip skorlanmadigini gosterir.
-- `AKTIF_SINYAL_ADET` ve `*_SINYAL_AKTIF` kolonlari: scoring ayinda hangi sinyallerin hesaplanabildigini gosterir.
 - `ANA_METRIK_EKSIK_MI`
 - `PEER_AYLIK_ANA_METRIK_MEDYAN`
 - `PEER_AYLIK_ANA_METRIK_ORTALAMA`

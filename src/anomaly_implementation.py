@@ -1107,35 +1107,6 @@ def build_detail_table(
             else:
                 detail.loc[non_scoring_mask, col] = np.nan
 
-    detail["detail_row_type"] = np.where(detail["is_scoring_month"], "SCORING_MONTH", "HISTORY_MONTH")
-    detail["score_column_status"] = np.select(
-        [
-            ~detail["is_scoring_month"],
-            detail["is_scoring_month"] & detail.get("is_scored", pd.Series(False, index=detail.index)).fillna(False).astype(bool),
-            detail["is_scoring_month"],
-        ],
-        [
-            "HISTORY_MONTH_SERIES_ONLY",
-            "SCORING_MONTH_SCORED",
-            "SCORING_MONTH_NOT_SCORED",
-        ],
-        default="UNKNOWN",
-    )
-    signal_availability = {
-        "self_history_signal_available": "self_history_z",
-        "customer_trend_signal_available": "customer_trend_z",
-        "customer_seasonal_signal_available": "customer_seasonal_z",
-        "customer_recent_regime_signal_available": "customer_recent_regime_z",
-        "historical_peer_signal_available": "historical_peer_z",
-        "current_peer_signal_available": "current_peer_z",
-        "peer_trend_signal_available": "peer_trend_z",
-        "feature_ratio_signal_available": "turnover_intensity_z",
-    }
-    for output_col, signal_col in signal_availability.items():
-        source = detail[signal_col] if signal_col in detail.columns else pd.Series(np.nan, index=detail.index)
-        detail[output_col] = detail["is_scoring_month"] & source.notna()
-    detail["available_signal_count"] = detail[list(signal_availability)].sum(axis=1).astype(int)
-
     source_names = input_column_map(profile)
     out = pd.DataFrame(index=detail.index)
     for logical, source_name in source_names.items():
@@ -1156,17 +1127,6 @@ def build_detail_table(
         elif logical == "turnover_amt":
             out[source_name] = detail["customer_turnover_amt"]
 
-    out["DETAY_SATIR_TIPI"] = detail["detail_row_type"]
-    out["SKOR_KOLON_DURUMU"] = detail["score_column_status"]
-    out["AKTIF_SINYAL_ADET"] = detail["available_signal_count"]
-    out["MUSTERI_GECMIS_SINYAL_AKTIF"] = detail["self_history_signal_available"]
-    out["MUSTERI_TREND_SINYAL_AKTIF"] = detail["customer_trend_signal_available"]
-    out["MUSTERI_SEZON_SINYAL_AKTIF"] = detail["customer_seasonal_signal_available"]
-    out["MUSTERI_SON3_REJIM_SINYAL_AKTIF"] = detail["customer_recent_regime_signal_available"]
-    out["GECMIS_PEER_SINYAL_AKTIF"] = detail["historical_peer_signal_available"]
-    out["GUNCEL_PEER_SINYAL_AKTIF"] = detail["current_peer_signal_available"]
-    out["PEER_TREND_SINYAL_AKTIF"] = detail["peer_trend_signal_available"]
-    out["FEATURE_ORAN_SINYAL_AKTIF"] = detail["feature_ratio_signal_available"]
     out["ANA_METRIK_EKSIK_MI"] = detail["customer_bill_missing_flag"]
     ratio_settings = profile.get("feature_ratio", {})
     ratio_enabled = bool(profile.get("feature_ratio_enabled", False))
