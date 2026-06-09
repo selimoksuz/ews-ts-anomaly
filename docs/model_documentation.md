@@ -44,7 +44,7 @@ Musteri yeterince okunabiliyorsa karar driver'i oncelikle customer family olur. 
 
 ## Adaptif Peer Secimi
 
-Peer adaylari config'teki segment degiskenlerinden uretilir. `priority_variables: auto` ise sistem teknik kolonlari, ID/ay/tutar kolonlarini ve source role kolonlarini disarida birakarak uygun kategorik degiskenleri infer eder.
+Peer adaylari `variables.segment_variables` listesinden ve feature'lardan turetilen operatif bucket'lardan uretilir. `priority_variables: auto` ise kullanicinin yazdigi segment degiskenleri ana peer aday setidir; `TURNOVER_AMT` ve `AKTIF_ABONE` gibi feature'lar varsa bunlardan `turnover_bucket` ve `active_subscriber_bucket` uretilip peer adaylarina eklenir.
 
 Peer adaylari su kriterlerle degerlendirilir:
 

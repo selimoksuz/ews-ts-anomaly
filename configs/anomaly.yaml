@@ -2,10 +2,31 @@
 # asagidaki data_source config dosyasinda tutulur.
 data_source_config_path: configs/data_source.yaml
 
-# Kolon isimleri standart alias'larla bulunamazsa burada role -> kolon adi map edilir.
-# Bos birakilirsa sistem MUSTERINO, DONEM_AY, FATURA_TTR gibi bilinen alias'lari dener.
-columns:
-  required: {}
+# Ana degisken gruplari. Normalde sadece bu alanlari doldurman yeterli.
+variables:
+  # Musteri veya entity anahtari. Birden fazla varsa ilk kolon primary id kabul edilir.
+  id_variables:
+    - MUSTERINO
+  # Aylik donem/tarih kolonu. 202603, 20260301 veya tarih formati olabilir.
+  time_variables:
+    - DONEM_AY
+  # Peer/segment adaylari. Sistem peer adaylarini bu degiskenlerden uretir.
+  segment_variables:
+    - SEGMENTAD
+    - REF_ALTFAALIYET
+    - SUBE_KD
+  # Ilk feature skorlanan ana tutardir. Digerleri destek/operatif feature olarak kullanilir.
+  feature_variables:
+    - FATURA_TTR
+    - TURNOVER_AMT
+    - AKTIF_ABONE
+
+# Legacy format. Yeni kullanimda gerek yok; eski entegrasyonlar icin desteklenir.
+# columns:
+#   required:
+#     customer_id: MUSTERINO
+#     invoice_month: DONEM_AY
+#     bill_amount: FATURA_TTR
 
 model:
   # Skorlanacak ay. "last" kaynak datadaki en son donemi kullanir.
@@ -85,16 +106,13 @@ model:
       coarse_peer_cap: 65.0
 
 peer_selection:
-  # "auto" teknik/ID/tutar/ay kolonlarini disarida birakir ve kalan aday degiskenleri dener.
+  # "auto" variables.segment_variables listesini ve feature'lardan turetilen bucket'lari kullanir.
   priority_variables: auto
-  # Her peer adayinda bulunmasi istenen ana degiskenler.
-  mandatory_variables:
-    - customer_segment
-  # Dar peer destek gecemezse sirasiyla genisletmede kullanilan fallback degiskenler.
-  fallback_variables:
-    - sector
-    - turnover_bucket
-    - active_subscriber_bucket
+  # Ileri seviye override gerekirse acilabilir:
+  # mandatory_variables:
+  #   - segment_variables
+  # fallback_variables:
+  #   - feature_peer_variables
   # Hicbir peer yeterli degilse global peer adayini da dene.
   include_global: true
   # Bir peer instance'inda kullanilabilecek maksimum degisken sayisi.

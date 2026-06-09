@@ -45,6 +45,26 @@ active_source: oracle_input
 
 Output sink secimi `active_sink` ile yapilir. Oracle yazimi icin sink tanimi yeterli degildir; run komutunda ayrica Oracle output flag'i verilmelidir.
 
+Ana degiskenler `configs/anomaly.yaml` icindeki `variables` alanindan okunur:
+
+```yaml
+variables:
+  id_variables:
+    - MUSTERINO
+  time_variables:
+    - DONEM_AY
+  segment_variables:
+    - SEGMENTAD
+    - REF_ALTFAALIYET
+    - SUBE_KD
+  feature_variables:
+    - FATURA_TTR
+    - TURNOVER_AMT
+    - AKTIF_ABONE
+```
+
+`feature_variables` listesindeki ilk kolon skorlanan ana tutardir. Segment listesi peer adaylarini besler. Eski `columns.required` formati hala desteklenir ama yeni kullanimda gerekli degildir.
+
 Skorlanacak ay `configs/anomaly.yaml` icindeki `model.scoring_month` ile secilir:
 
 ```yaml

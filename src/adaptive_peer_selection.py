@@ -124,7 +124,7 @@ class PeerSelectionConfig:
         priority_variables = (
             ()
             if raw_priority is None or (isinstance(raw_priority, str) and raw_priority.lower() == "auto")
-            else tuple(str(item) for item in raw_priority)
+            else (tuple([str(raw_priority)]) if isinstance(raw_priority, str) else tuple(str(item) for item in raw_priority))
         )
         blocked = {
             str(key): tuple(str(item) for item in value)

@@ -37,23 +37,33 @@ model:
   scoring_month: 2026-03-01
 ```
 
-## Kolon Davranisi
+## Degisken Gruplari
 
-`columns.required` bos kalirsa sistem bilinen alias'lardan musteri/id, ay ve tutar kolonlarini bulmaya calisir. Farkli isimli veri gelirse sadece gerekli roller yazilir:
+Kullanici tarafinda ana kolon rol isimleri yazilmaz. `variables` altinda sadece kolon gruplari verilir:
 
 ```yaml
-columns:
-  required:
-    customer_id: CUSTOMER_NO
-    invoice_month: PERIOD_YYYYMM
-    bill_amount: AMOUNT
+variables:
+  id_variables:
+    - MUSTERINO
+  time_variables:
+    - DONEM_AY
+  segment_variables:
+    - SEGMENTAD
+    - REF_ALTFAALIYET
+    - SUBE_KD
+  feature_variables:
+    - FATURA_TTR
+    - TURNOVER_AMT
+    - AKTIF_ABONE
 ```
+
+`feature_variables` listesindeki ilk kolon skorlanan ana tutardir. Diger feature kolonlari turnover/aktif abone gibi destek sinyali veya operasyonel feature olarak kullanilir. Eski `columns.required` formati backward-compatible kalir ama yeni kullanimda gerekli degildir.
 
 Secilen source icinde `output_columns: all` ise kaynak tablodaki kolonlar decision/detail output'a tasinir. Bir kolonu istemiyorsan ilgili source altinda `exclude_output_columns` kullan.
 
 ## Peer Secimi
 
-`peer_selection.priority_variables: auto` ise sistem teknik kolonlari, ID/ay/tutar rollerini ve map edilen raw kolonlari disarida birakarak kullanilabilir peer degiskenlerini infer eder. Ek olarak:
+`peer_selection.priority_variables: auto` ise sistem `variables.segment_variables` listesini ve feature'lardan tureyen `turnover_bucket`, `active_subscriber_bucket` gibi operatif peer degiskenlerini kullanir. Ek olarak:
 
 - `mandatory_variables`: varsa once bu degiskenleri merkeze alir.
 - `fallback_variables`: destek dusunce bu degiskenlerle daha genis peer dener.
