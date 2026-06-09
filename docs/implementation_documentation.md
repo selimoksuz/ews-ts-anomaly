@@ -123,6 +123,7 @@ Varsayilan `delete_insert` operasyonel run icin uygundur.
 ## Linux Notlari
 
 - Path'lerde `/` kullan. Python kodu Windows path'lerini de okuyabilir ama dokuman ve shell scriptler POSIX path varsayar.
+- Shell runner'lar kendi konumundan repo kokunu bulup oraya gecerek calisir; yine de config ve data path'leri repo kokune gore verilmelidir.
 - Oracle client thin mode `oracledb` ile calisir; ekstra instant client gerekmeyebilir.
 - Oracle network erisimi ve firewall izinleri makine bazinda ayrica saglanmalidir.
 - `PYTHON_BIN` ile python binary override edilebilir:

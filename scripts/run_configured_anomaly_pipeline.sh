@@ -6,6 +6,8 @@ DATA_SOURCE_CONFIG_PATH=""
 ENABLE_ORACLE_OUTPUT=0
 SKIP_PEER_QUALITY_REPORT=0
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -64,4 +66,5 @@ if [[ "$SKIP_PEER_QUALITY_REPORT" -eq 1 ]]; then
   ARGS+=("--skip-peer-quality-report")
 fi
 
+cd "$PROJECT_ROOT"
 "$PYTHON_BIN" "${ARGS[@]}"
