@@ -64,6 +64,10 @@ Detail table analiz tablosudur:
 - `PEER_AYLIK_ANA_METRIK_MEDYAN`
 - `PEER_AYLIK_ANA_METRIK_ORTALAMA`
 - `MUSTERI_PEER_ANA_METRIK_ORANI`
+- `ORAN_PAY_KOLON` ve `ORAN_PAYDA_KOLON`
+- `MUSTERI_ANA_METRIK_PAYDA_ORANI`
+- `PEER_AYLIK_ORAN_PAYDA_MEDYAN`
+- `PEER_AYLIK_ANA_METRIK_PAYDA_ORAN_MEDYAN`
 - Customer/peer trend, sezon, z-score, p-value, reason ve data-quality alanlari.
 
 Oracle source + Oracle sink run'inda decision/detail lokal CSV olarak uretilmez; Oracle'a yazilir. Peer quality raporu aciksa sadece analiz raporlari lokal uretilir.

@@ -1133,7 +1133,7 @@ def build_detail_table(
     if ratio_enabled:
         out["ORAN_PAY_KOLON"] = str(ratio_settings.get("numerator_source_col", ""))
         out["ORAN_PAYDA_KOLON"] = str(ratio_settings.get("denominator_source_col", ""))
-        out["MUSTERI_FEATURE_ORANI"] = detail["customer_bill_to_turnover_ratio"]
+        out["MUSTERI_ANA_METRIK_PAYDA_ORANI"] = detail["customer_bill_to_turnover_ratio"]
     out["MUSTERI_TOPLAM_AY_ADET"] = detail["customer_obs_count_total"]
     out["ONCEKI_AYA_GAP"] = detail["month_gap_from_previous"]
     out["PEER_SEVIYE"] = detail["peer_group_level_name"]
@@ -1143,8 +1143,8 @@ def build_detail_table(
     out["PEER_AYLIK_ANA_METRIK_MEDYAN"] = detail["peer_month_bill_median"]
     out["PEER_AYLIK_ANA_METRIK_ORTALAMA"] = detail["peer_month_bill_mean"]
     if ratio_enabled:
-        out["PEER_AYLIK_REFERANS_FEATURE_MEDYAN"] = detail["peer_month_turnover_median"]
-        out["PEER_AYLIK_FEATURE_ORAN_MEDYAN"] = detail["peer_month_bill_to_turnover_median"]
+        out["PEER_AYLIK_ORAN_PAYDA_MEDYAN"] = detail["peer_month_turnover_median"]
+        out["PEER_AYLIK_ANA_METRIK_PAYDA_ORAN_MEDYAN"] = detail["peer_month_bill_to_turnover_median"]
     out["MUSTERI_PEER_ANA_METRIK_ORANI"] = detail["customer_vs_peer_month_ratio"]
     out["MUSTERI_PEER_ORAN_PCTL"] = detail["customer_vs_peer_ratio_percentile"]
     out["MUSTERI_PEER_ORAN_REF_N"] = detail["customer_vs_peer_ratio_reference_n"]

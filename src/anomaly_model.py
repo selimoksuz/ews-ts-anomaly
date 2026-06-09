@@ -336,6 +336,18 @@ def feature_ratio_settings(
     *,
     denominator_usable: bool = True,
 ) -> dict[str, Any]:
+    def source_column(reference: str, default_role: str) -> str:
+        if not cols:
+            return reference
+        lowered = str(reference).strip().lower()
+        if lowered in {"main_feature", "target_variable", "amount_variable", "bill_amount"}:
+            return str(cols.get("bill_amount", reference))
+        if reference in cols:
+            return str(cols[reference])
+        if reference in set(cols.values()):
+            return str(reference)
+        return str(cols.get(default_role, reference))
+
     values = normalize_derived_features_config(config)
     ratio = dict(values.get("feature_ratio", {}))
     denominator_role = str(ratio.get("denominator", "turnover_amt"))
@@ -351,12 +363,8 @@ def feature_ratio_settings(
         "use_as_peer_variable": bool(peer_enabled),
         "numerator_role": numerator_role,
         "denominator_role": denominator_role,
-        "numerator_source_col": str(cols.get(numerator_role, numerator_role)) if cols else numerator_role,
-        "denominator_source_col": (
-            str(cols.get(denominator_role, denominator_role))
-            if not cols or denominator_role in cols
-            else str(denominator_role)
-        ),
+        "numerator_source_col": source_column(numerator_role, "bill_amount"),
+        "denominator_source_col": source_column(denominator_role, "turnover_amt"),
     }
 
 
