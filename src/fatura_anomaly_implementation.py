@@ -5,13 +5,16 @@ import configparser
 import json
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Callable
+import warnings
 
 import numpy as np
 import pandas as pd
 
 import adaptive_peer_selection as adaptive
 import fatura_peer_anomaly_model as core
+
+warnings.filterwarnings("ignore", category=pd.errors.PerformanceWarning)
 
 
 SIGNAL_COLUMNS = [
@@ -1568,7 +1571,13 @@ def run_implementation_scoring(
     oracle_chunksize: int | None = None,
     oracle_create_table: bool = True,
     oracle_connection_config: dict[str, Any] | None = None,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
+    def progress(message: str) -> None:
+        if progress_callback is not None:
+            progress_callback(message)
+
+    progress("implementation_prepare_dirs_start")
     output_dir.mkdir(parents=True, exist_ok=True)
     decision_dir = decision_output_dir or output_dir
     detail_dir = detail_output_dir or output_dir
@@ -1576,27 +1585,40 @@ def run_implementation_scoring(
     decision_dir.mkdir(parents=True, exist_ok=True)
     detail_dir.mkdir(parents=True, exist_ok=True)
     contract_dir.mkdir(parents=True, exist_ok=True)
+    progress("implementation_prepare_dirs_done")
 
     if source_frame is not None:
+        progress(f"source_prepare_start rows={len(source_frame):,} source={input_name}")
         prepared, profile = core.prepare_source_frame(source_frame, column_map=input_column_map, source_name=input_name)
     elif input_path is not None:
+        progress(f"source_prepare_start input_path={input_path}")
         prepared, profile = core.read_source(input_path, encoding, sep, column_map=input_column_map)
     else:
         raise ValueError("Either input_path or source_frame must be provided.")
+    progress(
+        "source_prepare_done "
+        f"monthly_rows={len(prepared):,} customers={prepared['customer_id'].nunique():,}"
+    )
     profile = apply_source_column_policy(profile, output_source_columns, exclude_source_columns)
 
     scoring_month_int = (
         int(prepared["invoice_month"].max()) if scoring_month == "last" else int(scoring_month)
     )
+    progress(f"rolling_window_start scoring_month={scoring_month_int} months={rolling_window_months}")
     prepared = apply_rolling_window(prepared, scoring_month_int, rolling_window_months)
     profile["rolling_window_months"] = rolling_window_months
     profile["fit_window_period_min"] = int(prepared["invoice_month"].min())
     profile["fit_window_period_max"] = int(prepared["invoice_month"].max())
+    progress(
+        "rolling_window_done "
+        f"rows={len(prepared):,} period_min={profile['fit_window_period_min']} period_max={profile['fit_window_period_max']}"
+    )
 
     effective_peer_config = adaptive.with_excluded_variables(
         peer_config or adaptive.PeerSelectionConfig(),
         peer_role_exclusions(profile),
     )
+    progress("score_scoring_month_start")
     run = core.score_scoring_month(
         prepared,
         scoring_month_int,
@@ -1607,7 +1629,12 @@ def run_implementation_scoring(
         scoring_weights=scoring_weights,
         score_aggregation=score_aggregation,
     )
+    progress(
+        "score_scoring_month_done "
+        f"scored_rows={len(run.scores):,} not_scored_rows={len(run.not_scored):,}"
+    )
     if include_prior_score_diagnostic:
+        progress("prior_score_diagnostic_start")
         run = core.attach_prior_score_diagnostic(
             prepared,
             run,
@@ -1618,21 +1645,35 @@ def run_implementation_scoring(
             scoring_weights=scoring_weights,
             score_aggregation=score_aggregation,
         )
+        progress("prior_score_diagnostic_done")
 
+    progress("summary_start")
     summary = core.summarize_run(run, profile)
+    progress("summary_done")
 
+    progress("output_tables_start")
     scores_for_outputs = augment_scores_for_outputs(run.scores)
     decision_table = build_decision_table(scores_for_outputs, run.not_scored, profile, scoring_month_int, prepared=prepared)
     detail_table = build_detail_table(prepared, scores_for_outputs, run.not_scored, scoring_month_int, profile)
+    progress(
+        "output_tables_done "
+        f"decision_rows={len(decision_table):,} detail_rows={len(detail_table):,}"
+    )
 
     source_stem = safe_output_stem(input_name or (input_path.stem if input_path is not None else None))
     decision_path = decision_dir / f"{source_stem}_anomaly_decisions_{scoring_month_int}.csv"
     detail_path = detail_dir / f"{source_stem}_anomaly_decision_detail_{scoring_month_int}.csv"
+    progress("csv_write_start")
     decision_table.to_csv(decision_path, index=False, encoding="utf-8-sig")
     detail_table.to_csv(detail_path, index=False, encoding="utf-8-sig")
+    progress(f"csv_write_done decision_csv={decision_path} detail_csv={detail_path}")
 
     oracle_payload: dict[str, Any] | None = None
     if write_oracle:
+        progress(
+            "oracle_write_start "
+            f"decision_table={oracle_decision_table} detail_table={oracle_detail_table} mode={oracle_write_mode}"
+        )
         oracle_payload = write_outputs_to_oracle(
             decision_table=decision_table,
             detail_table=detail_table,
@@ -1649,6 +1690,7 @@ def run_implementation_scoring(
             create_table=oracle_create_table,
             connection_config=oracle_connection_config,
         )
+        progress("oracle_write_done")
 
     payload = {
         "scoring_month": scoring_month_int,
@@ -1687,6 +1729,7 @@ def run_implementation_scoring(
     contract_path = contract_dir / f"{source_stem}_implementation_contract_{scoring_month_int}.json"
     payload["paths"]["implementation_contract_json"] = str(contract_path)
     contract_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    progress(f"contract_write_done path={contract_path}")
     return payload
 
 

@@ -124,12 +124,32 @@ Varsayilan `delete_insert` operasyonel run icin uygundur.
 
 - Path'lerde `/` kullan. Python kodu Windows path'lerini de okuyabilir ama dokuman ve shell scriptler POSIX path varsayar.
 - Shell runner'lar kendi konumundan repo kokunu bulup oraya gecerek calisir; yine de config ve data path'leri repo kokune gore verilmelidir.
+- Shell runner'lar stage bazli ilerleme log'u basar ve ayni ciktiyi varsayilan olarak `outputs/logs/anomaly_pipeline_<timestamp>.log` dosyasina yazar.
 - Oracle client thin mode `oracledb` ile calisir; ekstra instant client gerekmeyebilir.
 - Oracle network erisimi ve firewall izinleri makine bazinda ayrica saglanmalidir.
 - `PYTHON_BIN` ile python binary override edilebilir:
 
 ```bash
 PYTHON_BIN=python ./scripts/run_pipeline.sh --skip-peer-quality-report
+```
+
+Log dosyasi canli izlenebilir:
+
+```bash
+tail -f outputs/logs/anomaly_pipeline_*.log
+```
+
+Log dizini override edilebilir:
+
+```bash
+./scripts/run_oracle.sh --log-dir /tmp/anomaly_logs
+```
+
+Uzun model adimlarinda terminal/log sessiz kalmasin diye varsayilan heartbeat 60 saniyedir:
+
+```bash
+./scripts/run_oracle.sh --heartbeat-seconds 30
+./scripts/run_oracle.sh --heartbeat-seconds 0
 ```
 
 ## Validasyon

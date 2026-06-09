@@ -41,6 +41,13 @@ powershell -ExecutionPolicy Bypass -File scripts\run_pipeline.ps1 -SkipPeerQuali
 ./scripts/run_pipeline.sh --skip-peer-quality-report
 ```
 
+Linux run sirasinda terminale stage log'u basilir ve ayni cikti `outputs/logs` altina yazilir.
+
+```bash
+./scripts/run_pipeline.sh
+tail -f outputs/logs/anomaly_pipeline_*.log
+```
+
 ## Oracle input + Oracle output run
 
 `configs\data_source.yaml` icinde:
@@ -58,6 +65,19 @@ powershell -ExecutionPolicy Bypass -File scripts\run_oracle.ps1 -SkipPeerQuality
 
 ```bash
 ./scripts/run_oracle.sh --skip-peer-quality-report
+```
+
+Log dizini degistirilebilir:
+
+```bash
+./scripts/run_oracle.sh --log-dir /tmp/anomaly_logs
+```
+
+Uzun adimlarda varsayilan olarak 60 saniyede bir heartbeat basilir. Aralik degistirilebilir veya kapatilabilir:
+
+```bash
+./scripts/run_oracle.sh --heartbeat-seconds 30
+./scripts/run_oracle.sh --heartbeat-seconds 0
 ```
 
 ## Outputlar

@@ -5,6 +5,8 @@ CONFIG_PATH="configs/anomaly.yaml"
 DATA_SOURCE_CONFIG_PATH="configs/data_source.yaml"
 SKIP_PEER_QUALITY_REPORT=0
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+LOG_DIR=""
+HEARTBEAT_SECONDS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -22,6 +24,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --python)
       PYTHON_BIN="$2"
+      shift 2
+      ;;
+    --log-dir)
+      LOG_DIR="$2"
+      shift 2
+      ;;
+    --heartbeat-seconds)
+      HEARTBEAT_SECONDS="$2"
       shift 2
       ;;
     --help|-h)
@@ -43,6 +53,14 @@ ARGS=(
 
 if [[ "$SKIP_PEER_QUALITY_REPORT" -eq 1 ]]; then
   ARGS+=("--skip-peer-quality-report")
+fi
+
+if [[ -n "$LOG_DIR" ]]; then
+  ARGS+=("--log-dir" "$LOG_DIR")
+fi
+
+if [[ -n "$HEARTBEAT_SECONDS" ]]; then
+  ARGS+=("--heartbeat-seconds" "$HEARTBEAT_SECONDS")
 fi
 
 exec "$(dirname "$0")/run_configured_anomaly_pipeline.sh" "${ARGS[@]}"

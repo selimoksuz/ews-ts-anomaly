@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 from pathlib import Path
 import subprocess
@@ -10,6 +11,10 @@ from typing import Any
 import anomaly_config
 import anomaly_io
 import fatura_anomaly_implementation as implementation
+
+
+def log_step(message: str) -> None:
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}", flush=True)
 
 
 def parse_args() -> argparse.Namespace:
@@ -152,6 +157,7 @@ def run_peer_quality_report(
     )
     if output_dir is None:
         raise ValueError("peer_quality output_dir is missing.")
+    log_step(f"peer_quality_report_start output_dir={output_dir}")
     cmd = [
         sys.executable,
         "src/peer_quality_report.py",
@@ -167,6 +173,7 @@ def run_peer_quality_report(
         json.dumps(column_map, ensure_ascii=False),
     ]
     subprocess.run(cmd, cwd=project_root, check=True)
+    log_step("peer_quality_report_done")
     return {"output_dir": str(output_dir), "status": "generated"}
 
 
@@ -176,19 +183,32 @@ def run_from_config(
     skip_peer_quality_report: bool = False,
     enable_oracle_output: bool = False,
 ) -> dict[str, Any]:
+    log_step(f"pipeline_start config={config_path}")
     pipeline_config = anomaly_config.load_yaml_config(config_path)
     project_root = project_root_from_config(config_path, pipeline_config)
+    log_step(f"project_root={project_root}")
     data_source_config = load_data_source_config(pipeline_config, project_root, data_source_config_path)
     source = selected_data_source(pipeline_config, data_source_config)
     output_sink = selected_output_sink(pipeline_config, data_source_config, enable_oracle_output)
+    log_step(
+        "source_selected "
+        f"name={source.get('name')} type={source.get('type', 'csv')} "
+        f"sink={output_sink.get('name', 'none')} sink_enabled={bool(output_sink.get('enabled', False))}"
+    )
     model = pipeline_config.get("model", {})
     column_map = anomaly_config.column_map_from_config(pipeline_config)
     peer_config = anomaly_config.peer_config_from_config(pipeline_config)
     support_thresholds = anomaly_config.support_thresholds_from_config(pipeline_config)
     output_source_columns, exclude_source_columns = anomaly_config.source_column_policy(source)
+    log_step("source_read_start")
     input_path, source_frame, input_name, source_snapshot_path = read_source_frame(pipeline_config, source, project_root)
+    if source_frame is not None:
+        log_step(f"source_read_done rows={len(source_frame):,} snapshot={source_snapshot_path}")
+    else:
+        log_step(f"source_read_done input_path={input_path}")
     oracle_options = oracle_write_options(output_sink)
 
+    log_step("model_scoring_start")
     result = implementation.run_implementation_scoring(
         input_path=input_path,
         source_frame=source_frame,
@@ -226,7 +246,13 @@ def run_from_config(
         support_thresholds=support_thresholds,
         scoring_weights=model.get("scoring_weights", {}),
         score_aggregation=model.get("score_aggregation", {}),
+        progress_callback=log_step,
         **oracle_options,
+    )
+    log_step(
+        "model_scoring_done "
+        f"scoring_month={result.get('scoring_month')} "
+        f"decision_csv={result.get('paths', {}).get('decision_table_csv')}"
     )
 
     reports_enabled = anomaly_config.bool_config(pipeline_config, ("reports", "peer_quality", "enabled"), True)
@@ -239,6 +265,9 @@ def run_from_config(
             int(result["scoring_month"]),
             column_map,
         )
+    else:
+        log_step("peer_quality_report_skipped")
+    log_step("pipeline_done")
     return result
 
 
