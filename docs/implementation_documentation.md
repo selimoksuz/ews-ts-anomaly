@@ -52,11 +52,23 @@ model:
   scoring_month: last
 ```
 
-`last` kaynak datadaki en buyuk `YYYYMM` donemini skorlar. Sabit ay skorlamak icin `YYYYMM` yazabilirsin:
+`last` kaynak datadaki en buyuk donemi skorlar. Sabit ay skorlamak icin `YYYYMM`, `YYYYMMDD` veya tarih benzeri format yazabilirsin:
 
 ```yaml
 model:
   scoring_month: 202603
+```
+
+Asagidaki de ayni ay olarak yorumlanir:
+
+```yaml
+model:
+  scoring_month: 20260301
+```
+
+```yaml
+model:
+  scoring_month: 2026-03-01
 ```
 
 Son 3 ay musteri rejimi sinyali `configs/anomaly.yaml` icinde yonetilir:

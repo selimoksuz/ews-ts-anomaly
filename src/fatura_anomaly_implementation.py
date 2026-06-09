@@ -200,7 +200,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--contract-output-dir", default=None, help="Directory for the implementation contract JSON.")
     parser.add_argument("--encoding", default="auto")
     parser.add_argument("--sep", default="auto")
-    parser.add_argument("--scoring-month", default="last", help="YYYYMM or 'last'.")
+    parser.add_argument("--scoring-month", default="last", help="last, YYYYMM, YYYYMMDD, or date-like value.")
     parser.add_argument("--rolling-window-months", type=int, default=36)
     parser.add_argument("--watch-top-rate", type=float, default=0.030)
     parser.add_argument("--high-top-rate", type=float, default=0.0075)
@@ -1637,9 +1637,7 @@ def run_implementation_scoring(
     )
     profile = apply_source_column_policy(profile, output_source_columns, exclude_source_columns)
 
-    scoring_month_int = (
-        int(prepared["invoice_month"].max()) if scoring_month == "last" else int(scoring_month)
-    )
+    scoring_month_int = core.normalize_scoring_month(scoring_month, prepared["invoice_month"])
     progress(f"rolling_window_start scoring_month={scoring_month_int} months={rolling_window_months}")
     prepared = apply_rolling_window(prepared, scoring_month_int, rolling_window_months)
     profile["rolling_window_months"] = rolling_window_months

@@ -19,7 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--contract-output-dir", default="outputs/development/contracts")
     parser.add_argument("--encoding", default="auto")
     parser.add_argument("--sep", default="auto")
-    parser.add_argument("--scoring-month", default="last")
+    parser.add_argument("--scoring-month", default="last", help="last, YYYYMM, YYYYMMDD, or date-like value.")
     parser.add_argument("--watch-top-rate", type=float, default=0.030)
     parser.add_argument("--high-top-rate", type=float, default=0.0075)
     parser.add_argument("--include-prior-score-diagnostic", action="store_true", default=True)

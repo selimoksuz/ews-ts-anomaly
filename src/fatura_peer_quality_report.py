@@ -656,10 +656,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     decisions = pd.read_csv(decision_path)
-    if args.scoring_month == "last":
-        scoring_month = int(decisions["DONEM_AY"].max())
-    else:
-        scoring_month = int(args.scoring_month)
+    scoring_month = core.normalize_scoring_month(args.scoring_month, decisions["DONEM_AY"])
     decisions = decisions.loc[decisions["DONEM_AY"].astype(int).eq(scoring_month)].copy()
     column_map = json.loads(args.column_map_json) if args.column_map_json else None
     scoring_keys, history, scoring = load_scoring_context(

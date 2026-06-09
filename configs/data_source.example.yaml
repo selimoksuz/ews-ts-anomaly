@@ -1,42 +1,77 @@
+# Aktif input kaynagi. local_csv veya oracle_input gibi sources altindaki bir isim olmali.
 active_source: local_csv
+# Aktif output hedefi. local_files veya oracle_output gibi sinks altindaki bir isim olmali.
 active_sink: local_files
 
+# Oracle connection bilgileri. Gercek degerleri configs/data_source.yaml icine yaz;
+# bu example dosyasini secret bilgisiyle doldurma.
 connections:
   default_oracle:
+    # Opsiyonel logical connection adi. Direkt user/password/host varsa fallback olarak kullanilir.
     section: ORA_SECTION_NAME
+    # Oracle kullanici adi.
     user: ORACLE_USER
+    # Oracle sifresi. Git'e alinmayan configs/data_source.yaml icinde tutulmali.
     password: ORACLE_PASSWORD
+    # Oracle host veya IP.
     host: ORACLE_HOST
+    # Oracle port.
     port: 1521
+    # Oracle service name.
     service_name: ORACLE_SERVICE
+    # Varsayilan schema/owner.
     owner: ORACLE_OWNER
 
+# Input kaynak tanimlari. active_source bu isimlerden birini secer.
 sources:
   local_csv:
+    # CSV/local dosya okuma modu.
     type: csv
+    # Repo kokune gore input path.
     path: data/raw/input.csv
+    # auto: encoding otomatik bulunur. Gerekirse utf-8, cp1254 vb yaz.
     encoding: auto
+    # auto: ayirici otomatik bulunur. Gerekirse ; veya , yaz.
     sep: auto
+    # all: ham kaynak kolonlar decision/detail output'a tasinir.
     output_columns: all
+    # Output'a tasinmasini istemedigin ham kolonlar.
     exclude_output_columns: []
   oracle_input:
+    # Oracle tablo veya query okuma modu.
     type: oracle
+    # connections altindaki connection ismi.
     connection: default_oracle
+    # Input tablonun schema/owner bilgisi.
     owner: ORACLE_OWNER
+    # query null ise bu tablo select * ile okunur.
     table: ANOMALY_INPUT
+    # Istersen table yerine direkt SQL yazabilirsin. Null ise owner.table kullanilir.
     query: null
 
+# Output hedef tanimlari. active_sink bu isimlerden birini secer.
 sinks:
   local_files:
+    # Local CSV/JSON output modu.
     type: local
+    # Local output aktif mi?
     enabled: true
   oracle_output:
+    # Oracle decision/detail yazma modu.
     type: oracle
+    # connections altindaki connection ismi.
     connection: default_oracle
+    # Guvenlik icin default false. Oracle'a yazmak icin runner'da --enable-oracle-output da verilir.
     enabled: false
+    # Output tablolari hangi owner/schema altinda olusacak.
     owner: ORACLE_OWNER
+    # Kullanilacak sade karar tablosu.
     decision_table: ANOMALY_DECISIONS
+    # Analiz/detail tablosu.
     detail_table: ANOMALY_DECISION_DETAIL
+    # append, delete_insert, truncate_insert veya replace.
     write_mode: delete_insert
+    # Oracle insert batch size.
     chunksize: 10000
+    # Tablo yoksa create et; kolon eksikse gerekli durumda drop/create yapabilir.
     create_table: true

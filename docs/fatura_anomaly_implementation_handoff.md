@@ -308,7 +308,7 @@ Oracle yazimi opsiyoneldir. Yeni akista CSV/Oracle kaynaklari ve output sink aya
 
 Oracle source + Oracle sink run'inda decision/detail tablolari Oracle'a yazilir; lokal decision/detail CSV, contract JSON ve staging source snapshot uretilmez. Peer quality raporu aciksa sadece `outputs/analysis/peer_quality_report` altindaki analiz dosyalari uretilir.
 
-Skor ayini secmek icin `configs/anomaly.yaml` icinde `model.scoring_month` kullanilir. `last` en son donemi skorlar; belirli bir ay icin `YYYYMM` yazilabilir, ornek `202603`.
+Skor ayini secmek icin `configs/anomaly.yaml` icinde `model.scoring_month` kullanilir. `last` en son donemi skorlar; belirli bir ay icin `YYYYMM`, `YYYYMMDD` veya tarih benzeri format yazilabilir. `202603`, `20260301` ve `2026-03-01` ayni sekilde `202603` ayina normalize edilir.
 
 Oracle connection bilgileri direkt YAML icindedir. INI dosyalari sadece backward-compatible fallback olarak kalir.
 

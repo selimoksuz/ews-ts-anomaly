@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -202,7 +203,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="outputs/development/peer_anomaly_exploration")
     parser.add_argument("--encoding", default="auto")
     parser.add_argument("--sep", default="auto")
-    parser.add_argument("--scoring-month", default="last", help="YYYYMM integer or 'last'.")
+    parser.add_argument("--scoring-month", default="last", help="last, YYYYMM, YYYYMMDD, or date-like value.")
     parser.add_argument("--backtest-months", type=int, default=4)
     parser.add_argument("--watch-top-rate", type=float, default=0.030)
     parser.add_argument("--high-top-rate", type=float, default=0.0075)
@@ -221,6 +222,59 @@ def period_label(period_int: int) -> str:
     year = int(period_int) // 100
     month = int(period_int) % 100
     return f"{year}-{month:02d}"
+
+
+def normalize_scoring_month(value: Any, available_periods: pd.Series | list[Any] | None = None) -> int:
+    if value is None:
+        value = "last"
+    text = str(value).strip()
+    lowered = text.lower()
+    if lowered in {"last", "latest", "max"}:
+        if available_periods is None:
+            raise ValueError("scoring_month='last' requires available periods.")
+        periods = pd.to_numeric(pd.Series(available_periods), errors="coerce").dropna()
+        if periods.empty:
+            raise ValueError("scoring_month='last' could not be resolved because available periods are empty.")
+        return int(periods.max())
+
+    if re.fullmatch(r"\d+\.0+", text):
+        text = text.split(".", 1)[0]
+
+    candidates: list[tuple[int, int]] = []
+    year_first = re.fullmatch(r"(\d{4})[-_/.\s]?(\d{1,2})(?:[-_/.\s]?\d{1,2})?", text)
+    if year_first:
+        candidates.append((int(year_first.group(1)), int(year_first.group(2))))
+
+    day_first = re.fullmatch(r"\d{1,2}[-_/.\s](\d{1,2})[-_/.\s](\d{4})", text)
+    if day_first:
+        candidates.append((int(day_first.group(2)), int(day_first.group(1))))
+
+    month_first = re.fullmatch(r"(\d{1,2})[-_/.\s](\d{4})", text)
+    if month_first:
+        candidates.append((int(month_first.group(2)), int(month_first.group(1))))
+
+    digits = re.sub(r"\D", "", text)
+    if len(digits) == 6:
+        candidates.append((int(digits[:4]), int(digits[4:6])))
+    elif len(digits) >= 8:
+        candidates.append((int(digits[:4]), int(digits[4:6])))
+        candidates.append((int(digits[4:8]), int(digits[2:4])))
+
+    parsed = pd.to_datetime(text, errors="coerce", dayfirst=False)
+    if pd.notna(parsed):
+        candidates.append((int(parsed.year), int(parsed.month)))
+    for year, month in candidates:
+        period = int(year * 100 + month)
+        try:
+            period_ord(period)
+        except ValueError:
+            continue
+        return period
+
+    raise ValueError(
+        "Invalid scoring_month. Use 'last', YYYYMM, YYYYMMDD, YYYY-MM, YYYY-MM-DD, "
+        "YYYY/MM/DD, or DD.MM.YYYY style values."
+    )
 
 
 def first_nonnull(series: pd.Series) -> Any:
@@ -2924,7 +2978,7 @@ def main() -> None:
     input_path = Path(args.input)
     output_dir = Path(args.output_dir)
     prepared, profile = read_source(input_path, args.encoding, args.sep)
-    scoring_month = int(prepared["invoice_month"].max()) if args.scoring_month == "last" else int(args.scoring_month)
+    scoring_month = normalize_scoring_month(args.scoring_month, prepared["invoice_month"])
     backtest_summary = run_backtests(prepared, scoring_month, args.backtest_months, args.watch_top_rate, args.high_top_rate)
     run = score_scoring_month(prepared, scoring_month, args.watch_top_rate, args.high_top_rate)
     run = attach_prior_score_diagnostic(prepared, run, args.watch_top_rate, args.high_top_rate)

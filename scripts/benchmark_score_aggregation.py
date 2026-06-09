@@ -55,7 +55,7 @@ def load_prepared_data(config_path: Path, data_source_config_path: str | None) -
     else:
         raise ValueError("No input source was resolved.")
 
-    scoring_month = int(prepared["invoice_month"].max()) if model.get("scoring_month", "last") == "last" else int(model["scoring_month"])
+    scoring_month = core.normalize_scoring_month(model.get("scoring_month", "last"), prepared["invoice_month"])
     prepared = implementation.apply_rolling_window(
         prepared,
         scoring_month,

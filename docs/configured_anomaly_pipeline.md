@@ -18,11 +18,23 @@ model:
   scoring_month: last
 ```
 
-`last`, kaynak datadaki en son donemi skorlar. Belirli bir ay icin `YYYYMM` yaz:
+`last`, kaynak datadaki en son donemi skorlar. Belirli bir ay icin `YYYYMM`, `YYYYMMDD` veya tarih benzeri format yaz:
 
 ```yaml
 model:
   scoring_month: 202603
+```
+
+Bu ornekler de `202603` ayina normalize edilir:
+
+```yaml
+model:
+  scoring_month: 20260301
+```
+
+```yaml
+model:
+  scoring_month: 2026-03-01
 ```
 
 ## Kolon Davranisi
