@@ -216,9 +216,9 @@ Fiziksel kolon sirasi asagidaki gruplara gore uretilir:
 4. Scoring ay beklenen/gercek ana metrik alanlari
 5. Musteri sinyalleri
 6. Peer sinyalleri
-7. Peer kalite ve kalibrasyon alanlari
-8. Davranis/behavior alanlari
-9. Challenger model skor ve flag alanlari
+7. Challenger model skor ve flag alanlari
+8. Peer kalite ve kalibrasyon alanlari
+9. Davranis/behavior alanlari
 10. Onceki skor diagnostigi
 11. Evidence driver alanlari
 12. Final karar, flag, skor ve reason alanlari
@@ -226,21 +226,21 @@ Fiziksel kolon sirasi asagidaki gruplara gore uretilir:
 | Cikti kolonu | Oracle kolonu | Anlam |
 |---|---|---|
 | Ham input kolonlari | Inputtaki ad | Kaynaktan gelen kolonlar; mevcut fatura datasinda `SUBE_KD`, `MUSTERINO`, `SEGMENTAD`, `DONEM_AY`, `REF_ALTFAALIYET`, `AKTIF_ABONE`, `FATURA_TTR`, `TURNOVER_AMT`. |
-| ANA_METRIK_EKSIK_MI | AM_EKSIK_FLG | O ay ana metrik degeri kaynakta yok mu. |
+| ANA_METRIK_EKSIK_MI | ANA_MET_EKSIK_FLG | O ay ana metrik degeri kaynakta yok mu. |
 | ORAN_PAY_KOLON | ORAN_PAY_KOL | Feature-ratio pay kolonu. |
 | ORAN_PAYDA_KOLON | ORAN_PAYDA_KOL | Feature-ratio payda kolonu. |
-| MUSTERI_ANA_METRIK_PAYDA_ORANI | MUS_AM_PAYDA_ORAN | Musteri ana metrik / referans feature orani. |
+| MUSTERI_ANA_METRIK_PAYDA_ORANI | MUS_ANA_MET_PAYDA_ORAN | Musteri ana metrik / referans feature orani. |
 | MUSTERI_TOPLAM_AY_ADET | MUS_TOP_AY_ADET | Musterinin kaynakta gozlenen toplam ay adedi. |
 | ONCEKI_AYA_GAP | ONC_AY_GAP | Bu satirdaki ayin onceki gozleme uzakligi. |
 | PEER_SEVIYE | PEER_SEVIYE | Secilen peer seviyesinin adi. |
 | PEER_KOLONLARI | PEER_KOLONLAR | Secilen peer'i olusturan kolonlar. |
 | PEER_AYLIK_MUSTERI_ADET | PEER_AY_MUS_ADET | Ayni ay secilen peer icindeki musteri adedi. |
 | PEER_AYLIK_SATIR_ADET | PEER_AY_SATIR_ADET | Ayni ay secilen peer icindeki satir adedi. |
-| PEER_AYLIK_ANA_METRIK_MEDYAN | PEER_AY_AM_MEDYAN | Ayni ay peer ana metrik medyani. |
-| PEER_AYLIK_ANA_METRIK_ORTALAMA | PEER_AY_AM_ORT | Ayni ay peer ana metrik ortalamasi; karar driver'i degil, analiz kolonudur. |
+| PEER_AYLIK_ANA_METRIK_MEDYAN | PEER_AY_ANA_MET_MED | Ayni ay peer ana metrik medyani. |
+| PEER_AYLIK_ANA_METRIK_ORTALAMA | PEER_AY_ANA_MET_ORT | Ayni ay peer ana metrik ortalamasi; karar driver'i degil, analiz kolonudur. |
 | PEER_AYLIK_ORAN_PAYDA_MEDYAN | PEER_AY_PAYDA_MEDYAN | Ayni ay peer referans feature medyani. |
-| PEER_AYLIK_ANA_METRIK_PAYDA_ORAN_MEDYAN | PEER_AY_AM_PAYDA_MED | Ayni ay peer ana metrik / referans feature oran medyani. |
-| MUSTERI_PEER_ANA_METRIK_ORANI | MUS_PEER_AM_ORAN | Musteri ana metrik / peer ay medyani orani. |
+| PEER_AYLIK_ANA_METRIK_PAYDA_ORAN_MEDYAN | PEER_AY_ANA_MET_PAYDA_MED | Ayni ay peer ana metrik / referans feature oran medyani. |
+| MUSTERI_PEER_ANA_METRIK_ORANI | MUS_PEER_ANA_MET_ORAN | Musteri ana metrik / peer ay medyani orani. |
 | MUSTERI_PEER_ORAN_PCTL | MUS_PEER_ORAN_PCTL | Musterinin peer oran dagilimindaki percentile'i. |
 | MUSTERI_PEER_ORAN_REF_N | MUS_PEER_ORAN_REFN | Peer oran percentile hesabindaki referans gozlem sayisi. |
 | AYLIK_YORUM | AYLIK_YORUM | O ay satiri icin okunabilir seri yorumu. |
@@ -261,15 +261,15 @@ Fiziksel kolon sirasi asagidaki gruplara gore uretilir:
 | ANA_SINYAL | ANA_SINYAL | Karari en cok aciklayan ana sinyal. |
 | ANA_SINYAL_Z | ANA_SINYAL_Z | Ana sinyal z skoru. |
 | ANA_SINYAL_SKORU | ANA_SINYAL_SKOR | Ana sinyal evidence skoru. |
-| SKORLANAN_ANA_METRIK | SKOR_AM | Scoring ayindaki gercek ana metrik. |
-| BEKLENEN_ANA_METRIK | BEKLENEN_AM | Modelin referans/beklenen ana metrik seviyesi. |
-| PEER_GUNCEL_MEDYAN_ANA_METRIK | PEER_GUNCEL_AM_MED | Scoring ayinda peer medyan ana metrik. |
-| MUSTERI_GECMIS_MEDYAN_ANA_METRIK | MUS_GECMIS_AM_MED | Musterinin gecmis medyan ana metrik seviyesi. |
-| MUSTERI_TREND_BEKLENEN_ANA_METRIK | MUS_TREND_BEK_AM | Musteri trendinden beklenen ana metrik. |
-| MUSTERI_SEZON_BEKLENEN_ANA_METRIK | MUS_SEZON_BEK_AM | Musteri sezonundan beklenen ana metrik. |
-| MUSTERI_SON3_AY_MEDYAN_ANA_METRIK | MUS_SON3_AM_MED | Musterinin son 3 ay medyan ana metrik seviyesi. |
+| SKORLANAN_ANA_METRIK | SKOR_ANA_MET | Scoring ayindaki gercek ana metrik. |
+| BEKLENEN_ANA_METRIK | BEKLENEN_ANA_MET | Modelin referans/beklenen ana metrik seviyesi. |
+| PEER_GUNCEL_MEDYAN_ANA_METRIK | PEER_GUNCEL_ANA_MET_MED | Scoring ayinda peer medyan ana metrik. |
+| MUSTERI_GECMIS_MEDYAN_ANA_METRIK | MUS_GECMIS_ANA_MET_MED | Musterinin gecmis medyan ana metrik seviyesi. |
+| MUSTERI_TREND_BEKLENEN_ANA_METRIK | MUS_TREND_BEK_ANA_MET | Musteri trendinden beklenen ana metrik. |
+| MUSTERI_SEZON_BEKLENEN_ANA_METRIK | MUS_SEZON_BEK_ANA_MET | Musteri sezonundan beklenen ana metrik. |
+| MUSTERI_SON3_AY_MEDYAN_ANA_METRIK | MUS_SON3_ANA_MET_MED | Musterinin son 3 ay medyan ana metrik seviyesi. |
 | MUSTERI_SON3_AY_RANGE_LOG | MUS_SON3_RANGE_LOG | Son 3 ay log range; recent regime stabilitesi. |
-| PEER_TREND_BEKLENEN_ANA_METRIK | PEER_TREND_BEK_AM | Peer trendinden beklenen ana metrik. |
+| PEER_TREND_BEKLENEN_ANA_METRIK | PEER_TREND_BEK_ANA_MET | Peer trendinden beklenen ana metrik. |
 | GERCEK_BEKLENEN_ORANI | GERCEK_BEK_ORAN | Gercek ana metrik / beklenen ana metrik orani. |
 | GECMIS_PEER_Z | GECMIS_PEER_Z | Gecmis peer beklentisine gore z skoru. |
 | GECMIS_PEER_SKORU | GECMIS_PEER_SKOR | Gecmis peer evidence skoru. |
@@ -277,13 +277,13 @@ Fiziksel kolon sirasi asagidaki gruplara gore uretilir:
 | GUNCEL_PEER_SKORU | GUNCEL_PEER_SKOR | Ayni ay peer evidence skoru. |
 | PEER_TREND_Z | PEER_TREND_Z | Peer trend beklentisine gore z skoru. |
 | PEER_TREND_SKORU | PEER_TREND_SKOR | Peer trend evidence skoru. |
-| FEATURE_ORAN_Z | FT_ORAN_Z | Ana metrik / referans feature oran z skoru. |
-| FEATURE_ORAN_SKORU | FT_ORAN_SKOR | Feature-ratio evidence skoru. |
-| FEATURE_ORAN_SINYAL_ISTENDI | FT_ORAN_ISTENDI | Config'te ratio sinyalinin istenip istenmedigi. |
-| FEATURE_ORAN_GLOBAL_GATE_GECTI | FT_GLB_GATE_FLG | Global ratio kalite gate sonucu. |
-| FEATURE_ORAN_GLOBAL_GATE_NEDENI | FT_GLB_GATE_NEDEN | Global ratio gate gecmeme nedeni. |
-| FEATURE_ORAN_PEER_GATE_GECTI | FT_PEER_GATE_FLG | Peer ici ratio kalite gate sonucu. |
-| FEATURE_ORAN_PEER_GATE_NEDENI | FT_PEER_GATE_NEDEN | Peer ratio gate gecmeme nedeni. |
+| FEATURE_ORAN_Z | FEAT_ORAN_Z | Ana metrik / referans feature oran z skoru. |
+| FEATURE_ORAN_SKORU | FEAT_ORAN_SKOR | Feature-ratio evidence skoru. |
+| FEATURE_ORAN_SINYAL_ISTENDI | FEAT_ORAN_ISTENDI | Config'te ratio sinyalinin istenip istenmedigi. |
+| FEATURE_ORAN_GLOBAL_GATE_GECTI | FEAT_GLB_GATE_FLG | Global ratio kalite gate sonucu. |
+| FEATURE_ORAN_GLOBAL_GATE_NEDENI | FEAT_GLB_GATE_NEDEN | Global ratio gate gecmeme nedeni. |
+| FEATURE_ORAN_PEER_GATE_GECTI | FEAT_PEER_GATE_FLG | Peer ici ratio kalite gate sonucu. |
+| FEATURE_ORAN_PEER_GATE_NEDENI | FEAT_PEER_GATE_NEDEN | Peer ratio gate gecmeme nedeni. |
 | MUSTERI_GECMIS_Z | MUS_GECMIS_Z | Musteri gecmis medyanina gore z skoru. |
 | MUSTERI_GECMIS_SKORU | MUS_GECMIS_SKOR | Musteri gecmis evidence skoru. |
 | MUSTERI_TREND_Z | MUS_TREND_Z | Musteri trendine gore z skoru. |
@@ -338,9 +338,9 @@ Fiziksel kolon sirasi asagidaki gruplara gore uretilir:
 | PEER_SEZON_AY_ADET | PEER_SEZON_ADET | Peer ayni sezon/ay gozlem adedi. |
 | PEER_RECENT_ADET | PEER_RECENT_ADET | Peer recent gozlem adedi. |
 | PEER_GUNCEL_ADET | PEER_GUNCEL_ADET | Peer scoring ayi gozlem adedi. |
-| PEER_FEATURE_ORAN_ADET | PEER_FT_ORAN_ADET | Peer feature-ratio gozlem adedi. |
+| PEER_FEATURE_ORAN_ADET | PEER_FEAT_ORAN_ADET | Peer feature-ratio gozlem adedi. |
 | MUSTERI_GECMIS_AY_ADET | MUS_GECMIS_ADET | Musteri gecmis ay adedi. |
-| SON_12_AY_ANA_METRIK_ADET | SON12_AM_ADET | Son 12 ayda ana metrik gozlem adedi. |
+| SON_12_AY_ANA_METRIK_ADET | SON12_ANA_MET_ADET | Son 12 ayda ana metrik gozlem adedi. |
 | MUSTERI_TREND_ADET | MUS_TREND_ADET | Musteri trend hesap gozlem adedi. |
 | MUSTERI_SEZON_ADET | MUS_SEZON_ADET | Musteri sezon hesap gozlem adedi. |
 | MUSTERI_SON3_AY_ADET | MUS_SON3_ADET | Son 3 ay rejim gozlem adedi. |
