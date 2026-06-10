@@ -144,7 +144,7 @@ Peer objective agirliklari `configs/anomaly.yaml` icinde `peer_selection.objecti
 
 Feature ratio skora girmeden once `model.derived_features.feature_ratio.quality_gate` ile kontrol edilir. Global gate gecmezse veya secilen peer icinde `min_peer_ratio_rows` / `min_peer_ratio_mad` gecmezse oran sadece diagnostic kalir. Detail tabloda gate sonucu ve nedeni `FEATURE_ORAN_*_GATE_*` kolonlariyla izlenir.
 
-Challenger modeller `model.score_aggregation.challenger_models` altindan yonetilir. PCA, Isolation Forest ve LOF production kararini degistirmez; detail tabloda `MODEL_CHALLENGER_SKORU`, `MODEL_CHALLENGER_UYARI`, `PCA_CHALLENGER_ANOMALI_FLAG`, `IF_CHALLENGER_ANOMALI_FLAG`, `LOF_CHALLENGER_ANOMALI_FLAG` uretilir. Bu alanlar musteri-level scoring ay diagnostic'i oldugu icin musterinin detail serisindeki tum satirlara tasinir; aylik z-score/beklenen deger kolonlari ise yalniz scoring ay satirinda doludur.
+Challenger modeller `model.score_aggregation.challenger_models` altindan yonetilir. PCA, Isolation Forest ve LOF production kararini degistirmez; detail tabloda `MODEL_CHALLENGER_SKORU`, `MODEL_CHALLENGER_UYARI`, `PCA_CHALLENGER_ANOMALI_FLAG`, `IF_CHALLENGER_ANOMALI_FLAG`, `LOF_CHALLENGER_ANOMALI_FLAG` uretilir. Bu alanlar scoring ay diagnostic'i oldugu icin yalniz `DONEM_AY = MODEL_DONEM_AY` satirinda doludur; gecmis seri satirlarinda bos kalir.
 
 ## Lokal CSV Run
 

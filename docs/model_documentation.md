@@ -93,6 +93,15 @@ Bu agirliklar normalize edilir; toplam 1 olmak zorunda degildir.
 
 `stability` peer'in tarihsel medyani ile son 3 ay medyani arasindaki kaymayi ve MAD degisimini cezalandirir. `specificity` daha dar ama destek gecen peer'leri odullendirir. `support` hist/season/recent/current adetlerini ayri bir destek skoru olarak toplar.
 
+`PEER_SPESIFIKLIK_SKORU`, secilen peer kiriliminin ne kadar detayli ve oncelikli degiskenlerden olustugunu gosterir. Hesap mantigi:
+
+- Peer kolonu yoksa skor dusuk baz seviye alir.
+- Daha fazla peer kolonu kullanildikca `depth` artar.
+- `priority_variables` icindeki oncelikli kolonlar kullanildikca `priority` artar.
+- Skor 0-100 araligina tasinir.
+
+Bu skor tek basina "iyi peer" demek degildir. Destek azsa `PEER_DESTEK_SKORU`, dagilim kotuyse `PEER_DAGILIM_SKORU`, gecmis referans performansi zayifsa `PEER_KALIBRASYON_SKORU` objective'i dusurur.
+
 ## Feature Ratio Kalite Gate
 
 `feature_ratio` ana metrik / referans feature gibi oran sinyallerini uretir. Oran hesaplanabilir olsa bile final skora girmesi icin kalite gate'leri gecmelidir.
@@ -178,6 +187,157 @@ Challenger modeller production driver degildir. Final `ANOMALI_FLAG` robust evid
 - Local Outlier Factor score
 
 Raw ana metrik, raw segment ve raw musteri hacmi dogrudan modele verilmez. Kullanilan feature seti customer/peer z-score'lari, recent regime, data gap, peer quality ve actual/expected residual alanlaridir. Detail tabloda aggregate `MODEL_CHALLENGER_SKORU`, `MODEL_CHALLENGER_UYARI` ve `PCA/IF/LOF_CHALLENGER_ANOMALI_FLAG` alanlari bulunur.
+
+Challenger alanlari scoring ayina ait diagnostic'tir. Detail tablo musteri serisini gosterdigi icin bu kolonlar yalniz `DONEM_AY = MODEL_DONEM_AY` satirinda doludur; gecmis ay satirlarinda bos kalir.
+
+## Oracle Veri Sozlugu
+
+Oracle identifier limiti nedeniyle modelin urettigi uzun kolonlar kontrollu kisa aliaslarla yazilir. CSV/local output kolonlari human-readable kalabilir; Oracle yaziminda asagidaki alias sozlugu kullanilir. Raw input kolonlari mumkun oldugu surece inputtaki adiyla korunur.
+
+### Decision Table
+
+Decision tablo tek satir = scoring ayindaki musteri olacak sekilde tasarlanir. Kolon seti: ham input kolonlari + karar alanlari.
+
+| Cikti kolonu | Oracle kolonu | Anlam |
+|---|---|---|
+| Ham input kolonlari | Inputtaki ad | Kaynaktan gelen ve decision output'a tasinan kolonlar; ornek: `MUSTERINO`, `DONEM_AY`, ana metrik, segment/faaliyet/sube gibi kolonlar. |
+| ANOMALI_FLAG | ANOMALI_FLAG | 1 ise scoring ayinda anomaly/watchlist karari var, 0 ise yok. |
+| ANOMALI_NEDENI | ANOMALI_NEDENI | Human-readable karar nedeni. |
+
+### Detail Table
+
+Detail tablo tek satir = skorlanan musterinin ilgili ay satiri olacak sekilde musteri serisini ve scoring ay karar kanitlarini tasir.
+
+| Cikti kolonu | Oracle kolonu | Anlam |
+|---|---|---|
+| Ham input kolonlari | Inputtaki ad | Kaynaktan gelen kolonlar; mevcut fatura datasinda `SUBE_KD`, `MUSTERINO`, `SEGMENTAD`, `DONEM_AY`, `REF_ALTFAALIYET`, `AKTIF_ABONE`, `FATURA_TTR`, `TURNOVER_AMT`. |
+| ANA_METRIK_EKSIK_MI | AM_EKSIK_FLG | O ay ana metrik degeri kaynakta yok mu. |
+| ORAN_PAY_KOLON | ORAN_PAY_KOL | Feature-ratio pay kolonu. |
+| ORAN_PAYDA_KOLON | ORAN_PAYDA_KOL | Feature-ratio payda kolonu. |
+| MUSTERI_ANA_METRIK_PAYDA_ORANI | MUS_AM_PAYDA_ORAN | Musteri ana metrik / referans feature orani. |
+| MUSTERI_TOPLAM_AY_ADET | MUS_TOP_AY_ADET | Musterinin kaynakta gozlenen toplam ay adedi. |
+| ONCEKI_AYA_GAP | ONC_AY_GAP | Bu satirdaki ayin onceki gozleme uzakligi. |
+| PEER_SEVIYE | PEER_SEVIYE | Secilen peer seviyesinin adi. |
+| PEER_KOLONLARI | PEER_KOLONLAR | Secilen peer'i olusturan kolonlar. |
+| PEER_AYLIK_MUSTERI_ADET | PEER_AY_MUS_ADET | Ayni ay secilen peer icindeki musteri adedi. |
+| PEER_AYLIK_SATIR_ADET | PEER_AY_SATIR_ADET | Ayni ay secilen peer icindeki satir adedi. |
+| PEER_AYLIK_ANA_METRIK_MEDYAN | PEER_AY_AM_MEDYAN | Ayni ay peer ana metrik medyani. |
+| PEER_AYLIK_ANA_METRIK_ORTALAMA | PEER_AY_AM_ORT | Ayni ay peer ana metrik ortalamasi; karar driver'i degil, analiz kolonudur. |
+| PEER_AYLIK_ORAN_PAYDA_MEDYAN | PEER_AY_PAYDA_MEDYAN | Ayni ay peer referans feature medyani. |
+| PEER_AYLIK_ANA_METRIK_PAYDA_ORAN_MEDYAN | PEER_AY_AM_PAYDA_MED | Ayni ay peer ana metrik / referans feature oran medyani. |
+| MUSTERI_PEER_ANA_METRIK_ORANI | MUS_PEER_AM_ORAN | Musteri ana metrik / peer ay medyani orani. |
+| MUSTERI_PEER_ORAN_PCTL | MUS_PEER_ORAN_PCTL | Musterinin peer oran dagilimindaki percentile'i. |
+| MUSTERI_PEER_ORAN_REF_N | MUS_PEER_ORAN_REFN | Peer oran percentile hesabindaki referans gozlem sayisi. |
+| AYLIK_YORUM | AYLIK_YORUM | O ay satiri icin okunabilir seri yorumu. |
+| ANOMALI_SKORU | ANOMALI_SKORU | Final robust anomaly skoru; scoring ay satirinda doludur. |
+| GUVEN_SKORU | GUVEN_SKORU | Karar guven skoru. |
+| ANOMALI_ETIKETI | ANOMALI_ETIKETI | Final etiket: normal, watchlist veya anomaly tipi. |
+| ANOMALI_YONU | ANOMALI_YONU | Yuksek/dusuk ana metrik yonu. |
+| OPERASYON_KARARI | OPERASYON_KARARI | Operasyonel karar sinifi. |
+| AKSIYON_KARARI | AKSIYON_KARARI | Aksiyon/review etiketi. |
+| KANIT_GUCU | KANIT_GUCU | Kanit gucu: weak/medium/strong/normal. |
+| SINYAL_TUTARLILIGI | SINYAL_TUTAR | Customer ve peer sinyallerinin tutarlilik durumu. |
+| PEER_UYUM_DURUMU | PEER_UYUM | Musteri davranisi ile peer davranisi uyum durumu. |
+| PEER_FARK_YONU | PEER_FARK_YON | Peer'e gore fark yonu. |
+| PEER_FARK_Z | PEER_FARK_Z | Peer fark robust z skoru. |
+| MUSTERI_FARK_Z | MUS_FARK_Z | Musterinin kendi tarihine gore fark z skoru. |
+| VERI_YETERLILIK_DURUMU | VERI_YETER_DRM | Scoring icin veri yeterlilik sinifi. |
+| ANOMALI_NEDENI | ANOMALI_NEDENI | Human-readable reason. |
+| ANA_SINYAL | ANA_SINYAL | Karari en cok aciklayan ana sinyal. |
+| ANA_SINYAL_Z | ANA_SINYAL_Z | Ana sinyal z skoru. |
+| ANA_SINYAL_SKORU | ANA_SINYAL_SKOR | Ana sinyal evidence skoru. |
+| SKORLANAN_ANA_METRIK | SKOR_AM | Scoring ayindaki gercek ana metrik. |
+| BEKLENEN_ANA_METRIK | BEKLENEN_AM | Modelin referans/beklenen ana metrik seviyesi. |
+| PEER_GUNCEL_MEDYAN_ANA_METRIK | PEER_GUNCEL_AM_MED | Scoring ayinda peer medyan ana metrik. |
+| MUSTERI_GECMIS_MEDYAN_ANA_METRIK | MUS_GECMIS_AM_MED | Musterinin gecmis medyan ana metrik seviyesi. |
+| MUSTERI_TREND_BEKLENEN_ANA_METRIK | MUS_TREND_BEK_AM | Musteri trendinden beklenen ana metrik. |
+| MUSTERI_SEZON_BEKLENEN_ANA_METRIK | MUS_SEZON_BEK_AM | Musteri sezonundan beklenen ana metrik. |
+| MUSTERI_SON3_AY_MEDYAN_ANA_METRIK | MUS_SON3_AM_MED | Musterinin son 3 ay medyan ana metrik seviyesi. |
+| MUSTERI_SON3_AY_RANGE_LOG | MUS_SON3_RANGE_LOG | Son 3 ay log range; recent regime stabilitesi. |
+| PEER_TREND_BEKLENEN_ANA_METRIK | PEER_TREND_BEK_AM | Peer trendinden beklenen ana metrik. |
+| GERCEK_BEKLENEN_ORANI | GERCEK_BEK_ORAN | Gercek ana metrik / beklenen ana metrik orani. |
+| GECMIS_PEER_Z | GECMIS_PEER_Z | Gecmis peer beklentisine gore z skoru. |
+| GECMIS_PEER_SKORU | GECMIS_PEER_SKOR | Gecmis peer evidence skoru. |
+| GUNCEL_PEER_Z | GUNCEL_PEER_Z | Ayni ay peer medyanina gore z skoru. |
+| GUNCEL_PEER_SKORU | GUNCEL_PEER_SKOR | Ayni ay peer evidence skoru. |
+| PEER_TREND_Z | PEER_TREND_Z | Peer trend beklentisine gore z skoru. |
+| PEER_TREND_SKORU | PEER_TREND_SKOR | Peer trend evidence skoru. |
+| FEATURE_ORAN_Z | FT_ORAN_Z | Ana metrik / referans feature oran z skoru. |
+| FEATURE_ORAN_SKORU | FT_ORAN_SKOR | Feature-ratio evidence skoru. |
+| FEATURE_ORAN_SINYAL_ISTENDI | FT_ORAN_ISTENDI | Config'te ratio sinyalinin istenip istenmedigi. |
+| FEATURE_ORAN_GLOBAL_GATE_GECTI | FT_GLB_GATE_FLG | Global ratio kalite gate sonucu. |
+| FEATURE_ORAN_GLOBAL_GATE_NEDENI | FT_GLB_GATE_NEDEN | Global ratio gate gecmeme nedeni. |
+| FEATURE_ORAN_PEER_GATE_GECTI | FT_PEER_GATE_FLG | Peer ici ratio kalite gate sonucu. |
+| FEATURE_ORAN_PEER_GATE_NEDENI | FT_PEER_GATE_NEDEN | Peer ratio gate gecmeme nedeni. |
+| MUSTERI_GECMIS_Z | MUS_GECMIS_Z | Musteri gecmis medyanina gore z skoru. |
+| MUSTERI_GECMIS_SKORU | MUS_GECMIS_SKOR | Musteri gecmis evidence skoru. |
+| MUSTERI_TREND_Z | MUS_TREND_Z | Musteri trendine gore z skoru. |
+| MUSTERI_TREND_SKORU | MUS_TREND_SKOR | Musteri trend evidence skoru. |
+| MUSTERI_SEZON_Z | MUS_SEZON_Z | Musteri sezon beklentisine gore z skoru. |
+| MUSTERI_SEZON_SKORU | MUS_SEZON_SKOR | Musteri sezon evidence skoru. |
+| MUSTERI_SON3_REJIM_Z | MUS_SON3_REJIM_Z | Stabil son 3 ay rejimine gore z skoru. |
+| MUSTERI_SON3_REJIM_SKORU | MUS_SON3_REJIM_SKOR | Son 3 ay rejim evidence skoru. |
+| MUSTERI_SINYAL_SKORU | MUS_SINYAL_SKOR | Customer family konsolide sinyal skoru. |
+| PEER_SINYAL_SKORU | PEER_SINYAL_SKOR | Peer family konsolide sinyal skoru. |
+| MUSTERI_AILE_P_DEGERI | MUS_AILE_P | Customer family p-value. |
+| PEER_AILE_P_DEGERI | PEER_AILE_P | Peer family p-value. |
+| MUSTERI_AILE_YONU | MUS_AILE_YON | Customer family anomaly yonu. |
+| PEER_AILE_YONU | PEER_AILE_YON | Peer family anomaly yonu. |
+| MUSTERI_GUVENILIRLIK_DURUMU | MUS_GUVEN_DRM | Customer history guvenilirlik sinifi. |
+| PEER_GUVENILIRLIK_DURUMU | PEER_GUVEN_DRM | Peer guvenilirlik sinifi. |
+| PRIMARY_SINYAL_P_DEGERI | PRIM_SINYAL_P | Karardaki birincil sinyal p-value. |
+| PRIMARY_SINYAL_SKORU | PRIM_SINYAL_SKOR | Karardaki birincil sinyal skoru. |
+| SECONDARY_SINYAL_P_DEGERI | SEC_SINYAL_P | Ikincil destek sinyal p-value. |
+| EVIDENCE_DRIVER | EVIDENCE_DRIVER | Final evidence driver ailesi. |
+| EVIDENCE_CONFLICT_FLAG | EVID_CONFLICT_FLG | Customer-peer sinyal konflikti var mi. |
+| MUSTERI_ACIKLANABILIRLIK_SKORU | MUS_ACIK_SKOR | Musterinin kendi datasiyla aciklanabilirlik skoru. |
+| MUSTERI_ACIKLANABILIRLIK_DURUMU | MUS_ACIK_DRM | Musteri aciklanabilirlik durumu. |
+| PEER_TEMSIL_SKORU | PEER_TEMSIL_SKOR | Peer'in musteriyi temsil skoru. |
+| PEER_TEMSIL_DURUMU | PEER_TEMSIL_DRM | Peer temsil durumu. |
+| PEER_OBJECTIVE_SKORU | PEER_OBJ_SKOR | Adaptif peer secimi objective skoru. |
+| PEER_DESTEK_SKORU | PEER_DESTEK_SKOR | Peer support skoru. |
+| PEER_STABILITE_SKORU | PEER_STABIL_SKOR | Peer stabilite skoru. |
+| PEER_SPESIFIKLIK_SKORU | PEER_SPES_SKOR | Peer kiriliminin detay/oncelik skoru. |
+| PEER_UYGUN_ADAY_ADET | PEER_ADAY_ADET | Uygun peer aday adedi. |
+| PEER_DAGILIM_SKORU | PEER_DAGILIM_SKOR | Peer dagilim kalite skoru. |
+| PEER_DAGILIM_DURUMU | PEER_DAGILIM_DRM | Peer dagilim kalite durumu. |
+| PEER_LOG_ORAN_SKEW | PEER_LOG_SKEW | Peer log oran dagilimi skew. |
+| PEER_LOG_ORAN_KURTOSIS | PEER_LOG_KURT | Peer log oran dagilimi kurtosis. |
+| PEER_TAIL_RATE | PEER_TAIL_RATE | Peer robust tail rate. |
+| PEER_SECIM_GEREKCESI | PEER_SECIM_NEDEN | Secilen peer'in gerekcesi. |
+| SKORLAMA_STRATEJISI | SKOR_STRATEJI | Customer-first/peer fallback scoring stratejisi. |
+| MODEL_CHALLENGER_SKORU | CHL_SKOR | PCA/IF/LOF aggregate challenger skoru; sadece scoring ay satirinda doludur. |
+| MODEL_CHALLENGER_UYARI | CHL_UYARI | Challenger model yorumu; sadece scoring ay satirinda doludur. |
+| PCA_CHALLENGER_ANOMALI_FLAG | CHL_PCA_FLG | PCA challenger flag; sadece scoring ay satirinda doludur. |
+| IF_CHALLENGER_ANOMALI_FLAG | CHL_IF_FLG | Isolation Forest challenger flag; sadece scoring ay satirinda doludur. |
+| LOF_CHALLENGER_ANOMALI_FLAG | CHL_LOF_FLG | Local Outlier Factor challenger flag; sadece scoring ay satirinda doludur. |
+| PEER_KALIBRASYON_SKORU | PEER_KALIB_SKOR | Peer kalibrasyon skoru. |
+| PEER_KALIBRASYON_AY_ADET | PEER_KALIB_AY_ADET | Kalibrasyonda kullanilan ay adedi. |
+| PEER_KALIBRASYON_MEDYAN_ABS_RESIDUAL | PEER_KALIB_MED_ABS_RES | Kalibrasyon median absolute residual. |
+| PEER_KALIBRASYON_INTERVAL_KAPSAMA | PEER_KALIB_INT_KAPS | Kalibrasyon robust interval coverage. |
+| PEER_KALIBRASYON_FALSE_ALARM_ORANI | PEER_KALIB_FA_ORAN | Kalibrasyon false alarm orani. |
+| PEER_GECMIS_ADET | PEER_GECMIS_ADET | Peer gecmis gozlem adedi. |
+| PEER_SEZON_AY_ADET | PEER_SEZON_ADET | Peer ayni sezon/ay gozlem adedi. |
+| PEER_RECENT_ADET | PEER_RECENT_ADET | Peer recent gozlem adedi. |
+| PEER_GUNCEL_ADET | PEER_GUNCEL_ADET | Peer scoring ayi gozlem adedi. |
+| PEER_FEATURE_ORAN_ADET | PEER_FT_ORAN_ADET | Peer feature-ratio gozlem adedi. |
+| MUSTERI_GECMIS_AY_ADET | MUS_GECMIS_ADET | Musteri gecmis ay adedi. |
+| SON_12_AY_ANA_METRIK_ADET | SON12_AM_ADET | Son 12 ayda ana metrik gozlem adedi. |
+| MUSTERI_TREND_ADET | MUS_TREND_ADET | Musteri trend hesap gozlem adedi. |
+| MUSTERI_SEZON_ADET | MUS_SEZON_ADET | Musteri sezon hesap gozlem adedi. |
+| MUSTERI_SON3_AY_ADET | MUS_SON3_ADET | Son 3 ay rejim gozlem adedi. |
+| SON_12_AY_KAPSAMA | SON12_KAPSAMA | Son 12 ay coverage orani. |
+| SON_GAP_AY_ADET | SON_GAP_ADET | Scoring ayindan onceki son gap. |
+| DATA_GAP_SKORU | DATA_GAP_SKOR | Kesiklik/data gap skoru. |
+| YENI_MUSTERI_MI | YENI_MUS_FLG | Scoring ayinda yeni musteri flag'i. |
+| KESIK_SERI_MI | KESIK_SERI_FLG | Musteri serisi kesikli mi. |
+| MODEL_DOLDURMA_POLITIKASI | MODEL_DOLDURMA_POL | Ana metrik doldurma politikasi; model ana metrik imputasyonu yapmaz. |
+| ONCEKI_SKOR_DONEM_AY | ONC_SKOR_DONEM | Onceki skor donemi. |
+| ONCEKI_ANOMALI_SKORU | ONC_ANOMALI_SKOR | Onceki anomaly skoru. |
+| ONCEKI_AYA_GORE_SKOR_FARKI | ONC_AY_SKOR_FARK | Onceki aya gore skor farki. |
+| SKOR_TREND_DIAGNOSTIGI | SKOR_TREND_DIAG | Onceki skorla karsilastirma diagnostigi. |
+| MODEL_DONEM_AY | MODEL_DONEM_AY | Bu run'da skorlanan ay. |
+| ANOMALI_FLAG | ANOMALI_FLAG | Detail satirinda anomaly flag; scoring ay disinda 0 kalir. |
 
 ## Literatur ve Model Ailesi Karari
 
