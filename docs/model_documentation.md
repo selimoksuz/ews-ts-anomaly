@@ -186,7 +186,9 @@ Challenger modeller production driver degildir. Final `ANOMALI_FLAG` robust evid
 - Isolation Forest score
 - Local Outlier Factor score
 
-Raw ana metrik, raw segment ve raw musteri hacmi dogrudan modele verilmez. Kullanilan feature seti customer/peer z-score'lari, recent regime, data gap, peer quality ve actual/expected residual alanlaridir. Detail tabloda aggregate `MODEL_CHALLENGER_SKORU`, model bazli `PCA/IF/LOF_CHALLENGER_SKORU`, `MODEL_CHALLENGER_UYARI` ve `PCA/IF/LOF_CHALLENGER_ANOMALI_FLAG` alanlari bulunur.
+Raw ana metrik, raw segment ve raw musteri hacmi dogrudan modele verilmez. Challenger feature seti rule-derived veya karar-parametrik kolonlari kullanmaz. Kullanilan alanlar sadece ana metrikten uretilen fonksiyonel residual transformasyonlardir: musteri gecmis/trend/sezon/son-3-ay z skorlari, peer gecmis/guncel/trend z skorlari ve referans feature oran z skoru.
+
+Asagidaki kolonlar challenger modele sokulmaz; bunlar rule/diagnostic katmaninda kalir: `PRIMARY_SINYAL_P_DEGERI`, `ANA_SINYAL_SKORU`, `GUVEN_SKORU`, `MUSTERI_ACIKLANABILIRLIK_SKORU`, `EVIDENCE_CONFLICT_FLAG`, `VERI_YETERLILIK_DURUMU`, data-gap skoru, peer kalite/kalibrasyon skorlari ve final beklenen/gercek oranlari. Detail tabloda aggregate `MODEL_CHALLENGER_SKORU`, model bazli `PCA/IF/LOF_CHALLENGER_SKORU`, `MODEL_CHALLENGER_UYARI` ve `PCA/IF/LOF_CHALLENGER_ANOMALI_FLAG` alanlari bulunur.
 
 Challenger alanlari scoring ayina ait diagnostic'tir. Detail tablo musteri serisini gosterdigi icin bu kolonlar yalniz `DONEM_AY = MODEL_DONEM_AY` satirinda doludur; gecmis ay satirlarinda bos kalir.
 
@@ -234,7 +236,7 @@ Detail sozlugunu okurken kolonlari su kullanim tipleriyle dusun:
 | Musteri sinyalleri | `MUSTERI_GECMIS_Z`, `MUSTERI_TREND_Z`, `MUSTERI_SEZON_Z`, `MUSTERI_SINYAL_SKORU` | Musteri gecmisi yeterliyse oncelikli karar ailesidir. Trend icin yeterli gozlem, sezon icin ayni ay/gecmis ay bilgisi ve coverage kosullari aranir. | Musterinin kendi normalinden ne kadar saptigini olcer; customer-first mantigin ana evidencelaridir. |
 | Peer sinyalleri | `GECMIS_PEER_Z`, `GUNCEL_PEER_Z`, `PEER_TREND_Z`, `PEER_SINYAL_SKORU` | Musteri verisi yetersizse veya peer de destekliyorsa aktiftir. Peer kalite dusukse karar guveni dusurulur veya review dili kullanilir. | Musteri kendi dunyasiyla aciklanamiyorsa benzer grup davranisina gore farki olcer. |
 | Feature-ratio gate | `FEATURE_ORAN_Z`, `FEATURE_ORAN_GLOBAL_GATE_GECTI`, `FEATURE_ORAN_PEER_GATE_GECTI` | Sadece denominator coverage, missing/zero orani, peer ratio row sayisi ve MAD kosullari gecerse anomaly sinyali olabilir. Gate gecmezse diagnostic olarak kalir. | Ana metrik / referans feature oraninin guvenilir olup olmadigini ve karara dahil edilip edilmedigini aciklar. |
-| Challenger diagnostic | `CHL_SKOR`, `CHL_PCA_SKOR`, `CHL_IF_SKOR`, `CHL_LOF_SKOR`, `CHL_*_FLG` | Sadece scoring ay satirinda doludur. Production flag'i degistirmez; residual feature matrix uzerinde ek kontrol saglar. | Robust sistemle uyumlu/uyumsuz model davranisini izlemek ve challenger adaylarini takip etmek icindir. |
+| Challenger diagnostic | `CHL_SKOR`, `CHL_PCA_SKOR`, `CHL_IF_SKOR`, `CHL_LOF_SKOR`, `CHL_*_FLG` | Sadece scoring ay satirinda doludur. Production flag'i degistirmez; sadece ana metrik residual transformasyonlariyla ek kontrol saglar. | Robust sistemle uyumlu/uyumsuz model davranisini izlemek ve challenger adaylarini takip etmek icindir; rule-derived karar kolonlari modele verilmez. |
 | Peer kalite ve kalibrasyon | `PEER_TEMSIL_SKORU`, `PEER_OBJECTIVE_SKORU`, `PEER_DAGILIM_SKORU`, `PEER_KALIBRASYON_SKORU` | Peer seciminde ve karar guveninde aktiftir. Support, dagilim, spesifiklik, stabilite ve rolling OOT kalibrasyon kriterleri birlikte degerlendirilir. | Secilen peer gercekten temsil edici mi, yoksa peer kaynakli karar dikkatle mi okunmali sorusunu cevaplar. |
 | Davranis/behavior | `DAVRANIS_CLUSTER`, `DAVRANIS_*` | Config'te behavior peer aktifse peer aday genisletmede kullanilir; kapaliyken karar sinyali degildir. | Musterinin seviye/volatilite/trend davranisini diagnostic olarak izler. |
 | Onceki skor diagnostigi | `ONCEKI_ANOMALI_SKORU`, `ONCEKI_AYA_GORE_SKOR_FARKI`, `SKOR_TREND_DIAGNOSTIGI` | Karar driver'i degildir; bias yaratmamak icin final flag'i tek basina degistirmez. | Bu ayki skorun onceki skor trendinden kopup kopmadigini izlemek icindir. |
@@ -427,7 +429,7 @@ Mevcut karsilik:
 
 - Isolation Forest sadece challenger diagnostic'tir.
 - Raw ana metrik, raw segment ve raw musteri hacmi modele verilmez.
-- Kullanilan feature set residual sinyallerden olusur: customer z, peer z, trend z, seasonal z, data gap, peer quality, actual/expected ratio.
+- Kullanilan feature set sadece fonksiyonel residual sinyallerden olusur: customer z, peer z, trend z, seasonal z, recent regime z ve referans feature oran z. Data gap, peer quality, final actual/expected ratio ve evidence/decision kolonlari challenger modele verilmez.
 
 Kod karsiligi:
 

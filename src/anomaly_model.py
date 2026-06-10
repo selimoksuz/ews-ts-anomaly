@@ -1970,11 +1970,6 @@ def add_challenger_diagnostics(frame: pd.DataFrame, config: Mapping[str, Any]) -
         "current_peer_z",
         "peer_trend_z",
         "turnover_intensity_z",
-        "data_gap_score",
-        "peer_distribution_quality_score",
-        "peer_calibration_score",
-        "peer_representability_score",
-        "actual_to_expected_ratio",
     ]
     matrix = robust_feature_matrix(out, feature_columns)
     method_scores: dict[str, np.ndarray] = {}

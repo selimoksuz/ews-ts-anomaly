@@ -146,6 +146,8 @@ Feature ratio skora girmeden once `model.derived_features.feature_ratio.quality_
 
 Challenger modeller `model.score_aggregation.challenger_models` altindan yonetilir. PCA, Isolation Forest ve LOF production kararini degistirmez; detail tabloda aggregate `MODEL_CHALLENGER_SKORU`, model bazli `PCA/IF/LOF_CHALLENGER_SKORU`, `MODEL_CHALLENGER_UYARI` ve `PCA/IF/LOF_CHALLENGER_ANOMALI_FLAG` alanlari uretilir. Bu alanlar scoring ay diagnostic'i oldugu icin yalniz `DONEM_AY = MODEL_DONEM_AY` satirinda doludur; gecmis seri satirlarinda bos kalir.
 
+Challenger feature setine rule-derived veya karar-parametrik kolonlar verilmez. Model sadece ana metrikten turetilen fonksiyonel residual transformasyonlariyla calisir: musteri gecmis/trend/sezon/son-3-ay z skorlari, peer gecmis/guncel/trend z skorlari ve referans feature oran z skoru. `PRIMARY_SINYAL_P_DEGERI`, `ANA_SINYAL_SKORU`, `GUVEN_SKORU`, `MUSTERI_ACIKLANABILIRLIK_SKORU`, `EVIDENCE_CONFLICT_FLAG`, `VERI_YETERLILIK_DURUMU`, data-gap skoru, peer kalite skorlari ve final beklenen/gercek orani challenger modele sokulmaz; bunlar rule/diagnostic katmaninda kalir.
+
 ## Lokal CSV Run
 
 Windows:
