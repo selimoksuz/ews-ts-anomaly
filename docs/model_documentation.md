@@ -178,6 +178,8 @@ Top-rate tek basina anomaly etiketi uretmez. `label_guardrails` aktifse minimum 
 - Watchlist default: `min_watch_abs_z=1.50`, `min_watch_log_effect=0.14`
 - High anomaly default: `min_high_abs_z=2.50`, `min_high_log_effect=0.26`
 
+`ANOMALI_SKORU` ham p-value/evidence skoru degildir; operasyonel karar skoru olarak ay ici risk persentiline kalibre edilir. Ham kanit gucu `ANA_SINYAL_SKORU`, `PRIMARY_SINYAL_SKORU`, `MUSTERI_SINYAL_SKORU` ve `PEER_SINYAL_SKORU` alanlarinda izlenir. Bu ayrim su nedenle vardir: bir musteri tek bir ham sinyalde cok yuksek sapabilir, fakat final actual/expected effect, peer/customer conflict veya operasyonel top-rate esigini gecmiyorsa `ANOMALI_FLAG=0` kalmalidir. Kalibrasyon sonrasi normal satirlar watchlist skor tabaninin altinda, watchlist satirlari watchlist ile high-anomaly tabani arasinda, high anomaly satirlari high-anomaly tabaninin uzerinde kalir.
+
 ## Challenger Model Diagnostic
 
 Challenger modeller production driver degildir. Final `ANOMALI_FLAG` robust evidence-first sistemden gelir. Challenger katmani sadece residual feature matrix uzerinde ek diagnostic uretir:
@@ -188,7 +190,9 @@ Challenger modeller production driver degildir. Final `ANOMALI_FLAG` robust evid
 
 Raw ana metrik, raw segment ve raw musteri hacmi dogrudan modele verilmez. Challenger feature seti rule-derived veya karar-parametrik kolonlari kullanmaz. Kullanilan alanlar sadece ana metrikten uretilen fonksiyonel residual transformasyonlardir: musteri gecmis/trend/sezon/son-3-ay z skorlari, peer gecmis/guncel/trend z skorlari ve referans feature oran z skoru.
 
-Asagidaki kolonlar challenger modele sokulmaz; bunlar rule/diagnostic katmaninda kalir: `PRIMARY_SINYAL_P_DEGERI`, `ANA_SINYAL_SKORU`, `GUVEN_SKORU`, `MUSTERI_ACIKLANABILIRLIK_SKORU`, `EVIDENCE_CONFLICT_FLAG`, `VERI_YETERLILIK_DURUMU`, data-gap skoru, peer kalite/kalibrasyon skorlari ve final beklenen/gercek oranlari. Detail tabloda aggregate `MODEL_CHALLENGER_SKORU`, model bazli `PCA/IF/LOF_CHALLENGER_SKORU`, `MODEL_CHALLENGER_UYARI` ve `PCA/IF/LOF_CHALLENGER_ANOMALI_FLAG` alanlari bulunur.
+Asagidaki kolonlar challenger modele sokulmaz; bunlar rule/diagnostic katmaninda kalir: `PRIMARY_SINYAL_P_DEGERI`, `ANA_SINYAL_SKORU`, `GUVEN_SKORU`, `MUSTERI_ACIKLANABILIRLIK_SKORU`, `EVIDENCE_CONFLICT_FLAG`, `VERI_YETERLILIK_DURUMU`, data-gap skoru, peer kalite/kalibrasyon skorlari ve final beklenen/gercek oranlari. Aday residual feature'lar da `min_feature_valid_rate` ve `min_feature_unique_values` gate'lerinden gecmeden challenger modele verilmez; boylece tamamen bos veya sabit feature modele sinyal gibi girmez. Detail tabloda aggregate `MODEL_CHALLENGER_SKORU`, model bazli `PCA/IF/LOF_CHALLENGER_SKORU`, `MODEL_CHALLENGER_UYARI` ve `PCA/IF/LOF_CHALLENGER_ANOMALI_FLAG` alanlari bulunur.
+
+`MODEL_CHALLENGER_SKORU` tum model skorlarini zorunlu olarak ortalamaz; `challenger_models.aggregate_methods` listesinde secilen modellerden hesaplanir. Mevcut varsayilan `isolation_forest + pca`dir. LOF ayri skor/flag olarak uretilir, fakat mevcut validasyonda rule ile zayif hizalandigi icin aggregate skora dahil edilmez.
 
 Challenger alanlari scoring ayina ait diagnostic'tir. Detail tablo musteri serisini gosterdigi icin bu kolonlar yalniz `DONEM_AY = MODEL_DONEM_AY` satirinda doludur; gecmis ay satirlarinda bos kalir.
 
@@ -241,7 +245,7 @@ Detail sozlugunu okurken kolonlari su kullanim tipleriyle dusun:
 | Davranis/behavior | `DAVRANIS_CLUSTER`, `DAVRANIS_*` | Config'te behavior peer aktifse peer aday genisletmede kullanilir; kapaliyken karar sinyali degildir. | Musterinin seviye/volatilite/trend davranisini diagnostic olarak izler. |
 | Onceki skor diagnostigi | `ONCEKI_ANOMALI_SKORU`, `ONCEKI_AYA_GORE_SKOR_FARKI`, `SKOR_TREND_DIAGNOSTIGI` | Karar driver'i degildir; bias yaratmamak icin final flag'i tek basina degistirmez. | Bu ayki skorun onceki skor trendinden kopup kopmadigini izlemek icindir. |
 | Evidence driver | `ANA_SINYAL`, `PRIMARY_SINYAL_P_DEGERI`, `EVIDENCE_DRIVER`, `EVIDENCE_CONFLICT_FLAG` | Final karar anlatiminda aktiftir. En guclu sinyal p-value/effect yonu ve customer-peer uyumuna gore secilir. | Reason cumlesinin hangi kanita dayandigini ve sinyaller arasi konflikt olup olmadigini gosterir. |
-| Final karar | `ANOMALI_FLAG`, `ANOMALI_ETIKETI`, `ANOMALI_SKORU`, `ANOMALI_NEDENI` | Scoring ayinin karar sonucudur. Detail satirlarinda seri gorunumu icin gecmis aylar da bulunur; flag scoring ay disinda 0 kalir. | Operasyonel karar, skor, yon ve okunabilir reason'i tasir. |
+| Final karar | `ANOMALI_FLAG`, `ANOMALI_ETIKETI`, `ANOMALI_SKORU`, `ANOMALI_NEDENI` | Scoring ayinin karar sonucudur. `ANOMALI_SKORU` final etiketle uyumlu operasyonel risk skorudur; ham sinyal gucu sinyal skor kolonlarinda kalir. Detail satirlarinda seri gorunumu icin gecmis aylar da bulunur; flag scoring ay disinda 0 kalir. | Operasyonel karar, skor, yon ve okunabilir reason'i tasir. |
 
 Asagidaki alias tablosu teknik kolon eslemesini ve kisa anlamini verir; kolonun karara nasil girdigi icin yukaridaki kullanim sozlugu esas alinmalidir.
 
@@ -266,7 +270,7 @@ Asagidaki alias tablosu teknik kolon eslemesini ve kisa anlamini verir; kolonun 
 | MUSTERI_PEER_ORAN_PCTL | MUS_PEER_ORAN_PCTL | Musterinin peer oran dagilimindaki percentile'i. |
 | MUSTERI_PEER_ORAN_REF_N | MUS_PEER_ORAN_REFN | Peer oran percentile hesabindaki referans gozlem sayisi. |
 | AYLIK_YORUM | AYLIK_YORUM | O ay satiri icin okunabilir seri yorumu. |
-| ANOMALI_SKORU | ANOMALI_SKORU | Final robust anomaly skoru; scoring ay satirinda doludur. |
+| ANOMALI_SKORU | ANOMALI_SKORU | Operasyonel anomaly risk skoru; ay ici persentile kalibre edilir ve final etiketle uyumludur. |
 | GUVEN_SKORU | GUVEN_SKORU | Karar guven skoru. |
 | ANOMALI_ETIKETI | ANOMALI_ETIKETI | Final etiket: normal, watchlist veya anomaly tipi. |
 | ANOMALI_YONU | ANOMALI_YONU | Yuksek/dusuk ana metrik yonu. |
@@ -343,7 +347,7 @@ Asagidaki alias tablosu teknik kolon eslemesini ve kisa anlamini verir; kolonun 
 | PEER_TAIL_RATE | PEER_TAIL_RATE | Peer robust tail rate. |
 | PEER_SECIM_GEREKCESI | PEER_SECIM_NEDEN | Secilen peer'in gerekcesi. |
 | SKORLAMA_STRATEJISI | SKOR_STRATEJI | Customer-first/peer fallback scoring stratejisi. |
-| MODEL_CHALLENGER_SKORU | CHL_SKOR | PCA/IF/LOF aggregate challenger skoru; sadece scoring ay satirinda doludur. |
+| MODEL_CHALLENGER_SKORU | CHL_SKOR | Config `aggregate_methods` listesindeki challenger modellerinden hesaplanan aggregate skor; sadece scoring ay satirinda doludur. |
 | MODEL_CHALLENGER_UYARI | CHL_UYARI | Challenger model yorumu; sadece scoring ay satirinda doludur. |
 | PCA_CHALLENGER_SKORU | CHL_PCA_SKOR | PCA reconstruction-error percentile skoru; sadece scoring ay satirinda doludur. |
 | IF_CHALLENGER_SKORU | CHL_IF_SKOR | Isolation Forest percentile skoru; sadece scoring ay satirinda doludur. |
@@ -429,7 +433,8 @@ Mevcut karsilik:
 
 - Isolation Forest sadece challenger diagnostic'tir.
 - Raw ana metrik, raw segment ve raw musteri hacmi modele verilmez.
-- Kullanilan feature set sadece fonksiyonel residual sinyallerden olusur: customer z, peer z, trend z, seasonal z, recent regime z ve referans feature oran z. Data gap, peer quality, final actual/expected ratio ve evidence/decision kolonlari challenger modele verilmez.
+- Kullanilan feature set sadece fonksiyonel residual sinyallerden olusur: customer z, peer z, trend z, seasonal z, recent regime z ve referans feature oran z. Data gap, peer quality, final actual/expected ratio ve evidence/decision kolonlari challenger modele verilmez. Residual kolon yeterli finite coverage veya varyasyon tasimiyorsa model input'undan otomatik cikarilir.
+- Aggregate challenger skoru config'teki `aggregate_methods` ile secilen modellerden hesaplanir; LOF ayri diagnostic olarak kalabilir.
 
 Kod karsiligi:
 

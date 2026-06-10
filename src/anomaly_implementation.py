@@ -826,9 +826,18 @@ def build_human_reason(row: pd.Series) -> str:
     decision = decision_label_text(row)
 
     if label == "NORMAL":
+        raw_score = row.get("raw_evidence_score", score)
+        raw_text = ""
+        score_value = float(score) if pd.notna(score) else 0.0
+        if pd.notna(raw_score) and float(raw_score) >= 90.0 and float(raw_score) > score_value + 2.0:
+            raw_text = (
+                f" Ham evidence skoru {fmt_num(raw_score, 1)}; final skor ay ici operasyonel esik "
+                "ve effect guardrail ile kalibre edildi."
+            )
         return (
-            f"Ana sinyal: {signal} ({fmt_num(signal_score, 1)}%). {signal_detail} "
-            f"Karar: {decision}; skor {fmt_num(score, 1)}, guven {fmt_num(confidence, 1)}%."
+            f"Anomali degil. Ana sinyal: {signal} ({fmt_num(signal_score, 1)}%). {signal_detail} "
+            f"Karar: {decision}; operasyonel skor {fmt_num(score, 1)}, guven {fmt_num(confidence, 1)}%."
+            f"{raw_text}"
         )
 
     return (

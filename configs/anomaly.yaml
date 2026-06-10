@@ -102,9 +102,19 @@ model:
         - pca
         - isolation_forest
         - lof
+      # Aggregate CHL_SKOR hesaplanirken kullanilacak modeller.
+      # LOF ayri skor/flag olarak uretilir; mevcut validasyonda zayif oldugu icin aggregate'e alinmaz.
+      aggregate_methods:
+        - isolation_forest
+        - pca
       random_state: 42
       # Daha kucuk scoring batchlerde model diagnostic atlanir.
       min_rows: 200
+      # Challenger input feature'i kullanmak icin gereken minimum finite coverage.
+      # Ornek: ratio gate gecmedigi icin tamamen bos kalan feature modele girmez.
+      min_feature_valid_rate: 0.01
+      # Sabit veya tek degerli residual feature'lari modele sokmamak icin minimum benzersiz deger sayisi.
+      min_feature_unique_values: 2
       # PCA rekonstruksiyon skorunda tutulacak varyans hedefi.
       pca_variance_to_keep: 0.80
       # PCA icin maksimum komponent sayisi.

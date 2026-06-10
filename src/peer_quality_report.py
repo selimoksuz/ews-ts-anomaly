@@ -219,6 +219,20 @@ def add_peer_instance_keys(decisions: pd.DataFrame, scoring_keys: pd.DataFrame) 
     scoring_keys = normalize_merge_key(scoring_keys, id_column)
     out = decision_keys.merge(scoring_keys, on=id_column, how="left")
     out["MUSTERINO"] = out[id_column]
+    for output_col in set(report_mapping.values()).union(NORMALIZED_TO_OUTPUT.values()):
+        if not output_col or output_col in {id_column, "MUSTERINO"}:
+            continue
+        left_col = f"{output_col}_x"
+        right_col = f"{output_col}_y"
+        if output_col not in out.columns and (left_col in out.columns or right_col in out.columns):
+            left_values = out[left_col] if left_col in out.columns else pd.Series(pd.NA, index=out.index)
+            right_values = out[right_col] if right_col in out.columns else pd.Series(pd.NA, index=out.index)
+            out[output_col] = left_values.combine_first(right_values)
+        elif output_col in out.columns:
+            if left_col in out.columns:
+                out[output_col] = out[output_col].combine_first(out[left_col])
+            if right_col in out.columns:
+                out[output_col] = out[output_col].combine_first(out[right_col])
     if "DAVRANIS_CLUSTER" not in out.columns and "DAVRANIS_CLUSTER_REBUILT" in out.columns:
         out["DAVRANIS_CLUSTER"] = out["DAVRANIS_CLUSTER_REBUILT"]
     if "EXPOSURE_BUCKET" in out.columns:

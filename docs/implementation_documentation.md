@@ -148,6 +148,10 @@ Challenger modeller `model.score_aggregation.challenger_models` altindan yonetil
 
 Challenger feature setine rule-derived veya karar-parametrik kolonlar verilmez. Model sadece ana metrikten turetilen fonksiyonel residual transformasyonlariyla calisir: musteri gecmis/trend/sezon/son-3-ay z skorlari, peer gecmis/guncel/trend z skorlari ve referans feature oran z skoru. `PRIMARY_SINYAL_P_DEGERI`, `ANA_SINYAL_SKORU`, `GUVEN_SKORU`, `MUSTERI_ACIKLANABILIRLIK_SKORU`, `EVIDENCE_CONFLICT_FLAG`, `VERI_YETERLILIK_DURUMU`, data-gap skoru, peer kalite skorlari ve final beklenen/gercek orani challenger modele sokulmaz; bunlar rule/diagnostic katmaninda kalir.
 
+Challenger input hygiene `min_feature_valid_rate` ve `min_feature_unique_values` ile kontrol edilir. Tamamen bos, gate nedeniyle uretilmeyen veya sabit kalan residual feature modele girmez.
+
+Aggregate `MODEL_CHALLENGER_SKORU`, `challenger_models.aggregate_methods` listesindeki modellerden hesaplanir. Varsayilan `isolation_forest + pca`dir; LOF skoru ve flag'i uretilir ama mevcut validasyonda zayif hizalandigi icin aggregate'e dahil edilmez.
+
 ## Lokal CSV Run
 
 Windows:
@@ -218,6 +222,7 @@ Detail table:
 - Peer aylik medyan/ortalama metrikleri
 - Trend, sezon, p-value, z-score, evidence driver ve reason detaylari
 - Challenger diagnostic, peer kalite, peer kalibrasyon ve feature-ratio gate alanlari
+- `ANOMALI_SKORU` ham p-value skoru degil, final etiketle uyumlu ay ici operasyonel risk skorudur. Ham kanit gucu `ANA_SINYAL_SKORU`, `PRIMARY_SINYAL_SKORU`, `MUSTERI_SINYAL_SKORU` ve `PEER_SINYAL_SKORU` alanlarinda izlenir.
 - `ANOMALI_FLAG` tum detail satirlarinda 0/1 olarak doludur; scoring ayinda anomaly ise 1, diger satirlar 0 olur.
 - Fiziksel kolon sirasi sabittir: ham input, seri/data quality, peer aylik metrikler, scoring beklenen/gercek metrikler, musteri sinyalleri, peer sinyalleri, challenger, peer kalite, behavior, onceki skor diagnostigi, evidence driver ve final karar alanlari.
 - Oracle yaziminda tablo kolon seti veya kolon sirasi degisirse `create_table: true` iken tablo yeniden olusturulur; boylece Oracle fiziksel kolon sirasi da dokumandaki sirayla uyumlu kalir.
@@ -308,7 +313,7 @@ Uretilen dosyalar `outputs/analysis/validation_report` altindadir:
 - `validation_stress_test_sensitivity.json`
 - `validation_report_<YYYYMM>.md`
 
-`validation_output_integrity.csv` decision/detail satir sayisi, `ANOMALI_FLAG` missing/binary kontrolu, decision reason boslugu ve detail extreme missing kolonlarini izler. Bu dosyada `FAIL` varsa ilgili run production'a alinmadan incelenmelidir.
+`validation_output_integrity.csv` decision/detail satir sayisi, `ANOMALI_FLAG` missing/binary kontrolu, decision reason boslugu, detail extreme missing kolonlari ve normal satirlarin flagged satir skor tabanini asmamasi kontrolunu izler. Bu dosyada `FAIL` varsa ilgili run production'a alinmadan incelenmelidir; `WARN` varsa operasyonel yorum etkisi degerlendirilmelidir.
 
 ## Oracle Write Mode
 

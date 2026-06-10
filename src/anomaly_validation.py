@@ -590,6 +590,35 @@ def validate_output_tables(decision: pd.DataFrame, detail: pd.DataFrame) -> pd.D
         len(high_missing_cols),
         ",".join(high_missing_cols[:30]),
     )
+    score_columns = {"ANOMALI_FLAG", "ANOMALI_ETIKETI", "ANOMALI_SKORU"}
+    if score_columns.issubset(set(detail.columns)):
+        scored_detail = detail.loc[detail["ANOMALI_ETIKETI"].notna()].copy()
+        score = pd.to_numeric(scored_detail["ANOMALI_SKORU"], errors="coerce")
+        flag = pd.to_numeric(scored_detail["ANOMALI_FLAG"], errors="coerce").fillna(0).astype(int)
+        flagged_scores = score.loc[flag.eq(1)]
+        if len(flagged_scores) > 0:
+            flagged_min = float(flagged_scores.min())
+            normal_score_violations = int((flag.eq(0) & score.ge(flagged_min)).sum())
+            add_check(
+                "detail_normal_score_below_flagged_min",
+                "PASS" if normal_score_violations == 0 else "WARN",
+                normal_score_violations,
+                f"Normal rows should not exceed flagged score floor {flagged_min:.2f}",
+            )
+        else:
+            add_check(
+                "detail_normal_score_below_flagged_min",
+                "PASS",
+                0,
+                "No flagged scoring rows; score ordering check skipped",
+            )
+    else:
+        add_check(
+            "detail_normal_score_below_flagged_min",
+            "WARN",
+            "missing_columns",
+            "ANOMALI_FLAG, ANOMALI_ETIKETI, or ANOMALI_SKORU missing",
+        )
     return pd.DataFrame(rows)
 
 

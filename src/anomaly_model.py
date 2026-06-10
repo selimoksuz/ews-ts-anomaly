@@ -1882,6 +1882,26 @@ def robust_feature_matrix(frame: pd.DataFrame, columns: list[str]) -> np.ndarray
     return np.vstack(features).T
 
 
+def usable_challenger_features(
+    frame: pd.DataFrame,
+    columns: list[str],
+    min_valid_rate: float,
+    min_unique_values: int,
+) -> list[str]:
+    usable: list[str] = []
+    row_count = max(len(frame), 1)
+    for column in columns:
+        values = pd.to_numeric(frame.get(column, pd.Series(np.nan, index=frame.index)), errors="coerce")
+        finite = values[np.isfinite(values)]
+        valid_rate = len(finite) / row_count
+        if valid_rate < min_valid_rate:
+            continue
+        if finite.nunique(dropna=True) < min_unique_values:
+            continue
+        usable.append(column)
+    return usable
+
+
 def pca_challenger_score(matrix: np.ndarray, variance_to_keep: float, max_components: int) -> np.ndarray:
     if matrix.shape[0] < 3 or matrix.shape[1] == 0:
         return np.zeros(matrix.shape[0], dtype=float)
@@ -1937,6 +1957,24 @@ def sklearn_challenger_scores(matrix: np.ndarray, config: Mapping[str, Any]) -> 
     return scores, skipped
 
 
+def challenger_aggregate_method_names(config: Mapping[str, Any], method_scores: Mapping[str, np.ndarray]) -> list[str]:
+    aliases = {
+        "if": "isolation_forest",
+        "isolationforest": "isolation_forest",
+        "isolation_forest": "isolation_forest",
+        "pca": "pca",
+        "lof": "lof",
+        "local_outlier_factor": "lof",
+    }
+    requested = config.get("aggregate_methods")
+    if isinstance(requested, list) and requested:
+        normalized = [aliases.get(str(method).lower(), str(method).lower()) for method in requested]
+    else:
+        normalized = list(method_scores)
+    selected = [method for method in normalized if method in method_scores]
+    return selected or list(method_scores)
+
+
 def add_challenger_diagnostics(frame: pd.DataFrame, config: Mapping[str, Any]) -> pd.DataFrame:
     out = frame.copy()
     challenger = dict(config.get("challenger_models", {}))
@@ -1971,6 +2009,22 @@ def add_challenger_diagnostics(frame: pd.DataFrame, config: Mapping[str, Any]) -
         "peer_trend_z",
         "turnover_intensity_z",
     ]
+    feature_columns = usable_challenger_features(
+        out,
+        feature_columns,
+        float(challenger.get("min_feature_valid_rate", 0.01)),
+        int(challenger.get("min_feature_unique_values", 2)),
+    )
+    if not feature_columns:
+        out["model_challenger_score"] = np.nan
+        out["model_challenger_warning"] = "Challenger model skipped: no usable residual features."
+        out["pca_challenger_score"] = np.nan
+        out["if_challenger_score"] = np.nan
+        out["lof_challenger_score"] = np.nan
+        out["pca_challenger_anomaly_flag"] = 0
+        out["if_challenger_anomaly_flag"] = 0
+        out["lof_challenger_anomaly_flag"] = 0
+        return out
     matrix = robust_feature_matrix(out, feature_columns)
     method_scores: dict[str, np.ndarray] = {}
     methods = {str(method).lower() for method in challenger.get("methods", [])}
@@ -2004,10 +2058,12 @@ def add_challenger_diagnostics(frame: pd.DataFrame, config: Mapping[str, Any]) -
         out["model_challenger_warning"] = f"Challenger model skipped: {skipped_text}."
         return out
 
-    stacked = np.vstack(list(method_scores.values()))
+    aggregate_methods = challenger_aggregate_method_names(challenger, method_scores)
+    stacked = np.vstack([method_scores[method] for method in aggregate_methods])
     score = np.nanmean(stacked, axis=0)
     out["model_challenger_score"] = np.clip(score, 0.0, 100.0)
     method_text = "+".join(sorted(method_scores))
+    aggregate_text = "+".join(sorted(aggregate_methods))
     skipped_suffix = "" if not skipped_methods else " Atlanan yontemler: " + "; ".join(skipped_methods) + "."
     out["model_challenger_warning"] = np.select(
         [
@@ -2015,10 +2071,10 @@ def add_challenger_diagnostics(frame: pd.DataFrame, config: Mapping[str, Any]) -
             out["model_challenger_score"].ge(80.0),
         ],
         [
-            f"Challenger ({method_text}) residual feature uzayinda yuksek ayrisma gosteriyor; production karari robust sistemdir.{skipped_suffix}",
-            f"Challenger ({method_text}) residual feature uzayinda izleme sinyali gosteriyor; production karari robust sistemdir.{skipped_suffix}",
+            f"Challenger aggregate ({aggregate_text}; tum modeller={method_text}) residual feature uzayinda yuksek ayrisma gosteriyor; production karari robust sistemdir.{skipped_suffix}",
+            f"Challenger aggregate ({aggregate_text}; tum modeller={method_text}) residual feature uzayinda izleme sinyali gosteriyor; production karari robust sistemdir.{skipped_suffix}",
         ],
-        default=f"Challenger ({method_text}) ek anomaly kaniti gormedi; production karari robust sistemdir.{skipped_suffix}",
+        default=f"Challenger aggregate ({aggregate_text}; tum modeller={method_text}) ek anomaly kaniti gormedi; production karari robust sistemdir.{skipped_suffix}",
     )
     return out
 
@@ -2436,6 +2492,8 @@ def score_scoring_month(
         thresholds = {
             "watchlist_threshold": float(scores["watchlist_threshold_used"].iloc[0]),
             "high_anomaly_threshold": float(scores["high_anomaly_threshold_used"].iloc[0]),
+            "raw_evidence_watchlist_threshold": float(scores["raw_watchlist_threshold_used"].iloc[0]),
+            "raw_evidence_high_anomaly_threshold": float(scores["raw_high_anomaly_threshold_used"].iloc[0]),
         }
         thresholds.update(
             {
@@ -2613,11 +2671,13 @@ def label_scores(
     label_guardrails: Mapping[str, Any] | None = None,
 ) -> pd.DataFrame:
     out = scores.copy()
-    watch_thr = max(60.0, float(out["final_anomaly_score"].quantile(max(0.0, 1.0 - watch_top_rate))))
-    high_thr = max(80.0, float(out["final_anomaly_score"].quantile(max(0.0, 1.0 - high_top_rate))))
-    out["watchlist_threshold_used"] = watch_thr
-    out["high_anomaly_threshold_used"] = high_thr
-    out["score_percentile"] = out["final_anomaly_score"].rank(pct=True)
+    raw_score = pd.to_numeric(out["final_anomaly_score"], errors="coerce").fillna(0.0)
+    watch_thr = max(60.0, float(raw_score.quantile(max(0.0, 1.0 - watch_top_rate))))
+    high_thr = max(80.0, float(raw_score.quantile(max(0.0, 1.0 - high_top_rate))))
+    out["raw_evidence_score"] = raw_score
+    out["raw_watchlist_threshold_used"] = watch_thr
+    out["raw_high_anomaly_threshold_used"] = high_thr
+    out["score_percentile"] = raw_score.rank(pct=True) * 100.0
 
     guardrails = dict(label_guardrails or {})
     if bool(guardrails.get("enabled", False)):
@@ -2660,8 +2720,8 @@ def label_scores(
         watch_effect_ok = np.ones(len(out), dtype=bool)
         high_effect_ok = np.ones(len(out), dtype=bool)
 
-    high = out["final_anomaly_score"].ge(high_thr) & high_effect_ok
-    watch = out["final_anomaly_score"].ge(watch_thr) & watch_effect_ok & ~high
+    high = raw_score.ge(high_thr) & high_effect_ok
+    watch = raw_score.ge(watch_thr) & watch_effect_ok & ~high
     out["anomaly_label"] = "NORMAL"
     out.loc[watch & out["anomaly_direction"].eq("HIGH"), "anomaly_label"] = "WATCHLIST_HIGH"
     out.loc[watch & out["anomaly_direction"].eq("LOW"), "anomaly_label"] = "WATCHLIST_LOW"
@@ -2669,6 +2729,22 @@ def label_scores(
     out.loc[high & out["anomaly_direction"].eq("LOW"), "anomaly_label"] = "LOW_MAIN_METRIC_ANOMALY"
     out["is_high_anomaly"] = out["anomaly_label"].isin(["HIGH_MAIN_METRIC_ANOMALY", "LOW_MAIN_METRIC_ANOMALY"])
     out["is_watchlist_or_anomaly"] = out["anomaly_label"].ne("NORMAL")
+
+    watch_score_floor = float(np.clip(100.0 * (1.0 - watch_top_rate), 0.0, 100.0))
+    high_score_floor = float(np.clip(100.0 * (1.0 - high_top_rate), watch_score_floor, 100.0))
+    epsilon = 0.01
+    operational_score = out["score_percentile"].to_numpy(dtype=float, copy=True)
+    normal_mask = ~out["is_watchlist_or_anomaly"].to_numpy(dtype=bool)
+    watch_mask = out["is_watchlist_or_anomaly"].to_numpy(dtype=bool) & ~out["is_high_anomaly"].to_numpy(dtype=bool)
+    high_mask = out["is_high_anomaly"].to_numpy(dtype=bool)
+    normal_cap = max(watch_score_floor - epsilon, 0.0)
+    watch_cap = max(high_score_floor - epsilon, watch_score_floor)
+    operational_score[normal_mask] = np.minimum(operational_score[normal_mask], normal_cap)
+    operational_score[watch_mask] = np.clip(operational_score[watch_mask], watch_score_floor, watch_cap)
+    operational_score[high_mask] = np.clip(operational_score[high_mask], high_score_floor, 100.0)
+    out["watchlist_threshold_used"] = watch_score_floor
+    out["high_anomaly_threshold_used"] = high_score_floor
+    out["final_anomaly_score"] = np.clip(operational_score, 0.0, 100.0)
     return out
 
 
@@ -2902,10 +2978,17 @@ def reason_explanation(row: pd.Series) -> str:
 
     if label == "NORMAL":
         trend_text = "" if not score_trend or pd.isna(score_trend) else f" Score trend={score_trend}."
+        raw_score = row.get("raw_evidence_score", row.get("final_anomaly_score", np.nan))
+        raw_text = ""
+        if pd.notna(raw_score) and float(raw_score) >= 90.0 and float(raw_score) > numeric_or_default(row, "final_anomaly_score", 0.0) + 2.0:
+            raw_text = (
+                f" Ham evidence skoru={fmt_num(raw_score, 1)}; final skor ay ici operasyonel esik "
+                "ve effect guardrail ile kalibre edildi."
+            )
         return (
-            "No material main metric anomaly. "
-            f"Actual/expected ratio={fmt_num(ratio, 3)}, score={fmt_num(row.get('final_anomaly_score'), 1)}, "
-            f"confidence={fmt_num(row.get('confidence'), 1)}.{trend_text}"
+            "Anomali degil. "
+            f"Gercek/beklenen oran={fmt_num(ratio, 3)}, operasyonel skor={fmt_num(row.get('final_anomaly_score'), 1)}, "
+            f"guven={fmt_num(row.get('confidence'), 1)}.{raw_text}{trend_text}"
         )
 
     if "PEER_ASSIGNMENT_MISMATCH" in action:
