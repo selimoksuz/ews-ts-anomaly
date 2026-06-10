@@ -198,11 +198,11 @@ Oracle identifier limiti nedeniyle modelin urettigi uzun kolonlar kontrollu kisa
 
 Decision tablo tek satir = scoring ayindaki musteri olacak sekilde tasarlanir. Kolon seti: ham input kolonlari + karar alanlari.
 
-| Cikti kolonu | Oracle kolonu | Anlam |
-|---|---|---|
-| Ham input kolonlari | Inputtaki ad | Kaynaktan gelen ve decision output'a tasinan kolonlar; ornek: `MUSTERINO`, `DONEM_AY`, ana metrik, segment/faaliyet/sube gibi kolonlar. |
-| ANOMALI_FLAG | ANOMALI_FLAG | 1 ise scoring ayinda anomaly/watchlist karari var, 0 ise yok. |
-| ANOMALI_NEDENI | ANOMALI_NEDENI | Human-readable karar nedeni. |
+| Cikti kolonu | Oracle kolonu | Anlam | Modelde kullanim / kosul |
+|---|---|---|---|
+| Ham input kolonlari | Inputtaki ad | Kaynaktan gelen ve decision output'a tasinan kolonlar; ornek: `MUSTERINO`, `DONEM_AY`, ana metrik, segment/faaliyet/sube gibi kolonlar. | Decision table karar tuketimi icindir; bu kolonlar karar nedenini ham kaynak satiriyla baglamak, downstream join yapmak ve kullanicinin skorlanan gercek degeri gormesi icin korunur. |
+| ANOMALI_FLAG | ANOMALI_FLAG | 1 ise scoring ayinda anomaly/watchlist karari var, 0 ise yok. | Final karar kolonudur. Robust evidence-first sisteminden gelir; challenger modeller bu flag'i dogrudan degistirmez. |
+| ANOMALI_NEDENI | ANOMALI_NEDENI | Human-readable karar nedeni. | Final reason kolonudur. Ana sinyal, beklenen/gercek farki, musteri/peer guvenilirligi ve veri yeterlilik durumuna gore uretilir. |
 
 ### Detail Table
 
@@ -223,7 +223,27 @@ Fiziksel kolon sirasi asagidaki gruplara gore uretilir:
 11. Evidence driver alanlari
 12. Final karar, flag, skor ve reason alanlari
 
-| Cikti kolonu | Oracle kolonu | Anlam |
+Detail sozlugunu okurken kolonlari su kullanim tipleriyle dusun:
+
+| Kolon ailesi | Ornek kolonlar | Modelde aktif kullanim / kosul | Ne ise yarar |
+|---|---|---|---|
+| Ham input | `MUSTERINO`, `DONEM_AY`, ana metrik, segment degiskenleri | Her zaman tasinir. ID ve donem scoring/join icin zorunludur; ana metrik scoring degeridir; segment degiskenleri peer secimi icin kullanilir. | Kararin hangi kaynak satirindan geldigini, hangi ay ve hangi gercek ana metrikle skorlandigini gosterir. |
+| Seri ve data quality | `ANA_METRIK_EKSIK_MI`, `YENI_MUSTERI_MI`, `KESIK_SERI_MI`, `SON_12_AY_KAPSAMA`, `DATA_GAP_SKORU` | Karar guveni ve strateji seciminde aktiftir. Ana metrik eksikse skorlanabilirlik sinirlanir; yeni/kesik musteri self-history guvenini dusurur ve peer fallback'i guclendirir. | Modelin neden musteri-first, peer-only veya dusuk guvenli karar verdigini aciklar. |
+| Peer kimligi ve aylik peer metrikleri | `PEER_SEVIYE`, `PEER_KOLONLARI`, `PEER_AYLIK_ANA_METRIK_MEDYAN`, `MUSTERI_PEER_ANA_METRIK_ORANI` | Adaptif peer secimi sonucudur. Peer anlamli support ve kalite kapilarini gectiginde musteri degeri peer seviyesine gore de yorumlanir. | Musterinin hangi grupla kiyaslandigini ve o ay peer seviyesine gore nerede durdugunu gosterir. |
+| Beklenen/gercek ana metrik | `SKORLANAN_ANA_METRIK`, `BEKLENEN_ANA_METRIK`, `GERCEK_BEKLENEN_ORANI` | Scoring ayinda final reason ve skor aciklamasinda aktiftir. Beklenen seviye customer/peer evidence kaynaklarindan secilir. | "Neye gore anomalidir?" sorusunun sayisal cevabini verir. |
+| Musteri sinyalleri | `MUSTERI_GECMIS_Z`, `MUSTERI_TREND_Z`, `MUSTERI_SEZON_Z`, `MUSTERI_SINYAL_SKORU` | Musteri gecmisi yeterliyse oncelikli karar ailesidir. Trend icin yeterli gozlem, sezon icin ayni ay/gecmis ay bilgisi ve coverage kosullari aranir. | Musterinin kendi normalinden ne kadar saptigini olcer; customer-first mantigin ana evidencelaridir. |
+| Peer sinyalleri | `GECMIS_PEER_Z`, `GUNCEL_PEER_Z`, `PEER_TREND_Z`, `PEER_SINYAL_SKORU` | Musteri verisi yetersizse veya peer de destekliyorsa aktiftir. Peer kalite dusukse karar guveni dusurulur veya review dili kullanilir. | Musteri kendi dunyasiyla aciklanamiyorsa benzer grup davranisina gore farki olcer. |
+| Feature-ratio gate | `FEATURE_ORAN_Z`, `FEATURE_ORAN_GLOBAL_GATE_GECTI`, `FEATURE_ORAN_PEER_GATE_GECTI` | Sadece denominator coverage, missing/zero orani, peer ratio row sayisi ve MAD kosullari gecerse anomaly sinyali olabilir. Gate gecmezse diagnostic olarak kalir. | Ana metrik / referans feature oraninin guvenilir olup olmadigini ve karara dahil edilip edilmedigini aciklar. |
+| Challenger diagnostic | `CHL_SKOR`, `CHL_PCA_SKOR`, `CHL_IF_SKOR`, `CHL_LOF_SKOR`, `CHL_*_FLG` | Sadece scoring ay satirinda doludur. Production flag'i degistirmez; residual feature matrix uzerinde ek kontrol saglar. | Robust sistemle uyumlu/uyumsuz model davranisini izlemek ve challenger adaylarini takip etmek icindir. |
+| Peer kalite ve kalibrasyon | `PEER_TEMSIL_SKORU`, `PEER_OBJECTIVE_SKORU`, `PEER_DAGILIM_SKORU`, `PEER_KALIBRASYON_SKORU` | Peer seciminde ve karar guveninde aktiftir. Support, dagilim, spesifiklik, stabilite ve rolling OOT kalibrasyon kriterleri birlikte degerlendirilir. | Secilen peer gercekten temsil edici mi, yoksa peer kaynakli karar dikkatle mi okunmali sorusunu cevaplar. |
+| Davranis/behavior | `DAVRANIS_CLUSTER`, `DAVRANIS_*` | Config'te behavior peer aktifse peer aday genisletmede kullanilir; kapaliyken karar sinyali degildir. | Musterinin seviye/volatilite/trend davranisini diagnostic olarak izler. |
+| Onceki skor diagnostigi | `ONCEKI_ANOMALI_SKORU`, `ONCEKI_AYA_GORE_SKOR_FARKI`, `SKOR_TREND_DIAGNOSTIGI` | Karar driver'i degildir; bias yaratmamak icin final flag'i tek basina degistirmez. | Bu ayki skorun onceki skor trendinden kopup kopmadigini izlemek icindir. |
+| Evidence driver | `ANA_SINYAL`, `PRIMARY_SINYAL_P_DEGERI`, `EVIDENCE_DRIVER`, `EVIDENCE_CONFLICT_FLAG` | Final karar anlatiminda aktiftir. En guclu sinyal p-value/effect yonu ve customer-peer uyumuna gore secilir. | Reason cumlesinin hangi kanita dayandigini ve sinyaller arasi konflikt olup olmadigini gosterir. |
+| Final karar | `ANOMALI_FLAG`, `ANOMALI_ETIKETI`, `ANOMALI_SKORU`, `ANOMALI_NEDENI` | Scoring ayinin karar sonucudur. Detail satirlarinda seri gorunumu icin gecmis aylar da bulunur; flag scoring ay disinda 0 kalir. | Operasyonel karar, skor, yon ve okunabilir reason'i tasir. |
+
+Asagidaki alias tablosu teknik kolon eslemesini ve kisa anlamini verir; kolonun karara nasil girdigi icin yukaridaki kullanim sozlugu esas alinmalidir.
+
+| Cikti kolonu | Oracle kolonu | Kisa anlam |
 |---|---|---|
 | Ham input kolonlari | Inputtaki ad | Kaynaktan gelen kolonlar; mevcut fatura datasinda `SUBE_KD`, `MUSTERINO`, `SEGMENTAD`, `DONEM_AY`, `REF_ALTFAALIYET`, `AKTIF_ABONE`, `FATURA_TTR`, `TURNOVER_AMT`. |
 | ANA_METRIK_EKSIK_MI | ANA_MET_EKSIK_FLG | O ay ana metrik degeri kaynakta yok mu. |
