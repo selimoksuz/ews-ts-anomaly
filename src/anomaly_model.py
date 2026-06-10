@@ -82,6 +82,13 @@ DEFAULT_SCORE_AGGREGATION: dict[str, Any] = {
         "moderate_signal_p": 0.05,
         "conflict_signal_p": 0.05,
     },
+    "label_guardrails": {
+        "enabled": True,
+        "min_watch_abs_z": 1.50,
+        "min_high_abs_z": 2.50,
+        "min_watch_log_effect": 0.14,
+        "min_high_log_effect": 0.26,
+    },
     "customer_reliability": {
         "strong_min_prior_n": 6,
         "strong_min_coverage_12m": 0.50,
@@ -97,6 +104,16 @@ DEFAULT_SCORE_AGGREGATION: dict[str, Any] = {
         "enabled": True,
         "min_recent_months": MIN_CUSTOMER_RECENT_REGIME_ROWS,
         "max_recent_range_log": MAX_CUSTOMER_RECENT_REGIME_RANGE_LOG,
+    },
+    "challenger_models": {
+        "enabled": True,
+        "methods": ["pca", "isolation_forest", "lof"],
+        "random_state": 42,
+        "min_rows": 200,
+        "pca_variance_to_keep": 0.80,
+        "pca_max_components": 6,
+        "lof_neighbors": 35,
+        "flag_threshold": 95.0,
     },
     "confidence": {
         "customer_driver_floor": 55.0,
@@ -146,6 +163,13 @@ DEFAULT_DERIVED_FEATURES: dict[str, Any] = {
         "denominator": "turnover_amt",
         "use_as_peer_variable": True,
         "use_as_anomaly_signal": True,
+        "quality_gate": {
+            "enabled": True,
+            "max_denominator_missing_or_zero_rate": 0.50,
+            "min_monthly_valid_coverage": 0.50,
+            "min_peer_ratio_rows": MIN_RATIO_ROWS,
+            "min_peer_ratio_mad": 0.001,
+        },
     },
     "behavior_peer": {
         "enabled": False,
@@ -350,6 +374,7 @@ def feature_ratio_settings(
 
     values = normalize_derived_features_config(config)
     ratio = dict(values.get("feature_ratio", {}))
+    quality_gate = dict(ratio.get("quality_gate", {}))
     denominator_role = str(ratio.get("denominator", "turnover_amt"))
     numerator_role = str(ratio.get("numerator", "bill_amount"))
     has_denominator = bool(cols and (denominator_role in cols or denominator_role in set(cols.values())))
@@ -365,6 +390,8 @@ def feature_ratio_settings(
         "denominator_role": denominator_role,
         "numerator_source_col": source_column(numerator_role, "bill_amount"),
         "denominator_source_col": source_column(denominator_role, "turnover_amt"),
+        "quality_gate": quality_gate,
+        "quality_gate_enabled": bool(quality_gate.get("enabled", True)),
     }
 
 
@@ -586,6 +613,88 @@ def peer_distribution_stats(frame: pd.DataFrame, key: list[str]) -> pd.DataFrame
     return out[columns]
 
 
+def peer_calibration_stats(
+    frame: pd.DataFrame,
+    key: list[str],
+    scoring_month: int,
+    calibration_months: int = 6,
+    min_prior_months: int = 3,
+) -> pd.DataFrame:
+    columns = key + [
+        "peer_calibration_n",
+        "peer_calibration_abs_residual_median",
+        "peer_calibration_interval_coverage",
+        "peer_calibration_false_alarm_rate",
+        "peer_calibration_score",
+    ]
+    if len(frame) == 0:
+        return pd.DataFrame(columns=columns)
+
+    valid = frame.loc[frame["valid_bill_for_model"] & frame["log_bill"].notna(), key + ["month_ord", "month_of_year", "log_bill"]].copy()
+    if len(valid) == 0:
+        return pd.DataFrame(columns=columns)
+
+    scoring_ord = period_ord(scoring_month)
+    min_calibration_ord = scoring_ord - max(int(calibration_months), 1)
+    base_frame = valid.loc[valid["month_ord"].lt(min_calibration_ord)].copy()
+    calibration_frame = valid.loc[valid["month_ord"].between(min_calibration_ord, scoring_ord - 1)].copy()
+    if len(base_frame) == 0 or len(calibration_frame) == 0:
+        return pd.DataFrame(columns=columns)
+
+    base_stats = robust_group_stats(base_frame, key, "log_bill", "cal_base")
+    base_months = base_frame.groupby(key, dropna=False)["month_ord"].nunique().reset_index(name="cal_base_month_n")
+    base_stats = base_stats.merge(base_months, on=key, how="left")
+    base_stats = base_stats.loc[base_stats["cal_base_month_n"].fillna(0).ge(int(min_prior_months))]
+    if len(base_stats) == 0:
+        return pd.DataFrame(columns=columns)
+
+    seasonal = (
+        base_frame.groupby(key + ["month_of_year"], dropna=False)["log_bill"]
+        .median()
+        .reset_index(name="cal_seasonal_median")
+    )
+    monthly = (
+        calibration_frame.groupby(key + ["month_ord", "month_of_year"], dropna=False)["log_bill"]
+        .median()
+        .reset_index(name="peer_month_log_median")
+    )
+    work = monthly.merge(
+        base_stats[key + ["cal_base_median", "cal_base_mad"]],
+        on=key,
+        how="inner",
+    )
+    work = work.merge(seasonal, on=key + ["month_of_year"], how="left")
+    seasonal_adjustment = work["cal_seasonal_median"].astype(float) - work["cal_base_median"].astype(float)
+    work["_expected"] = work["cal_base_median"].astype(float) + seasonal_adjustment.fillna(0.0)
+    work["_residual"] = (
+        work["peer_month_log_median"].astype(float) - work["_expected"].astype(float)
+    ) / np.maximum(work["cal_base_mad"].astype(float), MIN_LOG_SCALE)
+    work["_abs_residual"] = work["_residual"].abs()
+    work["_covered"] = work["_abs_residual"].le(3.0).astype(float)
+    work["_false_alarm"] = work["_abs_residual"].ge(2.5).astype(float)
+    if len(work) == 0:
+        return pd.DataFrame(columns=columns)
+
+    out = (
+        work.groupby(key, dropna=False)
+        .agg(
+            peer_calibration_n=("_residual", "size"),
+            peer_calibration_abs_residual_median=("_abs_residual", "median"),
+            peer_calibration_interval_coverage=("_covered", "mean"),
+            peer_calibration_false_alarm_rate=("_false_alarm", "mean"),
+        )
+        .reset_index()
+    )
+    residual_score = 1.0 - np.minimum(out["peer_calibration_abs_residual_median"].astype(float) / 3.0, 1.0)
+    out["peer_calibration_score"] = 100.0 * (
+        0.45 * residual_score
+        + 0.35 * out["peer_calibration_interval_coverage"].astype(float)
+        + 0.20 * (1.0 - out["peer_calibration_false_alarm_rate"].astype(float))
+    )
+    out["peer_calibration_score"] = out["peer_calibration_score"].clip(0.0, 100.0)
+    return out[columns]
+
+
 def detect_read_options(input_path: Path, encoding: str, sep: str) -> tuple[str, str]:
     encodings = ["utf-8", "utf-8-sig", "cp1254"] if encoding == "auto" else [encoding]
     seps = [",", ";"] if sep == "auto" else [sep]
@@ -705,6 +814,7 @@ def prepare_source_frame(
     monthly["active_subscriber_missing_flag"] = monthly["active_subscriber_missing_flag"].fillna(False).astype(bool)
     monthly["active_subscriber"] = monthly["active_subscriber"].fillna(1).astype(float)
     turnover_missing_rate = float(monthly["turnover_amt"].isna().mean())
+    turnover_missing_or_zero_rate = float(monthly["turnover_amt"].fillna(0).le(0).mean())
     turnover_diff = (monthly["bill_amount"] - monthly["turnover_amt"]).abs()
     turnover_equal_bill_rate = float((turnover_diff <= 1e-6).mean())
     turnover_usable_for_model = "turnover_amt" in cols and turnover_missing_rate < 0.98 and turnover_equal_bill_rate < 0.98
@@ -725,6 +835,26 @@ def prepare_source_frame(
         denominator_usable=bool(turnover_usable_for_model),
     )
     ratio_enabled = bool(ratio_settings["enabled"])
+    quality_gate = dict(ratio_settings.get("quality_gate", {}))
+    gate_enabled = bool(ratio_settings.get("quality_gate_enabled", True))
+    ratio_valid_coverage = float(monthly["turnover_amt"].gt(0).mean()) if "turnover_amt" in monthly else 0.0
+    max_missing_or_zero = float(quality_gate.get("max_denominator_missing_or_zero_rate", 0.50))
+    min_monthly_coverage = float(quality_gate.get("min_monthly_valid_coverage", 0.50))
+    gate_reasons: list[str] = []
+    if gate_enabled and ratio_enabled:
+        if turnover_missing_or_zero_rate > max_missing_or_zero:
+            gate_reasons.append(
+                f"denominator_missing_or_zero_rate={turnover_missing_or_zero_rate:.3f}>{max_missing_or_zero:.3f}"
+            )
+        if ratio_valid_coverage < min_monthly_coverage:
+            gate_reasons.append(f"monthly_valid_coverage={ratio_valid_coverage:.3f}<{min_monthly_coverage:.3f}")
+    ratio_quality_gate_passed = bool(ratio_enabled and (not gate_enabled or not gate_reasons))
+    ratio_settings["quality_gate_passed"] = ratio_quality_gate_passed
+    ratio_settings["quality_gate_reasons"] = "; ".join(gate_reasons) if gate_reasons else "passed"
+    ratio_settings["denominator_missing_or_zero_rate"] = turnover_missing_or_zero_rate
+    ratio_settings["monthly_valid_coverage"] = ratio_valid_coverage
+    ratio_settings["use_as_anomaly_signal_requested"] = bool(ratio_settings["use_as_anomaly_signal"])
+    ratio_settings["use_as_anomaly_signal"] = bool(ratio_settings["use_as_anomaly_signal"] and ratio_quality_gate_passed)
     monthly["turnover_for_model"] = np.where(turnover_usable_for_model, monthly["turnover_amt"], np.nan)
     monthly["active_subscriber_bucket"] = pd.cut(
         monthly["active_subscriber"],
@@ -774,11 +904,15 @@ def prepare_source_frame(
         "turnover_equal_bill_rate": turnover_equal_bill_rate,
         "turnover_usable_for_model": bool(turnover_usable_for_model),
         "turnover_missing_rate": turnover_missing_rate,
-        "turnover_missing_or_zero_rate": float(monthly["turnover_amt"].fillna(0).le(0).mean()),
+        "turnover_missing_or_zero_rate": turnover_missing_or_zero_rate,
         "derived_features": normalize_derived_features_config(derived_features_config),
         "feature_ratio": ratio_settings,
         "feature_ratio_enabled": bool(ratio_settings["enabled"]),
         "feature_ratio_signal_enabled": bool(ratio_settings["use_as_anomaly_signal"]),
+        "feature_ratio_signal_requested": bool(ratio_settings["use_as_anomaly_signal_requested"]),
+        "feature_ratio_quality_gate_passed": bool(ratio_settings["quality_gate_passed"]),
+        "feature_ratio_quality_gate_reasons": str(ratio_settings["quality_gate_reasons"]),
+        "feature_ratio_monthly_valid_coverage": ratio_valid_coverage,
         "feature_ratio_peer_enabled": bool(ratio_settings["use_as_peer_variable"]),
         "behavior_peer_enabled": behavior_peer_enabled(derived_features_config),
     }
@@ -835,13 +969,25 @@ def group_key(cols: list[str]) -> list[str]:
     return cols if cols else ["_global_key"]
 
 
+def filter_frame_to_scoring_keys(frame: pd.DataFrame, scoring: pd.DataFrame, key: list[str]) -> pd.DataFrame:
+    if len(frame) == 0 or key == ["_global_key"]:
+        return frame
+    if any(col not in frame.columns or col not in scoring.columns for col in key):
+        return frame
+    scoring_keys = scoring[key].drop_duplicates()
+    if len(scoring_keys) == 0:
+        return frame.iloc[0:0].copy()
+    return frame.merge(scoring_keys, on=key, how="inner")
+
+
 def build_level_stats(history: pd.DataFrame, scoring: pd.DataFrame, scoring_month: int, cols: list[str]) -> pd.DataFrame:
     key = group_key(cols)
     scoring_moy = int(scoring["month_of_year"].iloc[0])
     scoring_ord = int(scoring["month_ord"].iloc[0])
 
-    hist_valid = history.loc[history["valid_bill_for_model"] & history["log_bill"].notna()].copy()
+    hist_valid_all = history.loc[history["valid_bill_for_model"] & history["log_bill"].notna()].copy()
     scoring_valid = scoring.loc[scoring["valid_bill_for_model"] & scoring["log_bill"].notna()].copy()
+    hist_valid = filter_frame_to_scoring_keys(hist_valid_all, scoring, key)
     recent = hist_valid.loc[hist_valid["month_ord"].between(scoring_ord - 3, scoring_ord - 1)]
     moy = hist_valid.loc[hist_valid["month_of_year"].eq(scoring_moy)]
     ratio = hist_valid.loc[hist_valid["bill_to_turnover_log_ratio"].notna()]
@@ -853,6 +999,7 @@ def build_level_stats(history: pd.DataFrame, scoring: pd.DataFrame, scoring_mont
     ratio_stats = robust_group_stats(ratio, key, "bill_to_turnover_log_ratio", "ratio")
     trend_stats = trend_group_stats(hist_valid, key, "peer")
     distribution_stats = peer_distribution_stats(hist_valid, key)
+    calibration_stats = peer_calibration_stats(hist_valid, key, scoring_month)
 
     stats = base.merge(recent_stats, on=key, how="left")
     stats = stats.merge(moy_stats, on=key, how="left")
@@ -860,8 +1007,14 @@ def build_level_stats(history: pd.DataFrame, scoring: pd.DataFrame, scoring_mont
     stats = stats.merge(ratio_stats, on=key, how="left")
     stats = stats.merge(trend_stats, on=key, how="left")
     stats = stats.merge(distribution_stats, on=key, how="left")
+    stats = stats.merge(calibration_stats, on=key, how="left")
     stats["peer_distribution_quality_score"] = stats["peer_distribution_quality_score"].fillna(50.0)
     stats["peer_distribution_status"] = stats["peer_distribution_status"].fillna("PEER_DISTRIBUTION_UNKNOWN")
+    stats["peer_calibration_score"] = stats["peer_calibration_score"].fillna(50.0)
+    stats["peer_calibration_n"] = stats["peer_calibration_n"].fillna(0)
+    stats["peer_calibration_abs_residual_median"] = stats["peer_calibration_abs_residual_median"].fillna(np.nan)
+    stats["peer_calibration_interval_coverage"] = stats["peer_calibration_interval_coverage"].fillna(np.nan)
+    stats["peer_calibration_false_alarm_rate"] = stats["peer_calibration_false_alarm_rate"].fillna(np.nan)
     stats["scoring_month"] = scoring_month
     return stats
 
@@ -1700,6 +1853,169 @@ def vectorized_evidence_aggregation(frame: pd.DataFrame, config: Mapping[str, An
     )
 
 
+def percentile_score(values: np.ndarray) -> np.ndarray:
+    clean = np.asarray(values, dtype=float)
+    out = np.zeros(len(clean), dtype=float)
+    valid = np.isfinite(clean)
+    if not bool(valid.any()):
+        return out
+    ranks = pd.Series(clean[valid]).rank(method="average", pct=True).to_numpy(dtype=float)
+    out[valid] = 100.0 * ranks
+    return out
+
+
+def robust_feature_matrix(frame: pd.DataFrame, columns: list[str]) -> np.ndarray:
+    features: list[np.ndarray] = []
+    for column in columns:
+        values = pd.to_numeric(frame.get(column, pd.Series(np.nan, index=frame.index)), errors="coerce").to_numpy(dtype=float)
+        finite = np.isfinite(values)
+        if not bool(finite.any()):
+            scaled = np.zeros(len(frame), dtype=float)
+        else:
+            median = float(np.nanmedian(values[finite]))
+            scale = robust_mad(pd.Series(values[finite]), MIN_LOG_SCALE)
+            scaled = (np.where(finite, values, median) - median) / max(scale, MIN_LOG_SCALE)
+        features.append(np.clip(scaled, -8.0, 8.0))
+        features.append((~finite).astype(float))
+    if not features:
+        return np.empty((len(frame), 0), dtype=float)
+    return np.vstack(features).T
+
+
+def pca_challenger_score(matrix: np.ndarray, variance_to_keep: float, max_components: int) -> np.ndarray:
+    if matrix.shape[0] < 3 or matrix.shape[1] == 0:
+        return np.zeros(matrix.shape[0], dtype=float)
+    centered = matrix - np.mean(matrix, axis=0, keepdims=True)
+    try:
+        _, singular_values, vt = np.linalg.svd(centered, full_matrices=False)
+    except np.linalg.LinAlgError:
+        return np.zeros(matrix.shape[0], dtype=float)
+    if len(singular_values) == 0:
+        return np.zeros(matrix.shape[0], dtype=float)
+    variance = singular_values**2
+    total_variance = float(np.sum(variance))
+    if total_variance <= 0:
+        return np.zeros(matrix.shape[0], dtype=float)
+    cumulative = np.cumsum(variance) / total_variance
+    n_components = int(np.searchsorted(cumulative, float(variance_to_keep), side="left") + 1)
+    n_components = max(1, min(n_components, int(max_components), vt.shape[0]))
+    components = vt[:n_components]
+    reconstructed = centered @ components.T @ components
+    reconstruction_error = np.mean((centered - reconstructed) ** 2, axis=1)
+    return percentile_score(reconstruction_error)
+
+
+def sklearn_challenger_scores(matrix: np.ndarray, config: Mapping[str, Any]) -> tuple[dict[str, np.ndarray], list[str]]:
+    methods = {str(method).lower() for method in config.get("methods", [])}
+    try:
+        from sklearn.ensemble import IsolationForest
+        from sklearn.neighbors import LocalOutlierFactor
+    except Exception as exc:
+        skipped = []
+        if "isolation_forest" in methods:
+            skipped.append(f"isolation_forest skipped: scikit-learn unavailable ({type(exc).__name__})")
+        if "lof" in methods:
+            skipped.append(f"lof skipped: scikit-learn unavailable ({type(exc).__name__})")
+        return {}, skipped
+
+    scores: dict[str, np.ndarray] = {}
+    skipped: list[str] = []
+    random_state = int(config.get("random_state", 42))
+    if "isolation_forest" in methods and matrix.shape[0] >= 20:
+        iso = IsolationForest(n_estimators=100, contamination="auto", random_state=random_state)
+        iso.fit(matrix)
+        scores["isolation_forest"] = percentile_score(-iso.decision_function(matrix))
+    elif "isolation_forest" in methods:
+        skipped.append("isolation_forest skipped: scoring row count below 20")
+    if "lof" in methods and matrix.shape[0] >= 20:
+        neighbors = max(5, min(int(config.get("lof_neighbors", 35)), matrix.shape[0] - 1))
+        lof = LocalOutlierFactor(n_neighbors=neighbors, contamination="auto")
+        lof.fit_predict(matrix)
+        scores["lof"] = percentile_score(-lof.negative_outlier_factor_)
+    elif "lof" in methods:
+        skipped.append("lof skipped: scoring row count below 20")
+    return scores, skipped
+
+
+def add_challenger_diagnostics(frame: pd.DataFrame, config: Mapping[str, Any]) -> pd.DataFrame:
+    out = frame.copy()
+    challenger = dict(config.get("challenger_models", {}))
+    if not bool(challenger.get("enabled", False)):
+        out["model_challenger_score"] = np.nan
+        out["model_challenger_warning"] = "Challenger model disabled."
+        out["pca_challenger_anomaly_flag"] = 0
+        out["if_challenger_anomaly_flag"] = 0
+        out["lof_challenger_anomaly_flag"] = 0
+        return out
+    if len(out) < int(challenger.get("min_rows", 200)):
+        out["model_challenger_score"] = np.nan
+        out["model_challenger_warning"] = "Challenger model skipped: scoring row count below minimum."
+        out["pca_challenger_anomaly_flag"] = 0
+        out["if_challenger_anomaly_flag"] = 0
+        out["lof_challenger_anomaly_flag"] = 0
+        return out
+
+    feature_columns = [
+        "self_history_z",
+        "customer_trend_z",
+        "customer_seasonal_z",
+        "customer_recent_regime_z",
+        "historical_peer_z",
+        "current_peer_z",
+        "peer_trend_z",
+        "turnover_intensity_z",
+        "data_gap_score",
+        "peer_distribution_quality_score",
+        "peer_calibration_score",
+        "peer_representability_score",
+        "actual_to_expected_ratio",
+    ]
+    matrix = robust_feature_matrix(out, feature_columns)
+    method_scores: dict[str, np.ndarray] = {}
+    methods = {str(method).lower() for method in challenger.get("methods", [])}
+    if "pca" in methods:
+        method_scores["pca"] = pca_challenger_score(
+            matrix,
+            float(challenger.get("pca_variance_to_keep", 0.80)),
+            int(challenger.get("pca_max_components", 6)),
+        )
+    sklearn_scores, skipped_methods = sklearn_challenger_scores(matrix, challenger)
+    method_scores.update(sklearn_scores)
+    flag_threshold = float(challenger.get("flag_threshold", 95.0))
+    out["pca_challenger_anomaly_flag"] = (
+        method_scores.get("pca", np.zeros(len(out), dtype=float)) >= flag_threshold
+    ).astype(int)
+    out["if_challenger_anomaly_flag"] = (
+        method_scores.get("isolation_forest", np.zeros(len(out), dtype=float)) >= flag_threshold
+    ).astype(int)
+    out["lof_challenger_anomaly_flag"] = (
+        method_scores.get("lof", np.zeros(len(out), dtype=float)) >= flag_threshold
+    ).astype(int)
+    if not method_scores:
+        out["model_challenger_score"] = np.nan
+        skipped_text = "; ".join(skipped_methods) if skipped_methods else "no challenger method produced scores"
+        out["model_challenger_warning"] = f"Challenger model skipped: {skipped_text}."
+        return out
+
+    stacked = np.vstack(list(method_scores.values()))
+    score = np.nanmean(stacked, axis=0)
+    out["model_challenger_score"] = np.clip(score, 0.0, 100.0)
+    method_text = "+".join(sorted(method_scores))
+    skipped_suffix = "" if not skipped_methods else " Atlanan yontemler: " + "; ".join(skipped_methods) + "."
+    out["model_challenger_warning"] = np.select(
+        [
+            out["model_challenger_score"].ge(95.0),
+            out["model_challenger_score"].ge(80.0),
+        ],
+        [
+            f"Challenger ({method_text}) residual feature uzayinda yuksek ayrisma gosteriyor; production karari robust sistemdir.{skipped_suffix}",
+            f"Challenger ({method_text}) residual feature uzayinda izleme sinyali gosteriyor; production karari robust sistemdir.{skipped_suffix}",
+        ],
+        default=f"Challenger ({method_text}) ek anomaly kaniti gormedi; production karari robust sistemdir.{skipped_suffix}",
+    )
+    return out
+
+
 def score_scoring_month(
     prepared: pd.DataFrame,
     scoring_month: int,
@@ -1724,6 +2040,9 @@ def score_scoring_month(
     ratio_settings = profile.get("feature_ratio") or feature_ratio_settings(effective_derived, None)
     ratio_signal_enabled = bool(ratio_settings.get("use_as_anomaly_signal", False))
     ratio_peer_enabled = bool(ratio_settings.get("use_as_peer_variable", False))
+    ratio_quality_gate = dict(ratio_settings.get("quality_gate", {}))
+    min_peer_ratio_rows = float(ratio_quality_gate.get("min_peer_ratio_rows", MIN_RATIO_ROWS))
+    min_peer_ratio_mad = float(ratio_quality_gate.get("min_peer_ratio_mad", 0.001))
     behavior_enabled = bool(profile.get("behavior_peer_enabled", behavior_peer_enabled(effective_derived)))
     if behavior_enabled:
         behavior = build_behavior_clusters(history)
@@ -1869,8 +2188,14 @@ def score_scoring_month(
             (selected["log_bill"] - selected["peer_trend_expected_log"]) / selected["historical_scale"],
             np.nan,
         )
+        ratio_peer_gate = (
+            ratio_signal_enabled
+            & selected["bill_to_turnover_log_ratio"].notna()
+            & selected["ratio_n"].fillna(0).ge(min_peer_ratio_rows)
+            & selected["ratio_mad"].fillna(0).ge(min_peer_ratio_mad)
+        )
         selected["turnover_intensity_z"] = np.where(
-            ratio_signal_enabled & selected["bill_to_turnover_log_ratio"].notna() & selected["ratio_n"].ge(MIN_RATIO_ROWS),
+            ratio_peer_gate,
             (selected["bill_to_turnover_log_ratio"] - selected["ratio_median"]) / np.maximum(selected["ratio_mad"].astype(float), MIN_LOG_SCALE),
             np.nan,
         )
@@ -1878,6 +2203,29 @@ def score_scoring_month(
         selected["ratio_denominator_source_col"] = str(ratio_settings.get("denominator_source_col", ""))
         selected["feature_ratio_enabled"] = bool(ratio_settings.get("enabled", False))
         selected["feature_ratio_signal_enabled"] = ratio_signal_enabled
+        selected["feature_ratio_signal_requested"] = bool(ratio_settings.get("use_as_anomaly_signal_requested", ratio_signal_enabled))
+        selected["feature_ratio_quality_gate_passed"] = bool(ratio_settings.get("quality_gate_passed", ratio_signal_enabled))
+        selected["feature_ratio_quality_gate_reasons"] = str(ratio_settings.get("quality_gate_reasons", "passed"))
+        selected["feature_ratio_peer_gate_passed"] = ratio_peer_gate
+        selected["feature_ratio_peer_gate_reasons"] = np.select(
+            [
+                ~selected["feature_ratio_enabled"],
+                selected["feature_ratio_signal_requested"] & ~selected["feature_ratio_quality_gate_passed"],
+                ratio_signal_enabled & selected["bill_to_turnover_log_ratio"].isna(),
+                ratio_signal_enabled & selected["ratio_n"].fillna(0).lt(min_peer_ratio_rows),
+                ratio_signal_enabled & selected["ratio_mad"].fillna(0).lt(min_peer_ratio_mad),
+                ratio_peer_gate,
+            ],
+            [
+                "feature_ratio_disabled",
+                selected["feature_ratio_quality_gate_reasons"],
+                "customer_ratio_missing",
+                "peer_ratio_rows_below_gate",
+                "peer_ratio_mad_below_gate",
+                "passed",
+            ],
+            default="not_requested",
+        )
         selected["feature_ratio_peer_enabled"] = ratio_peer_enabled
         selected["self_history_z"] = np.where(
             selected["prior_n"].ge(MIN_SELF_HISTORY_ROWS),
@@ -1998,11 +2346,12 @@ def score_scoring_month(
         sort_columns = [
             "_row_id",
             "peer_objective_score",
+            "peer_calibration_score",
             "peer_representability_score",
             "peer_distribution_quality_score",
             "peer_specificity_score",
         ]
-        sort_ascending = [True, False, False, False, False]
+        sort_ascending = [True, False, False, False, False, False]
         if selection_mode in {"first_supported", "first_pass", "narrow_first"}:
             sort_columns = ["_row_id", "peer_candidate_order"]
             sort_ascending = [True, True]
@@ -2066,7 +2415,7 @@ def score_scoring_month(
         not_scored["model_fill_policy"] = "NO_MAIN_METRIC_FILLING"
 
     if len(scores):
-        scores = label_scores(scores, watch_top_rate, high_top_rate)
+        scores = label_scores(scores, watch_top_rate, high_top_rate, aggregation_config.get("label_guardrails", {}))
         scores["peer_alignment_status"] = scores.apply(peer_alignment_status, axis=1)
         scores["peer_alignment_direction"] = scores.apply(peer_alignment_direction, axis=1)
         scores["peer_alignment_peer_z"] = scores.apply(peer_alignment_peer_z, axis=1)
@@ -2076,10 +2425,18 @@ def score_scoring_month(
         scores["evidence_strength"] = scores.apply(evidence_strength, axis=1)
         scores["action_label"] = scores.apply(action_label, axis=1)
         scores["reason_explanation"] = scores.apply(reason_explanation, axis=1)
+        scores = add_challenger_diagnostics(scores, aggregation_config)
         thresholds = {
             "watchlist_threshold": float(scores["watchlist_threshold_used"].iloc[0]),
             "high_anomaly_threshold": float(scores["high_anomaly_threshold_used"].iloc[0]),
         }
+        thresholds.update(
+            {
+                f"label_guardrail_{key}": value
+                for key, value in dict(aggregation_config.get("label_guardrails", {})).items()
+                if isinstance(value, (bool, int, float, str))
+            }
+        )
         dynamic_peer_cols = list(
             dict.fromkeys(col for candidate in peer_levels for col in candidate.columns if col in scores.columns)
         )
@@ -2108,6 +2465,11 @@ def score_scoring_month(
             "ratio_denominator_source_col",
             "feature_ratio_enabled",
             "feature_ratio_signal_enabled",
+            "feature_ratio_signal_requested",
+            "feature_ratio_quality_gate_passed",
+            "feature_ratio_quality_gate_reasons",
+            "feature_ratio_peer_gate_passed",
+            "feature_ratio_peer_gate_reasons",
             "feature_ratio_peer_enabled",
             "log_bill",
             "expected_log_bill",
@@ -2162,6 +2524,11 @@ def score_scoring_month(
             "peer_support_score",
             "peer_stability_score",
             "peer_specificity_score",
+            "peer_calibration_score",
+            "peer_calibration_n",
+            "peer_calibration_abs_residual_median",
+            "peer_calibration_interval_coverage",
+            "peer_calibration_false_alarm_rate",
             "peer_eligible_candidate_count",
             "peer_distribution_quality_score",
             "peer_distribution_status",
@@ -2170,16 +2537,11 @@ def score_scoring_month(
             "peer_tail_rate",
             "peer_selection_reason",
             "scoring_strategy",
-            "customer_final_weight",
-            "peer_final_weight",
-            "self_history_final_weight",
-            "customer_trend_final_weight",
-            "customer_seasonal_final_weight",
-            "customer_recent_regime_final_weight",
-            "historical_peer_final_weight",
-            "current_peer_final_weight",
-            "peer_trend_final_weight",
-            "turnover_intensity_final_weight",
+            "model_challenger_score",
+            "model_challenger_warning",
+            "pca_challenger_anomaly_flag",
+            "if_challenger_anomaly_flag",
+            "lof_challenger_anomaly_flag",
             "final_anomaly_score",
             "score_percentile",
             "confidence",
@@ -2234,7 +2596,12 @@ def score_scoring_month(
     )
 
 
-def label_scores(scores: pd.DataFrame, watch_top_rate: float, high_top_rate: float) -> pd.DataFrame:
+def label_scores(
+    scores: pd.DataFrame,
+    watch_top_rate: float,
+    high_top_rate: float,
+    label_guardrails: Mapping[str, Any] | None = None,
+) -> pd.DataFrame:
     out = scores.copy()
     watch_thr = max(60.0, float(out["final_anomaly_score"].quantile(max(0.0, 1.0 - watch_top_rate))))
     high_thr = max(80.0, float(out["final_anomaly_score"].quantile(max(0.0, 1.0 - high_top_rate))))
@@ -2242,8 +2609,49 @@ def label_scores(scores: pd.DataFrame, watch_top_rate: float, high_top_rate: flo
     out["high_anomaly_threshold_used"] = high_thr
     out["score_percentile"] = out["final_anomaly_score"].rank(pct=True)
 
-    high = out["final_anomaly_score"].ge(high_thr)
-    watch = out["final_anomaly_score"].ge(watch_thr) & ~high
+    guardrails = dict(label_guardrails or {})
+    if bool(guardrails.get("enabled", False)):
+        signal_z_cols = [
+            "self_history_z",
+            "customer_trend_z",
+            "customer_seasonal_z",
+            "customer_recent_regime_z",
+            "historical_peer_z",
+            "current_peer_z",
+            "peer_trend_z",
+            "turnover_intensity_z",
+        ]
+        z_matrix = np.vstack(
+            [
+                pd.to_numeric(out.get(col, pd.Series(np.nan, index=out.index)), errors="coerce")
+                .fillna(0.0)
+                .abs()
+                .to_numpy(dtype=float)
+                for col in signal_z_cols
+            ]
+        )
+        max_abs_z = np.nanmax(z_matrix, axis=0)
+        ratio = pd.to_numeric(out.get("actual_to_expected_ratio", pd.Series(np.nan, index=out.index)), errors="coerce")
+        log_effect = np.log(np.maximum(ratio.to_numpy(dtype=float), 1e-6))
+        abs_log_effect = np.abs(np.where(np.isfinite(log_effect), log_effect, 0.0))
+        out["label_guardrail_max_abs_z"] = max_abs_z
+        out["label_guardrail_abs_log_effect"] = abs_log_effect
+        watch_effect_ok = (
+            (max_abs_z >= float(guardrails.get("min_watch_abs_z", 1.50)))
+            & (abs_log_effect >= float(guardrails.get("min_watch_log_effect", 0.14)))
+        )
+        high_effect_ok = (
+            (max_abs_z >= float(guardrails.get("min_high_abs_z", 2.50)))
+            & (abs_log_effect >= float(guardrails.get("min_high_log_effect", 0.26)))
+        )
+    else:
+        out["label_guardrail_max_abs_z"] = np.nan
+        out["label_guardrail_abs_log_effect"] = np.nan
+        watch_effect_ok = np.ones(len(out), dtype=bool)
+        high_effect_ok = np.ones(len(out), dtype=bool)
+
+    high = out["final_anomaly_score"].ge(high_thr) & high_effect_ok
+    watch = out["final_anomaly_score"].ge(watch_thr) & watch_effect_ok & ~high
     out["anomaly_label"] = "NORMAL"
     out.loc[watch & out["anomaly_direction"].eq("HIGH"), "anomaly_label"] = "WATCHLIST_HIGH"
     out.loc[watch & out["anomaly_direction"].eq("LOW"), "anomaly_label"] = "WATCHLIST_LOW"

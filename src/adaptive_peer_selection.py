@@ -16,8 +16,9 @@ DEFAULT_BLOCKED_VALUES: dict[str, tuple[str, ...]] = {
 DEFAULT_OBJECTIVE_WEIGHTS: dict[str, float] = {
     "representability": 0.25,
     "distribution": 0.20,
+    "calibration": 0.20,
     "stability": 0.15,
-    "specificity": 0.30,
+    "specificity": 0.20,
     "support": 0.10,
 }
 
@@ -574,9 +575,12 @@ def objective_components(
     thresholds: PeerSupportThresholds,
     config: PeerSelectionConfig | None = None,
 ) -> dict[str, float]:
+    calibration_value = row.get("peer_calibration_score", np.nan)
+    calibration = 50.0 if pd.isna(calibration_value) else float(calibration_value)
     return {
         "representability": representability_score(row, candidate, thresholds, config),
         "distribution": min(max(support_value(row, "peer_distribution_quality_score"), 0.0), 100.0),
+        "calibration": min(max(calibration, 0.0), 100.0),
         "stability": stability_score(row),
         "specificity": 100.0 * specificity_score(candidate, config),
         "support": support_strength_score(row, thresholds),
@@ -603,12 +607,14 @@ def objective_score_frame(
     weights = objective_weights(config)
     representability = representability_score_frame(frame, candidate, thresholds, config)
     distribution = np.minimum(np.maximum(_numeric_array(frame, "peer_distribution_quality_score"), 0.0), 100.0)
+    calibration = np.minimum(np.maximum(_numeric_array(frame, "peer_calibration_score", 50.0), 0.0), 100.0)
     stability = stability_score_frame(frame)
     specificity = np.full(len(frame), 100.0 * specificity_score(candidate, config), dtype=float)
     support = support_strength_score_frame(frame, thresholds)
     return (
         weights.get("representability", 0.0) * representability
         + weights.get("distribution", 0.0) * distribution
+        + weights.get("calibration", 0.0) * calibration
         + weights.get("stability", 0.0) * stability
         + weights.get("specificity", 0.0) * specificity
         + weights.get("support", 0.0) * support
@@ -652,6 +658,7 @@ def selection_reason(row: pd.Series, candidate: PeerCandidate, prior_attempts: l
         f"dagilim={row.get('peer_distribution_status')}, "
         f"dagilim_skoru={support_value(row, 'peer_distribution_quality_score'):.1f}, "
         f"tail={support_value(row, 'peer_tail_rate'):.3f}, "
+        f"kalibrasyon={support_value(row, 'peer_calibration_score'):.1f}, "
         f"objective={support_value(row, 'peer_objective_score'):.1f}."
     )
     if not prior_attempts:

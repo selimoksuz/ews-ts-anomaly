@@ -8,6 +8,9 @@ Target kullanmadan aylik tutar anomalisi skorlayan, customer-first ve peer-aware
 - Onceki aylardan musteri trendi, sezon etkisi, kendi gecmisi ve peer istatistikleri uretir.
 - Musteri verisi yeterliyse once musteri sinyalini kullanir.
 - Musteri verisi zayifsa veya peer sinyali gucluyse adaptif peer ile karsilastirir.
+- Peer secimini destek/dagilim/stabilite/spesifiklik yaninda gecmis kalibrasyon performansiyla yapar.
+- Feature-ratio sinyalini veri kalite gate'lerinden gecmeden final skora sokmaz.
+- PCA/Isolation Forest/LOF challenger diagnostic uretir; production kararini degistirmez.
 - Karar tablosu ve detay tablosu uretir.
 - CSV veya Oracle input okuyabilir, lokal veya Oracle output yazabilir.
 
@@ -84,6 +87,21 @@ Uzun adimlarda varsayilan olarak 60 saniyede bir heartbeat basilir. Aralik degis
 
 - Decision table: input ham kolonlari + `ANOMALI_FLAG` + `ANOMALI_NEDENI`
 - Detail table: musteri serisi, peer metrikleri, trend/sezon, evidence driver, skor ve reason detaylari
+
+## Backtest ve validation monitor
+
+Her aylik run sonrasi son N ayi rolling OOT mantigiyla test etmek icin:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\run_validation_report.ps1
+```
+
+```bash
+./scripts/run_validation_report.sh
+tail -f outputs/logs/anomaly_validation_*.log
+```
+
+Monitor `outputs/analysis/validation_report` altina aylik skor stabilitesi, scoreability, label dagilimi, gercek data perturbation stress testi ve decision/detail output integrity raporlari yazar. `ANOMALI_FLAG` kontrolu decision ve detail tablolarinda missing olmama ve sadece 0/1 deger alma sartini test eder.
 
 ## Performans guardrail
 

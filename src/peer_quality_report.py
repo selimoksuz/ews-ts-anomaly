@@ -357,6 +357,11 @@ def summarize_frame(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
         "PEER_GECMIS_ADET",
         "PEER_SEZON_AY_ADET",
         "PEER_RECENT_ADET",
+        "PEER_KALIBRASYON_SKORU",
+        "PEER_KALIBRASYON_AY_ADET",
+        "PEER_KALIBRASYON_MEDYAN_ABS_RESIDUAL",
+        "PEER_KALIBRASYON_INTERVAL_KAPSAMA",
+        "PEER_KALIBRASYON_FALSE_ALARM_ORANI",
     ]
     for col in optional_numeric_cols:
         if col not in work.columns:
@@ -386,6 +391,11 @@ def summarize_frame(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
             dagilim_skor_medyan=("PEER_DAGILIM_SKORU", "median"),
             dagilim_skor_p10=("PEER_DAGILIM_SKORU", lambda x: q(x, 0.10)),
             peer_tail_rate_medyan=("PEER_TAIL_RATE", "median"),
+            kalibrasyon_skor_medyan=("PEER_KALIBRASYON_SKORU", "median"),
+            kalibrasyon_ay_adet_medyan=("PEER_KALIBRASYON_AY_ADET", "median"),
+            kalibrasyon_abs_residual_medyan=("PEER_KALIBRASYON_MEDYAN_ABS_RESIDUAL", "median"),
+            kalibrasyon_interval_kapsama_medyan=("PEER_KALIBRASYON_INTERVAL_KAPSAMA", "median"),
+            kalibrasyon_false_alarm_oran_medyan=("PEER_KALIBRASYON_FALSE_ALARM_ORANI", "median"),
             peer_guncel_adet_medyan=("PEER_GUNCEL_ADET", "median"),
             peer_guncel_adet_min=("PEER_GUNCEL_ADET", "min"),
             peer_gecmis_adet_medyan=("PEER_GECMIS_ADET", "median"),
@@ -405,15 +415,18 @@ def weak_peer_review(peer_instance_summary: pd.DataFrame) -> pd.DataFrame:
     work = peer_instance_summary.copy()
     temsil_skor = numeric_with_default(work, "temsil_skor_medyan", 50.0)
     dagilim_skor = numeric_with_default(work, "dagilim_skor_medyan", 50.0)
+    kalibrasyon_skor = numeric_with_default(work, "kalibrasyon_skor_medyan", 50.0)
     anomaly_watch_oran = numeric_with_default(work, "anomaly_watch_oran", 0.0)
     peer_guncel_adet_min = numeric_with_default(work, "peer_guncel_adet_min", 0.0)
     work["temsil_skor_medyan"] = temsil_skor
     work["dagilim_skor_medyan"] = dagilim_skor
+    work["kalibrasyon_skor_medyan"] = kalibrasyon_skor
     work["anomaly_watch_oran"] = anomaly_watch_oran
     work["peer_guncel_adet_min"] = peer_guncel_adet_min
     work["review_skoru"] = (
-        (100 - temsil_skor) * 0.35
-        + (100 - dagilim_skor) * 0.35
+        (100 - temsil_skor) * 0.30
+        + (100 - dagilim_skor) * 0.25
+        + (100 - kalibrasyon_skor) * 0.25
         + anomaly_watch_oran * 100 * 0.20
         + np.where(peer_guncel_adet_min < 25, 10, 0)
     )
@@ -424,6 +437,8 @@ def weak_peer_review(peer_instance_summary: pd.DataFrame) -> pd.DataFrame:
             row_reasons.append("temsil dusuk")
         if row.get("dagilim_skor_medyan", 100) < 60:
             row_reasons.append("heavy-tail/dagilim zayif")
+        if row.get("kalibrasyon_skor_medyan", 100) < 60:
+            row_reasons.append("gecmis kalibrasyon zayif")
         if row.get("peer_guncel_adet_min", 999) < 25:
             row_reasons.append("current destek sinirda")
         if row.get("anomaly_watch_oran", 0) >= 0.08:
@@ -555,7 +570,7 @@ def write_markdown_report(
 
 ## Peer Seviyesi Kapsam ve Temsil
 
-{markdown_table(peer_level_summary, ["PEER_SEVIYE", "musteri_adet", "musteri_pay", "temsil_skor_medyan", "dagilim_skor_medyan", "peer_guncel_adet_medyan", "anomaly_watch_oran"], 20)}
+{markdown_table(peer_level_summary, ["PEER_SEVIYE", "musteri_adet", "musteri_pay", "temsil_skor_medyan", "dagilim_skor_medyan", "kalibrasyon_skor_medyan", "peer_guncel_adet_medyan", "anomaly_watch_oran"], 20)}
 
 ## Peer Instance Ana Metrik Dagilimi
 
@@ -575,13 +590,14 @@ def write_markdown_report(
 
 ## Review Gerektiren Peer Gruplari
 
-{markdown_table(weak_review, ["PEER_SEVIYE", "PEER_KEY_DEGERLERI", "review_skoru", "review_nedeni", "peer_guncel_ana_metrik_medyan", "peer_guncel_ana_metrik_ortalama", "peer_guncel_ana_metrik_std", "peer_guncel_ana_metrik_min", "peer_guncel_ana_metrik_max", "temsil_skor_medyan", "dagilim_skor_medyan", "anomaly_watch_oran"], 30)}
+{markdown_table(weak_review, ["PEER_SEVIYE", "PEER_KEY_DEGERLERI", "review_skoru", "review_nedeni", "peer_guncel_ana_metrik_medyan", "peer_guncel_ana_metrik_ortalama", "peer_guncel_ana_metrik_std", "peer_guncel_ana_metrik_min", "peer_guncel_ana_metrik_max", "temsil_skor_medyan", "dagilim_skor_medyan", "kalibrasyon_skor_medyan", "anomaly_watch_oran"], 30)}
 
 ## Metod Notu
 
 - Peer merkez olcusu medyandir.
 - Sapma olcusu MAD tabanli robust scale'dir.
 - Peer dagilim kalitesi skew, kurtosis ve robust tail rate ile izlenir.
+- Peer kalibrasyonu scoring ayi kullanmadan gecmis holdout aylarda peer expected isabetini olcer.
 - Bu rapor karar modelini yeniden skorlamaz; mevcut final decision tablosunun peer kalitesini denetler.
 """
     out_path.write_text(body, encoding="utf-8")
@@ -642,7 +658,7 @@ h1, h2 {{ color: #102a43; }}
 <p>Heavy-tail review peer kapsami {heavy:,} musteri ({fmt_pct(heavy / total)}). Bu segmentler karar disi birakilmadi; model bu peerlerde peer agirligini ve guveni sinirliyor.</p>
 <h2>Peer Seviyesi Kapsam ve Temsil</h2>
 {f'<img class="chart" src="{html.escape(charts["peer_level"])}" alt="Peer seviyesi musteri adedi">' if "peer_level" in charts else ""}
-{html_table(peer_level_summary, ["PEER_SEVIYE", "musteri_adet", "musteri_pay", "temsil_skor_medyan", "dagilim_skor_medyan", "peer_guncel_adet_medyan", "anomaly_watch_oran"], 25)}
+{html_table(peer_level_summary, ["PEER_SEVIYE", "musteri_adet", "musteri_pay", "temsil_skor_medyan", "dagilim_skor_medyan", "kalibrasyon_skor_medyan", "peer_guncel_adet_medyan", "anomaly_watch_oran"], 25)}
 <h2>Peer Instance Ana Metrik Dagilimi</h2>
 {html_table(peer_instance_summary, ["PEER_SEVIYE", "PEER_KEY_DEGERLERI", "peer_guncel_ana_metrik_medyan", "peer_guncel_ana_metrik_ortalama", "peer_guncel_ana_metrik_std", "peer_guncel_ana_metrik_min", "peer_guncel_ana_metrik_max", "peer_gecmis_ana_metrik_medyan", "peer_gecmis_ana_metrik_ortalama", "peer_gecmis_ana_metrik_std", "peer_gecmis_ana_metrik_min", "peer_gecmis_ana_metrik_max"], 40)}
 <h2>Peer Temsil Durumu</h2>
@@ -653,7 +669,7 @@ h1, h2 {{ color: #102a43; }}
 <h2>Behavior Cluster Kapsami</h2>
 {html_table(behavior_summary, ["DAVRANIS_CLUSTER", "musteri_adet", "musteri_pay", "anomaly_watch_oran", "temsil_skor_medyan", "dagilim_skor_medyan"], 30)}
 <h2>Review Gerektiren Peer Gruplari</h2>
-{html_table(weak_review, ["PEER_SEVIYE", "PEER_KEY_DEGERLERI", "review_skoru", "review_nedeni", "peer_guncel_ana_metrik_medyan", "peer_guncel_ana_metrik_ortalama", "peer_guncel_ana_metrik_std", "peer_guncel_ana_metrik_min", "peer_guncel_ana_metrik_max", "temsil_skor_medyan", "dagilim_skor_medyan", "anomaly_watch_oran"], 40)}
+{html_table(weak_review, ["PEER_SEVIYE", "PEER_KEY_DEGERLERI", "review_skoru", "review_nedeni", "peer_guncel_ana_metrik_medyan", "peer_guncel_ana_metrik_ortalama", "peer_guncel_ana_metrik_std", "peer_guncel_ana_metrik_min", "peer_guncel_ana_metrik_max", "temsil_skor_medyan", "dagilim_skor_medyan", "kalibrasyon_skor_medyan", "anomaly_watch_oran"], 40)}
 <div class="note"><strong>Metod notu:</strong> Peer merkez olcusu medyan, sapma olcusu MAD tabanli robust scale, skor olcusu modified robust z-score'dur. Ortalama ve standart sapma ana karar parametresi degildir.</div>
 </body>
 </html>

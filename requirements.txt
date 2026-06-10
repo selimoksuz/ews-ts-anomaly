@@ -3,3 +3,4 @@ pandas
 openpyxl
 oracledb
 PyYAML
+scikit-learn

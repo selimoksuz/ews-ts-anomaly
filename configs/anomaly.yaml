@@ -43,6 +43,17 @@ model:
       denominator: TURNOVER_AMT
       use_as_peer_variable: true
       use_as_anomaly_signal: true
+      quality_gate:
+        # true ise oran skora girmeden once kaynak ve peer kalite kontrollerinden gecmelidir.
+        enabled: true
+        # Referans feature null/zero orani bu esigi asarsa oran skora girmez, sadece detail diagnostic kalir.
+        max_denominator_missing_or_zero_rate: 0.50
+        # Referans feature'in pozitif oldugu satir payi bu esigin altindaysa oran skora girmez.
+        min_monthly_valid_coverage: 0.50
+        # Secilen peer icinde oran sinyali icin gereken minimum ratio gozlem sayisi.
+        min_peer_ratio_rows: 20
+        # Secilen peer icinde ratio MAD cok dusukse oran sinyali kapatilir.
+        min_peer_ratio_mad: 0.001
     # Musteri gecmis davranisindan level/volatilite/trend cluster'i uretip peer adayi olarak kullanir.
     # Default kapali; acilirsa sadece scoring ayindan onceki gecmisle hesaplanir.
     behavior_peer:
@@ -72,6 +83,36 @@ model:
       moderate_signal_p: 0.05
       # Musteri ve peer ters yone gidiyorsa conflict tespiti icin esik.
       conflict_signal_p: 0.05
+    label_guardrails:
+      # Top-rate tek basina etiket uretmesin diye minimum z/effect kosullari.
+      enabled: true
+      # Watchlist icin herhangi bir aktif sinyalde gereken minimum mutlak z.
+      min_watch_abs_z: 1.50
+      # High anomaly icin gereken minimum mutlak z.
+      min_high_abs_z: 2.50
+      # Watchlist icin minimum |log(actual/expected)| etkisi. 0.14 yaklasik %15 farktir.
+      min_watch_log_effect: 0.14
+      # High anomaly icin minimum |log(actual/expected)| etkisi. 0.26 yaklasik %30 farktir.
+      min_high_log_effect: 0.26
+    challenger_models:
+      # Production kararini degistirmez; residual feature matrix uzerinde ek model diagnostic uretir.
+      enabled: true
+      # PCA dependency-free calisir; IsolationForest ve LOF icin scikit-learn gerekir.
+      methods:
+        - pca
+        - isolation_forest
+        - lof
+      random_state: 42
+      # Daha kucuk scoring batchlerde model diagnostic atlanir.
+      min_rows: 200
+      # PCA rekonstruksiyon skorunda tutulacak varyans hedefi.
+      pca_variance_to_keep: 0.80
+      # PCA icin maksimum komponent sayisi.
+      pca_max_components: 6
+      # LOF komsu sayisi; scoring row sayisindan buyukse otomatik kirpilir.
+      lof_neighbors: 35
+      # Her challenger model icin anomali flag esigi.
+      flag_threshold: 95.0
     customer_reliability:
       # Musteri verisini guclu kabul etmek icin minimum gecmis ay sayisi.
       strong_min_prior_n: 6
@@ -140,10 +181,12 @@ peer_selection:
     representability: 0.25
     # Heavy-tail/skew/kurtosis gibi dagilim kalitesi.
     distribution: 0.20
+    # Peer'in onceki aylarda bir sonraki ay referansi olarak ne kadar iyi calistigi.
+    calibration: 0.20
     # Peer'in tarihsel stabilitesi.
     stability: 0.15
     # Daha dar ve bilgi tasiyan peerleri odullendirir.
-    specificity: 0.30
+    specificity: 0.20
     # Hist/season/recent/current adet destek gucu.
     support: 0.10
   # Auto inferred degiskenlerde cok yuksek cardinality'li kolonlari elemek icin ust sinir.
@@ -206,3 +249,16 @@ reports:
     enabled: true
     # Peer analiz CSV/XLSX/HTML/MD dosyalarinin yazilacagi dizin.
     output_dir: outputs/analysis/peer_quality_report
+  validation:
+    # Rolling backtest ve output integrity monitor raporlarinin yazilacagi dizin.
+    output_dir: outputs/analysis/validation_report
+    # Her run'da son kac scoring ayi geriye donuk test edilsin.
+    backtest_months: 6
+    # Gercek scoring datasinda kontrollu spike/drop perturbation stres testinde kac musteri orneklensin.
+    stress_test_sample_size: 300
+    # Stress testinde skor ayindaki ana metrik hangi carpanla yukseltilsin.
+    stress_test_spike_factor: 2.0
+    # Stress testinde skor ayindaki ana metrik hangi carpanla dusurulsun.
+    stress_test_drop_factor: 0.25
+    # true yapilirsa perturbation stress testi atlanir. Gercek data rolling backtest her zaman calisir.
+    skip_stress_test: false

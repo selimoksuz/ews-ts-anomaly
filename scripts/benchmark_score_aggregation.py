@@ -42,15 +42,22 @@ def load_prepared_data(config_path: Path, data_source_config_path: str | None) -
     source = pipeline.selected_data_source(pipeline_config, data_source_config)
     model = pipeline_config.get("model", {})
     column_map = anomaly_config.column_map_from_config(pipeline_config)
+    derived_features = anomaly_config.derived_features_from_config(pipeline_config)
     input_path, source_frame, input_name, _ = pipeline.read_source_frame(pipeline_config, source, project_root)
     if source_frame is not None:
-        prepared, profile = core.prepare_source_frame(source_frame, column_map=column_map, source_name=input_name)
+        prepared, profile = core.prepare_source_frame(
+            source_frame,
+            column_map=column_map,
+            source_name=input_name,
+            derived_features_config=derived_features,
+        )
     elif input_path is not None:
         prepared, profile = core.read_source(
             input_path,
             encoding=str(source.get("encoding", "auto")),
             sep=str(source.get("sep", "auto")),
             column_map=column_map,
+            derived_features_config=derived_features,
         )
     else:
         raise ValueError("No input source was resolved.")
@@ -78,6 +85,7 @@ def load_prepared_data(config_path: Path, data_source_config_path: str | None) -
         "support_thresholds": anomaly_config.support_thresholds_from_config(pipeline_config),
         "scoring_weights": model.get("scoring_weights", {}),
         "score_aggregation": model.get("score_aggregation", {}),
+        "derived_features": derived_features,
         "source_name": source.get("name", input_name),
         "row_count": int(len(prepared)),
     }
@@ -114,6 +122,7 @@ def run_scoring(
     support_thresholds: adaptive.PeerSupportThresholds,
     scoring_weights: dict[str, Any],
     score_aggregation: dict[str, Any],
+    derived_features: dict[str, Any],
     aggregation_fn: Callable[[pd.DataFrame, dict[str, Any]], pd.DataFrame],
 ) -> tuple[core.ModelRun, dict[str, Any]]:
     original = core.apply_directional_evidence_aggregation
@@ -131,6 +140,7 @@ def run_scoring(
             support_thresholds=support_thresholds,
             scoring_weights=scoring_weights,
             score_aggregation=score_aggregation,
+            derived_features_config=derived_features,
         )
     finally:
         core.apply_directional_evidence_aggregation = original
@@ -152,15 +162,6 @@ def compare_runs(rowwise: core.ModelRun, vectorized: core.ModelRun, tolerance: f
         "primary_signal_p_value",
         "primary_signal_score",
         "secondary_signal_p_value",
-        "customer_final_weight",
-        "peer_final_weight",
-        "self_history_final_weight",
-        "customer_trend_final_weight",
-        "customer_seasonal_final_weight",
-        "historical_peer_final_weight",
-        "current_peer_final_weight",
-        "peer_trend_final_weight",
-        "turnover_intensity_final_weight",
     ]
     categorical_cols = [
         "anomaly_label",
@@ -227,6 +228,7 @@ def main() -> None:
         payload["support_thresholds"],
         payload["scoring_weights"],
         payload["score_aggregation"],
+        payload["derived_features"],
         rowwise_aggregation,
     )
     vectorized_run, vectorized_metrics = run_scoring(
@@ -238,6 +240,7 @@ def main() -> None:
         payload["support_thresholds"],
         payload["scoring_weights"],
         payload["score_aggregation"],
+        payload["derived_features"],
         vectorized_fn,
     )
 

@@ -45,6 +45,8 @@ active_source: oracle_input
 
 Output sink secimi `active_sink` ile yapilir. Oracle yazimi icin sink tanimi yeterli degildir; run komutunda ayrica Oracle output flag'i verilmelidir.
 
+Secilen source icinde `output_columns: all` ise kaynak tablodaki kolonlar decision/detail output'a tasinir. Bir kolonu istemiyorsan ilgili source altinda `exclude_output_columns` kullan.
+
 Ana degiskenler `configs/anomaly.yaml` icindeki `variables` alanindan okunur:
 
 ```yaml
@@ -64,6 +66,8 @@ variables:
 ```
 
 `feature_variables` listesindeki ilk kolon skorlanan ana metriktir. Segment listesi peer adaylarini besler.
+
+Ana metrik herhangi bir operasyonel sayisal deger olabilir. Bugun fatura tutari, baska bir proseste POS cirosu veya farkli bir tekil sayisal metrik olabilir; kod metrik adina bagli calismaz.
 
 Feature kolonlari sadece listede yer aldigi icin anomali skoruna girmez. Aktif turevler `model.derived_features` altinda tanimlanir:
 
@@ -124,6 +128,23 @@ model:
 ```
 
 Bu sinyal sadece son 3 calendar ay tam ve stabilse skora girer; aksi halde karar surecine etki etmez.
+
+## Kalite ve Challenger Ayarlari
+
+Peer objective agirliklari `configs/anomaly.yaml` icinde `peer_selection.objective_weights` altindadir. Varsayilan:
+
+- `representability`: 0.25
+- `distribution`: 0.20
+- `calibration`: 0.20
+- `stability`: 0.15
+- `specificity`: 0.20
+- `support`: 0.10
+
+`calibration`, scoring ayini kullanmadan onceki aylarda peer'in bir sonraki ay referansi olarak ne kadar iyi calistigini olcer. Detail tabloda `PEER_KALIBRASYON_SKORU`, kalibrasyon ay adedi, median absolute residual, interval coverage ve false alarm orani bulunur.
+
+Feature ratio skora girmeden once `model.derived_features.feature_ratio.quality_gate` ile kontrol edilir. Global gate gecmezse veya secilen peer icinde `min_peer_ratio_rows` / `min_peer_ratio_mad` gecmezse oran sadece diagnostic kalir. Detail tabloda gate sonucu ve nedeni `FEATURE_ORAN_*_GATE_*` kolonlariyla izlenir.
+
+Challenger modeller `model.score_aggregation.challenger_models` altindan yonetilir. PCA, Isolation Forest ve LOF production kararini degistirmez; detail tabloda `MODEL_CHALLENGER_SKORU`, `MODEL_CHALLENGER_UYARI`, `PCA_CHALLENGER_ANOMALI_FLAG`, `IF_CHALLENGER_ANOMALI_FLAG`, `LOF_CHALLENGER_ANOMALI_FLAG` uretilir. Bu alanlar musteri-level scoring ay diagnostic'i oldugu icin musterinin detail serisindeki tum satirlara tasinir; aylik z-score/beklenen deger kolonlari ise yalniz scoring ay satirinda doludur.
 
 ## Lokal CSV Run
 
@@ -194,6 +215,96 @@ Detail table:
 - Musteri seri gorunumu
 - Peer aylik medyan/ortalama metrikleri
 - Trend, sezon, p-value, z-score, evidence driver ve reason detaylari
+- Peer kalite, peer kalibrasyon, feature-ratio gate ve challenger diagnostic alanlari
+- `ANOMALI_FLAG` tum detail satirlarinda 0/1 olarak doludur; scoring ayinda anomaly ise 1, diger satirlar 0 olur.
+
+Detail tabloda yorumlama icin onemli kolon ornekleri:
+
+- `ANA_METRIK_EKSIK_MI`
+- `PEER_AYLIK_ANA_METRIK_MEDYAN`
+- `PEER_AYLIK_ANA_METRIK_ORTALAMA`
+- `MUSTERI_PEER_ANA_METRIK_ORANI`
+- `ORAN_PAY_KOLON`
+- `ORAN_PAYDA_KOLON`
+- `MUSTERI_ANA_METRIK_PAYDA_ORANI`
+- `PEER_AYLIK_ORAN_PAYDA_MEDYAN`
+- `PEER_AYLIK_ANA_METRIK_PAYDA_ORAN_MEDYAN`
+- Customer/peer trend, sezon, z-score, p-value, reason ve data-quality alanlari
+
+Modelin ozet karar akisi:
+
+- Scoring ayi fit icinde kullanilmaz.
+- Once customer-first kanit aranir: kendi gecmis, trend, sezon ve son 3 ay rejimi.
+- Customer kaniti yetersizse adaptif peer secimi devreye girer.
+- Peer secimi segment degiskenleri ve config ile acikca tanimlanan turev peer degiskenleri uzerinden objective score ile yapilir.
+- Ana metrik eksik aylar doldurulmaz; gap ve coverage sinyali olarak detail tabloda tasinir.
+- Final karar evidence-first p-value konsolidasyonu ile verilir; agirlikli ortalama target modeli degildir.
+
+## Peer Quality Raporu
+
+Peer quality raporu instance bazinda peer temsil ve dagilim kalitesini analiz etmek icindir; karar tablosu degildir. Instance raporunda ana metrik dagilimi icin su kolonlar bulunur:
+
+- `peer_guncel_ana_metrik_ortalama`
+- `peer_guncel_ana_metrik_medyan`
+- `peer_guncel_ana_metrik_std`
+- `peer_guncel_ana_metrik_min`
+- `peer_guncel_ana_metrik_max`
+- `peer_gecmis_ana_metrik_ortalama`
+- `peer_gecmis_ana_metrik_medyan`
+- `peer_gecmis_ana_metrik_std`
+- `peer_gecmis_ana_metrik_min`
+- `peer_gecmis_ana_metrik_max`
+
+## Backtest ve Output Integrity Monitor
+
+Her ay yeni data eklendiginde production scoring sonrasi validation monitor calistirilir:
+
+Onerilen operasyonel sira:
+
+1. Production scoring run'i calistir.
+2. Peer quality raporunu kontrol et.
+3. Validation monitor'u calistir.
+4. `validation_output_integrity.csv` icinde `FAIL` var mi kontrol et.
+5. `validation_stability_flags.csv` icinde ani rate, scoreability veya peer calibration kaymasi var mi kontrol et.
+
+Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\run_validation_report.ps1
+```
+
+Linux/macOS:
+
+```bash
+./scripts/run_validation_report.sh
+```
+
+Dogudan Python:
+
+```bash
+python3 src/anomaly_validation.py --config configs/anomaly.yaml
+```
+
+Parametreler `configs/anomaly.yaml` icindeki `reports.validation` altindan gelir:
+
+- `backtest_months`: son kac scoring ayi rolling OOT test edilecek.
+- `stress_test_sample_size`: gercek scoring datasindan spike/drop stres testi icin kac musteri secilecek.
+- `stress_test_spike_factor`: stres testinde skor ayindaki ana metrik kac kat yukseltilerek test edilecek.
+- `stress_test_drop_factor`: stres testinde skor ayindaki ana metrik hangi carpanla dusurulerek test edilecek.
+- `skip_stress_test`: true ise perturbation stres testi atlanir; gercek data rolling backtest her durumda calisir.
+
+Uretilen dosyalar `outputs/analysis/validation_report` altindadir:
+
+- `validation_monthly_summary.csv`
+- `validation_stability_flags.csv`
+- `validation_scoreability_breakdown.csv`
+- `validation_label_breakdown.csv`
+- `validation_top_examples.csv`
+- `validation_output_integrity.csv`
+- `validation_stress_test_sensitivity.json`
+- `validation_report_<YYYYMM>.md`
+
+`validation_output_integrity.csv` decision/detail satir sayisi, `ANOMALI_FLAG` missing/binary kontrolu, decision reason boslugu ve detail extreme missing kolonlarini izler. Bu dosyada `FAIL` varsa ilgili run production'a alinmadan incelenmelidir.
 
 ## Oracle Write Mode
 
