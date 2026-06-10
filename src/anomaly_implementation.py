@@ -407,6 +407,186 @@ def input_output_columns(profile: dict[str, Any], available_columns: list[str]) 
     return [col for col in preferred if col in available_columns]
 
 
+DETAIL_OUTPUT_COLUMN_GROUPS = [
+    [
+        "MODEL_DONEM_AY",
+        "ANA_METRIK_EKSIK_MI",
+        "MUSTERI_TOPLAM_AY_ADET",
+        "ONCEKI_AYA_GAP",
+        "YENI_MUSTERI_MI",
+        "KESIK_SERI_MI",
+        "MODEL_DOLDURMA_POLITIKASI",
+        "SON_12_AY_KAPSAMA",
+        "SON_GAP_AY_ADET",
+        "DATA_GAP_SKORU",
+        "MUSTERI_GECMIS_AY_ADET",
+        "SON_12_AY_ANA_METRIK_ADET",
+        "MUSTERI_TREND_ADET",
+        "MUSTERI_SEZON_ADET",
+        "MUSTERI_SON3_AY_ADET",
+    ],
+    [
+        "PEER_SEVIYE",
+        "PEER_KOLONLARI",
+        "PEER_AYLIK_MUSTERI_ADET",
+        "PEER_AYLIK_SATIR_ADET",
+        "PEER_AYLIK_ANA_METRIK_MEDYAN",
+        "PEER_AYLIK_ANA_METRIK_ORTALAMA",
+        "PEER_AYLIK_ORAN_PAYDA_MEDYAN",
+        "PEER_AYLIK_ANA_METRIK_PAYDA_ORAN_MEDYAN",
+        "MUSTERI_PEER_ANA_METRIK_ORANI",
+        "MUSTERI_PEER_ORAN_PCTL",
+        "MUSTERI_PEER_ORAN_REF_N",
+        "AYLIK_YORUM",
+    ],
+    [
+        "SKORLANAN_ANA_METRIK",
+        "BEKLENEN_ANA_METRIK",
+        "GERCEK_BEKLENEN_ORANI",
+        "PEER_GUNCEL_MEDYAN_ANA_METRIK",
+        "MUSTERI_GECMIS_MEDYAN_ANA_METRIK",
+        "MUSTERI_TREND_BEKLENEN_ANA_METRIK",
+        "MUSTERI_SEZON_BEKLENEN_ANA_METRIK",
+        "MUSTERI_SON3_AY_MEDYAN_ANA_METRIK",
+        "MUSTERI_SON3_AY_RANGE_LOG",
+        "PEER_TREND_BEKLENEN_ANA_METRIK",
+        "ORAN_PAY_KOLON",
+        "ORAN_PAYDA_KOLON",
+        "MUSTERI_ANA_METRIK_PAYDA_ORANI",
+    ],
+    [
+        "MUSTERI_GECMIS_Z",
+        "MUSTERI_GECMIS_SKORU",
+        "MUSTERI_TREND_Z",
+        "MUSTERI_TREND_SKORU",
+        "MUSTERI_SEZON_Z",
+        "MUSTERI_SEZON_SKORU",
+        "MUSTERI_SON3_REJIM_Z",
+        "MUSTERI_SON3_REJIM_SKORU",
+        "MUSTERI_SINYAL_SKORU",
+        "MUSTERI_AILE_P_DEGERI",
+        "MUSTERI_AILE_YONU",
+        "MUSTERI_GUVENILIRLIK_DURUMU",
+        "MUSTERI_ACIKLANABILIRLIK_SKORU",
+        "MUSTERI_ACIKLANABILIRLIK_DURUMU",
+    ],
+    [
+        "GECMIS_PEER_Z",
+        "GECMIS_PEER_SKORU",
+        "GUNCEL_PEER_Z",
+        "GUNCEL_PEER_SKORU",
+        "PEER_TREND_Z",
+        "PEER_TREND_SKORU",
+        "FEATURE_ORAN_Z",
+        "FEATURE_ORAN_SKORU",
+        "FEATURE_ORAN_SINYAL_ISTENDI",
+        "FEATURE_ORAN_GLOBAL_GATE_GECTI",
+        "FEATURE_ORAN_GLOBAL_GATE_NEDENI",
+        "FEATURE_ORAN_PEER_GATE_GECTI",
+        "FEATURE_ORAN_PEER_GATE_NEDENI",
+        "PEER_SINYAL_SKORU",
+        "PEER_AILE_P_DEGERI",
+        "PEER_AILE_YONU",
+        "PEER_GUVENILIRLIK_DURUMU",
+    ],
+    [
+        "PEER_TEMSIL_SKORU",
+        "PEER_TEMSIL_DURUMU",
+        "PEER_OBJECTIVE_SKORU",
+        "PEER_DESTEK_SKORU",
+        "PEER_STABILITE_SKORU",
+        "PEER_SPESIFIKLIK_SKORU",
+        "PEER_UYGUN_ADAY_ADET",
+        "PEER_DAGILIM_SKORU",
+        "PEER_DAGILIM_DURUMU",
+        "PEER_LOG_ORAN_SKEW",
+        "PEER_LOG_ORAN_KURTOSIS",
+        "PEER_TAIL_RATE",
+        "PEER_KALIBRASYON_SKORU",
+        "PEER_KALIBRASYON_AY_ADET",
+        "PEER_KALIBRASYON_MEDYAN_ABS_RESIDUAL",
+        "PEER_KALIBRASYON_INTERVAL_KAPSAMA",
+        "PEER_KALIBRASYON_FALSE_ALARM_ORANI",
+        "PEER_GECMIS_ADET",
+        "PEER_SEZON_AY_ADET",
+        "PEER_RECENT_ADET",
+        "PEER_GUNCEL_ADET",
+        "PEER_FEATURE_ORAN_ADET",
+        "PEER_SECIM_GEREKCESI",
+    ],
+    [
+        "DAVRANIS_CLUSTER",
+        "DAVRANIS_GECMIS_ADET",
+        "DAVRANIS_SEVIYE_BUCKET",
+        "DAVRANIS_VOLATILITE_BUCKET",
+        "DAVRANIS_TREND_BUCKET",
+        "DAVRANIS_MEDYAN_ANA_METRIK",
+        "DAVRANIS_VOLATILITE_LOG",
+        "DAVRANIS_TREND_SLOPE",
+    ],
+    [
+        "MODEL_CHALLENGER_SKORU",
+        "PCA_CHALLENGER_SKORU",
+        "IF_CHALLENGER_SKORU",
+        "LOF_CHALLENGER_SKORU",
+        "PCA_CHALLENGER_ANOMALI_FLAG",
+        "IF_CHALLENGER_ANOMALI_FLAG",
+        "LOF_CHALLENGER_ANOMALI_FLAG",
+        "MODEL_CHALLENGER_UYARI",
+    ],
+    [
+        "ONCEKI_SKOR_DONEM_AY",
+        "ONCEKI_ANOMALI_SKORU",
+        "ONCEKI_AYA_GORE_SKOR_FARKI",
+        "SKOR_TREND_DIAGNOSTIGI",
+    ],
+    [
+        "ANA_SINYAL",
+        "ANA_SINYAL_Z",
+        "ANA_SINYAL_SKORU",
+        "PRIMARY_SINYAL_P_DEGERI",
+        "PRIMARY_SINYAL_SKORU",
+        "SECONDARY_SINYAL_P_DEGERI",
+        "EVIDENCE_DRIVER",
+        "EVIDENCE_CONFLICT_FLAG",
+        "SINYAL_TUTARLILIGI",
+        "KANIT_GUCU",
+        "PEER_UYUM_DURUMU",
+        "PEER_FARK_YONU",
+        "PEER_FARK_Z",
+        "MUSTERI_FARK_Z",
+    ],
+    [
+        "ANOMALI_FLAG",
+        "ANOMALI_ETIKETI",
+        "ANOMALI_SKORU",
+        "GUVEN_SKORU",
+        "ANOMALI_YONU",
+        "OPERASYON_KARARI",
+        "AKSIYON_KARARI",
+        "VERI_YETERLILIK_DURUMU",
+        "SKORLAMA_STRATEJISI",
+        "ANOMALI_NEDENI",
+    ],
+]
+
+
+def detail_output_columns(profile: dict[str, Any], available_columns: list[str]) -> list[str]:
+    ordered: list[str] = []
+    available = list(available_columns)
+
+    def add_existing(columns: list[str]) -> None:
+        for col in columns:
+            if col in available and col not in ordered:
+                ordered.append(col)
+
+    add_existing(input_output_columns(profile, available))
+    for group in DETAIL_OUTPUT_COLUMN_GROUPS:
+        add_existing(group)
+    add_existing([col for col in available if col not in ordered])
+    return ordered
+
+
 def source_columns_for_scoring(prepared: pd.DataFrame, profile: dict[str, Any], scoring_month: int) -> pd.DataFrame:
     source_columns = [col for col in profile.get("source_columns", []) if col in prepared.columns]
     if not source_columns:
@@ -1440,9 +1620,8 @@ def build_detail_table(
     ] = 1
     out["ANOMALI_FLAG"] = anomaly_flag.astype(int)
 
-    input_cols = input_output_columns(profile, list(out.columns))
-    model_cols = [col for col in out.columns if col not in input_cols]
-    return out[input_cols + model_cols].sort_values([source_names.get("customer_id", "MUSTERINO"), source_names.get("invoice_month", "DONEM_AY")])
+    ordered_cols = detail_output_columns(profile, list(out.columns))
+    return out[ordered_cols].sort_values([source_names.get("customer_id", "MUSTERINO"), source_names.get("invoice_month", "DONEM_AY")])
 
 
 def add_run_columns(frame: pd.DataFrame, scoring_month: int) -> pd.DataFrame:
@@ -1598,6 +1777,20 @@ def oracle_table_columns(connection: Any, owner: str, table: str) -> set[str]:
         return {str(row[0]).upper() for row in cursor.fetchall()}
 
 
+def oracle_table_columns_ordered(connection: Any, owner: str, table: str) -> list[str]:
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            select column_name
+            from all_tab_columns
+            where owner = :owner and table_name = :table_name
+            order by column_id
+            """,
+            {"owner": owner, "table_name": table},
+        )
+        return [str(row[0]).upper() for row in cursor.fetchall()]
+
+
 def create_oracle_table(connection: Any, owner: str, table: str, dtype_map: dict[str, str]) -> None:
     columns_sql = ",\n  ".join(f"{col} {dtype}" for col, dtype in dtype_map.items())
     ddl = f"create table {owner}.{table} (\n  {columns_sql}\n)"
@@ -1630,12 +1823,17 @@ def prepare_oracle_table(
         create_oracle_table(connection, owner, table, dtype_map)
         return
 
-    missing_columns = set(dtype_map) - oracle_table_columns(connection, owner, table)
-    if missing_columns:
+    existing_columns_ordered = oracle_table_columns_ordered(connection, owner, table)
+    existing_columns = set(existing_columns_ordered)
+    expected_columns_ordered = list(dtype_map)
+    missing_columns = set(expected_columns_ordered) - existing_columns
+    extra_columns = existing_columns - set(expected_columns_ordered)
+    order_changed = existing_columns_ordered != expected_columns_ordered
+    if missing_columns or extra_columns or order_changed:
         if not create_table:
             raise ValueError(
-                f"Oracle table {owner}.{table} is missing required columns and create_table is disabled: "
-                f"{sorted(missing_columns)}"
+                f"Oracle table {owner}.{table} schema differs and create_table is disabled: "
+                f"missing={sorted(missing_columns)}, extra={sorted(extra_columns)}, order_changed={order_changed}"
             )
         drop_oracle_table(connection, owner, table)
         create_oracle_table(connection, owner, table, dtype_map)

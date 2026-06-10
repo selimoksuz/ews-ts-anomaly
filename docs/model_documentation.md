@@ -208,6 +208,21 @@ Decision tablo tek satir = scoring ayindaki musteri olacak sekilde tasarlanir. K
 
 Detail tablo tek satir = skorlanan musterinin ilgili ay satiri olacak sekilde musteri serisini ve scoring ay karar kanitlarini tasir.
 
+Fiziksel kolon sirasi asagidaki gruplara gore uretilir:
+
+1. Ham input kolonlari
+2. Seri ve data quality alanlari
+3. Peer kimligi ve aylik peer metrikleri
+4. Scoring ay beklenen/gercek ana metrik alanlari
+5. Musteri sinyalleri
+6. Peer sinyalleri
+7. Peer kalite ve kalibrasyon alanlari
+8. Davranis/behavior alanlari
+9. Challenger model skor ve flag alanlari
+10. Onceki skor diagnostigi
+11. Evidence driver alanlari
+12. Final karar, flag, skor ve reason alanlari
+
 | Cikti kolonu | Oracle kolonu | Anlam |
 |---|---|---|
 | Ham input kolonlari | Inputtaki ad | Kaynaktan gelen kolonlar; mevcut fatura datasinda `SUBE_KD`, `MUSTERINO`, `SEGMENTAD`, `DONEM_AY`, `REF_ALTFAALIYET`, `AKTIF_ABONE`, `FATURA_TTR`, `TURNOVER_AMT`. |

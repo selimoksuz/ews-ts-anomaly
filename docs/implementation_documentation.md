@@ -217,6 +217,8 @@ Detail table:
 - Trend, sezon, p-value, z-score, evidence driver ve reason detaylari
 - Peer kalite, peer kalibrasyon, feature-ratio gate ve challenger diagnostic alanlari
 - `ANOMALI_FLAG` tum detail satirlarinda 0/1 olarak doludur; scoring ayinda anomaly ise 1, diger satirlar 0 olur.
+- Fiziksel kolon sirasi sabittir: ham input, seri/data quality, peer aylik metrikler, scoring beklenen/gercek metrikler, musteri sinyalleri, peer sinyalleri, peer kalite, behavior, challenger, onceki skor diagnostigi, evidence driver ve final karar alanlari.
+- Oracle yaziminda tablo kolon seti veya kolon sirasi degisirse `create_table: true` iken tablo yeniden olusturulur; boylece Oracle fiziksel kolon sirasi da dokumandaki sirayla uyumlu kalir.
 
 Detail tabloda yorumlama icin onemli kolon ornekleri:
 
