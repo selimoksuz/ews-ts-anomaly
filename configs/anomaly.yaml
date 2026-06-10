@@ -97,6 +97,17 @@ model:
     challenger_models:
       # Production kararini degistirmez; residual feature matrix uzerinde ek model diagnostic uretir.
       enabled: true
+      # Challenger modellerin kullanacagi residual kolonlar.
+      # Bunlar raw ana metrik veya segment kolonlari degil, modelin hesapladigi fonksiyonel z-score'lardir.
+      feature_columns:
+        - self_history_z
+        - customer_trend_z
+        - customer_seasonal_z
+        - customer_recent_regime_z
+        - historical_peer_z
+        - current_peer_z
+        - peer_trend_z
+        - turnover_intensity_z
       # PCA dependency-free calisir; IsolationForest ve LOF icin scikit-learn gerekir.
       methods:
         - pca
@@ -146,6 +157,13 @@ model:
       min_recent_months: 3
       # Son 3 ay kendi icinde cok oynaksa bu sinyal kapatilir.
       max_recent_range_log: 0.35
+      # Ayni ay sezon beklentisi normalse, son 3 ay rejim sapmasi sezonla aciklanmis sayilir
+      # ve production karar evidence'ina girmez; detail'de z-score gorunmeye devam eder.
+      seasonal_guard_enabled: true
+      # Sezon z-score'u bu esigin altindaysa sezon normal kabul edilir.
+      seasonal_guard_max_abs_season_z: 1.50
+      # Son 3 ay rejim z-score'u bu esigi asarsa ama sezon normalse seasonal guard devreye girer.
+      seasonal_guard_min_abs_recent_z: 2.50
     confidence:
       # Karar musteri sinyalinden geliyorsa minimum guven tabani.
       customer_driver_floor: 55.0

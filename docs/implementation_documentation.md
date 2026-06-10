@@ -129,6 +129,19 @@ model:
 
 Bu sinyal sadece son 3 calendar ay tam ve stabilse skora girer; aksi halde karar surecine etki etmez.
 
+Sezon korumasi da ayni bloktan yonetilir:
+
+```yaml
+model:
+  score_aggregation:
+    recent_regime:
+      seasonal_guard_enabled: true
+      seasonal_guard_max_abs_season_z: 1.50
+      seasonal_guard_min_abs_recent_z: 2.50
+```
+
+Bu ayar acikken son-3-ay rejim sapmasi sert olsa bile ayni ay sezon z-score'u normalse production karar evidence'ina girmez. Detail'de son-3-ay z-score'u gorunmeye devam eder; normal reason metni sapmanin sezonla aciklandigini yazar.
+
 ## Kalite ve Challenger Ayarlari
 
 Peer objective agirliklari `configs/anomaly.yaml` icinde `peer_selection.objective_weights` altindadir. Varsayilan:
@@ -146,7 +159,7 @@ Feature ratio skora girmeden once `model.derived_features.feature_ratio.quality_
 
 Challenger modeller `model.score_aggregation.challenger_models` altindan yonetilir. PCA, Isolation Forest ve LOF production kararini degistirmez; detail tabloda aggregate `MODEL_CHALLENGER_SKORU`, model bazli `PCA/IF/LOF_CHALLENGER_SKORU`, `MODEL_CHALLENGER_UYARI` ve `PCA/IF/LOF_CHALLENGER_ANOMALI_FLAG` alanlari uretilir. Bu alanlar scoring ay diagnostic'i oldugu icin yalniz `DONEM_AY = MODEL_DONEM_AY` satirinda doludur; gecmis seri satirlarinda bos kalir.
 
-Challenger feature setine rule-derived veya karar-parametrik kolonlar verilmez. Model sadece ana metrikten turetilen fonksiyonel residual transformasyonlariyla calisir: musteri gecmis/trend/sezon/son-3-ay z skorlari, peer gecmis/guncel/trend z skorlari ve referans feature oran z skoru. `PRIMARY_SINYAL_P_DEGERI`, `ANA_SINYAL_SKORU`, `GUVEN_SKORU`, `MUSTERI_ACIKLANABILIRLIK_SKORU`, `EVIDENCE_CONFLICT_FLAG`, `VERI_YETERLILIK_DURUMU`, data-gap skoru, peer kalite skorlari ve final beklenen/gercek orani challenger modele sokulmaz; bunlar rule/diagnostic katmaninda kalir.
+Challenger feature setine rule-derived veya karar-parametrik kolonlar verilmez. Model sadece `model.score_aggregation.challenger_models.feature_columns` altinda yazan fonksiyonel residual transformasyonlariyla calisir: musteri gecmis/trend/sezon/son-3-ay z skorlari, peer gecmis/guncel/trend z skorlari ve referans feature oran z skoru. `PRIMARY_SINYAL_P_DEGERI`, `ANA_SINYAL_SKORU`, `GUVEN_SKORU`, `MUSTERI_ACIKLANABILIRLIK_SKORU`, `EVIDENCE_CONFLICT_FLAG`, `VERI_YETERLILIK_DURUMU`, data-gap skoru, peer kalite skorlari ve final beklenen/gercek orani challenger modele sokulmaz; bunlar rule/diagnostic katmaninda kalir.
 
 Challenger input hygiene `min_feature_valid_rate` ve `min_feature_unique_values` ile kontrol edilir. Tamamen bos, gate nedeniyle uretilmeyen veya sabit kalan residual feature modele girmez.
 

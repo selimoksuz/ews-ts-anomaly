@@ -828,16 +828,25 @@ def build_human_reason(row: pd.Series) -> str:
     if label == "NORMAL":
         raw_score = row.get("raw_evidence_score", score)
         raw_text = ""
+        seasonal_text = ""
         score_value = float(score) if pd.notna(score) else 0.0
         if pd.notna(raw_score) and float(raw_score) >= 90.0 and float(raw_score) > score_value + 2.0:
             raw_text = (
                 f" Ham evidence skoru {fmt_num(raw_score, 1)}; final skor ay ici operasyonel esik "
                 "ve effect guardrail ile kalibre edildi."
             )
+        recent_z = row.get("customer_recent_regime_z", np.nan)
+        seasonal_z = row.get("customer_seasonal_z", np.nan)
+        recent_enabled = bool(row.get("customer_recent_regime_evidence_enabled", True))
+        if (not recent_enabled) and pd.notna(recent_z) and pd.notna(seasonal_z):
+            seasonal_text = (
+                f" Son 3 ay rejim sapmasi var (z={fmt_num(recent_z, 2)}), ancak ayni ay sezon "
+                f"beklentisiyle uyumlu (sezon z={fmt_num(seasonal_z, 2)}); bu nedenle karar sinyali yapilmadi."
+            )
         return (
             f"Anomali degil. Ana sinyal: {signal} ({fmt_num(signal_score, 1)}%). {signal_detail} "
             f"Karar: {decision}; operasyonel skor {fmt_num(score, 1)}, guven {fmt_num(confidence, 1)}%."
-            f"{raw_text}"
+            f"{seasonal_text}{raw_text}"
         )
 
     return (

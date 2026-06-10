@@ -138,6 +138,8 @@ Her sinyal robust z-score, empirical p-value ve evidence score ile degerlendiril
 
 `customer_recent_regime` sadece son 3 calendar ayin tamami mevcutsa ve bu 3 ay kendi icinde stabilse aktif olur. Amaci eski uzun tarihsel seviyenin yeni kisa rejimi bastirdigi veya scoring ayinin stabil son 3 aydan sert koptugu vakalari yakalamaktir. Bu kosullar saglanmazsa sinyal `NaN` kalir ve skora girmez.
 
+Sezon korumasi ayrica calisir: `customer_recent_regime` sert sapma gosteriyor ama `customer_seasonal` ayni ay icin normal diyorsa, bu durum sezonla aciklanmis kabul edilir ve son-3-ay rejim sinyali production evidence hesabina alinmaz. Detail tabloda son-3-ay z-score'u yine gorunur; normal reason metni "son 3 ay sapmasi var ancak sezon beklentisiyle uyumlu" diye aciklar.
+
 ## Evidence Aggregation
 
 Final skor agirlikli ortalama degildir. Evidence-first yaklasim kullanilir:
@@ -188,7 +190,7 @@ Challenger modeller production driver degildir. Final `ANOMALI_FLAG` robust evid
 - Isolation Forest score
 - Local Outlier Factor score
 
-Raw ana metrik, raw segment ve raw musteri hacmi dogrudan modele verilmez. Challenger feature seti rule-derived veya karar-parametrik kolonlari kullanmaz. Kullanilan alanlar sadece ana metrikten uretilen fonksiyonel residual transformasyonlardir: musteri gecmis/trend/sezon/son-3-ay z skorlari, peer gecmis/guncel/trend z skorlari ve referans feature oran z skoru.
+Raw ana metrik, raw segment ve raw musteri hacmi dogrudan modele verilmez. Challenger feature seti rule-derived veya karar-parametrik kolonlari kullanmaz. Kullanilan alanlar sadece ana metrikten uretilen fonksiyonel residual transformasyonlardir: musteri gecmis/trend/sezon/son-3-ay z skorlari, peer gecmis/guncel/trend z skorlari ve referans feature oran z skoru. Bu feature listesi `configs/anomaly.yaml > model.score_aggregation.challenger_models.feature_columns` altindan yonetilir.
 
 Asagidaki kolonlar challenger modele sokulmaz; bunlar rule/diagnostic katmaninda kalir: `PRIMARY_SINYAL_P_DEGERI`, `ANA_SINYAL_SKORU`, `GUVEN_SKORU`, `MUSTERI_ACIKLANABILIRLIK_SKORU`, `EVIDENCE_CONFLICT_FLAG`, `VERI_YETERLILIK_DURUMU`, data-gap skoru, peer kalite/kalibrasyon skorlari ve final beklenen/gercek oranlari. Aday residual feature'lar da `min_feature_valid_rate` ve `min_feature_unique_values` gate'lerinden gecmeden challenger modele verilmez; boylece tamamen bos veya sabit feature modele sinyal gibi girmez. Detail tabloda aggregate `MODEL_CHALLENGER_SKORU`, model bazli `PCA/IF/LOF_CHALLENGER_SKORU`, `MODEL_CHALLENGER_UYARI` ve `PCA/IF/LOF_CHALLENGER_ANOMALI_FLAG` alanlari bulunur.
 

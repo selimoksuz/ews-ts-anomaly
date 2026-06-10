@@ -104,10 +104,23 @@ DEFAULT_SCORE_AGGREGATION: dict[str, Any] = {
         "enabled": True,
         "min_recent_months": MIN_CUSTOMER_RECENT_REGIME_ROWS,
         "max_recent_range_log": MAX_CUSTOMER_RECENT_REGIME_RANGE_LOG,
+        "seasonal_guard_enabled": True,
+        "seasonal_guard_max_abs_season_z": 1.50,
+        "seasonal_guard_min_abs_recent_z": 2.50,
     },
     "challenger_models": {
         "enabled": True,
         "methods": ["pca", "isolation_forest", "lof"],
+        "feature_columns": [
+            "self_history_z",
+            "customer_trend_z",
+            "customer_seasonal_z",
+            "customer_recent_regime_z",
+            "historical_peer_z",
+            "current_peer_z",
+            "peer_trend_z",
+            "turnover_intensity_z",
+        ],
         "random_state": 42,
         "min_rows": 200,
         "pca_variance_to_keep": 0.80,
@@ -144,6 +157,7 @@ SIGNAL_DEFINITIONS: tuple[dict[str, str], ...] = (
         "family": "customer",
         "z_col": "customer_recent_regime_z",
         "score_col": "customer_recent_regime_score",
+        "eligibility_col": "customer_recent_regime_evidence_enabled",
     },
     {"name": "historical_peer", "family": "peer", "z_col": "historical_peer_z", "score_col": "historical_peer_score"},
     {"name": "current_peer", "family": "peer", "z_col": "current_peer_z", "score_col": "current_peer_score"},
@@ -155,6 +169,23 @@ SIGNAL_DEFINITIONS: tuple[dict[str, str], ...] = (
         "score_col": "turnover_intensity_score",
     },
 )
+
+def signal_evidence_z_series(frame: pd.DataFrame, signal: Mapping[str, str]) -> pd.Series:
+    z = pd.to_numeric(frame.get(signal["z_col"], pd.Series(np.nan, index=frame.index)), errors="coerce")
+    eligibility_col = signal.get("eligibility_col")
+    if eligibility_col:
+        eligible_raw = frame.get(eligibility_col, pd.Series(True, index=frame.index))
+        eligible = pd.Series(eligible_raw, index=frame.index).fillna(True).astype(bool)
+        z = z.where(eligible)
+    return z
+
+
+def signal_evidence_z_value(row: pd.Series, signal: Mapping[str, str]) -> float:
+    eligibility_col = signal.get("eligibility_col")
+    if eligibility_col and not bool(row.get(eligibility_col, True)):
+        return np.nan
+    return row.get(signal["z_col"], np.nan)
+
 
 DEFAULT_DERIVED_FEATURES: dict[str, Any] = {
     "feature_ratio": {
@@ -1332,7 +1363,7 @@ def add_directional_signal_evidence(frame: pd.DataFrame, config: Mapping[str, An
     min_p_value = float(config.get("min_p_value", 0.001))
     for signal in SIGNAL_DEFINITIONS:
         name = signal["name"]
-        z = pd.to_numeric(out.get(signal["z_col"], pd.Series(np.nan, index=out.index)), errors="coerce")
+        z = signal_evidence_z_series(out, signal)
         raw_score = pd.Series(score_from_z(z), index=out.index).clip(lower=0.0, upper=100.0)
         z_p = (1.0 - raw_score / 100.0).clip(lower=min_p_value, upper=1.0)
         empirical_p = pd.Series(1.0, index=out.index, dtype=float)
@@ -1361,7 +1392,7 @@ def signal_records(row: pd.Series, family: str | None, direction: str | None, co
     for signal in SIGNAL_DEFINITIONS:
         if family is not None and signal["family"] != family:
             continue
-        z = row.get(signal["z_col"], np.nan)
+        z = signal_evidence_z_value(row, signal)
         if pd.isna(z) or abs(float(z)) < min_abs_z:
             continue
         signal_direction = "HIGH" if float(z) > 0 else "LOW"
@@ -1603,10 +1634,9 @@ def _family_direction_arrays(
     min_abs_z = float(config.get("min_abs_z_for_evidence", 0.50))
     p_cols = [f"{signal['name']}_p_value" for signal in signals]
     score_cols = [f"{signal['name']}_evidence_score" for signal in signals]
-    z_cols = [signal["z_col"] for signal in signals]
     p_matrix = frame[p_cols].to_numpy(dtype=float, copy=True)
     score_matrix = frame[score_cols].to_numpy(dtype=float, copy=True)
-    z_matrix = frame[z_cols].to_numpy(dtype=float, copy=True)
+    z_matrix = np.vstack([signal_evidence_z_series(frame, signal).to_numpy(dtype=float) for signal in signals]).T
 
     if direction == "HIGH":
         valid = z_matrix >= min_abs_z
@@ -2000,14 +2030,8 @@ def add_challenger_diagnostics(frame: pd.DataFrame, config: Mapping[str, Any]) -
         return out
 
     feature_columns = [
-        "self_history_z",
-        "customer_trend_z",
-        "customer_seasonal_z",
-        "customer_recent_regime_z",
-        "historical_peer_z",
-        "current_peer_z",
-        "peer_trend_z",
-        "turnover_intensity_z",
+        str(column)
+        for column in challenger.get("feature_columns", DEFAULT_SCORE_AGGREGATION["challenger_models"]["feature_columns"])
     ]
     feature_columns = usable_challenger_features(
         out,
@@ -2323,6 +2347,17 @@ def score_scoring_month(
             / np.maximum(selected["customer_recent3_mad"].astype(float), MIN_LOG_SCALE),
             np.nan,
         )
+        seasonal_guard_enabled = bool(recent_regime_config.get("seasonal_guard_enabled", True))
+        seasonal_guard_max_abs_z = float(recent_regime_config.get("seasonal_guard_max_abs_season_z", 1.50))
+        seasonal_guard_min_abs_recent_z = float(recent_regime_config.get("seasonal_guard_min_abs_recent_z", 2.50))
+        seasonal_explains_recent_regime = (
+            seasonal_guard_enabled
+            & selected["customer_seasonal_z"].notna()
+            & selected["customer_recent_regime_z"].notna()
+            & selected["customer_seasonal_z"].abs().le(seasonal_guard_max_abs_z)
+            & selected["customer_recent_regime_z"].abs().ge(seasonal_guard_min_abs_recent_z)
+        )
+        selected["customer_recent_regime_evidence_enabled"] = ~seasonal_explains_recent_regime
         selected["gap_months_before_scoring"] = np.where(
             selected["last_month_ord"].notna(),
             np.maximum(selected["month_ord"].astype(float) - selected["last_month_ord"].astype(float) - 1.0, 0.0),
@@ -2557,6 +2592,7 @@ def score_scoring_month(
             "customer_trend_z",
             "customer_seasonal_z",
             "customer_recent_regime_z",
+            "customer_recent_regime_evidence_enabled",
             "historical_peer_score",
             "current_peer_score",
             "peer_trend_score",
@@ -2681,23 +2717,13 @@ def label_scores(
 
     guardrails = dict(label_guardrails or {})
     if bool(guardrails.get("enabled", False)):
-        signal_z_cols = [
-            "self_history_z",
-            "customer_trend_z",
-            "customer_seasonal_z",
-            "customer_recent_regime_z",
-            "historical_peer_z",
-            "current_peer_z",
-            "peer_trend_z",
-            "turnover_intensity_z",
-        ]
         z_matrix = np.vstack(
             [
-                pd.to_numeric(out.get(col, pd.Series(np.nan, index=out.index)), errors="coerce")
+                signal_evidence_z_series(out, signal)
                 .fillna(0.0)
                 .abs()
                 .to_numpy(dtype=float)
-                for col in signal_z_cols
+                for signal in SIGNAL_DEFINITIONS
             ]
         )
         max_abs_z = np.nanmax(z_matrix, axis=0)
