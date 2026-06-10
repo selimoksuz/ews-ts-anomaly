@@ -1943,6 +1943,9 @@ def add_challenger_diagnostics(frame: pd.DataFrame, config: Mapping[str, Any]) -
     if not bool(challenger.get("enabled", False)):
         out["model_challenger_score"] = np.nan
         out["model_challenger_warning"] = "Challenger model disabled."
+        out["pca_challenger_score"] = np.nan
+        out["if_challenger_score"] = np.nan
+        out["lof_challenger_score"] = np.nan
         out["pca_challenger_anomaly_flag"] = 0
         out["if_challenger_anomaly_flag"] = 0
         out["lof_challenger_anomaly_flag"] = 0
@@ -1950,6 +1953,9 @@ def add_challenger_diagnostics(frame: pd.DataFrame, config: Mapping[str, Any]) -
     if len(out) < int(challenger.get("min_rows", 200)):
         out["model_challenger_score"] = np.nan
         out["model_challenger_warning"] = "Challenger model skipped: scoring row count below minimum."
+        out["pca_challenger_score"] = np.nan
+        out["if_challenger_score"] = np.nan
+        out["lof_challenger_score"] = np.nan
         out["pca_challenger_anomaly_flag"] = 0
         out["if_challenger_anomaly_flag"] = 0
         out["lof_challenger_anomaly_flag"] = 0
@@ -1982,6 +1988,9 @@ def add_challenger_diagnostics(frame: pd.DataFrame, config: Mapping[str, Any]) -
     sklearn_scores, skipped_methods = sklearn_challenger_scores(matrix, challenger)
     method_scores.update(sklearn_scores)
     flag_threshold = float(challenger.get("flag_threshold", 95.0))
+    out["pca_challenger_score"] = method_scores.get("pca", np.full(len(out), np.nan, dtype=float))
+    out["if_challenger_score"] = method_scores.get("isolation_forest", np.full(len(out), np.nan, dtype=float))
+    out["lof_challenger_score"] = method_scores.get("lof", np.full(len(out), np.nan, dtype=float))
     out["pca_challenger_anomaly_flag"] = (
         method_scores.get("pca", np.zeros(len(out), dtype=float)) >= flag_threshold
     ).astype(int)
@@ -1993,6 +2002,9 @@ def add_challenger_diagnostics(frame: pd.DataFrame, config: Mapping[str, Any]) -
     ).astype(int)
     if not method_scores:
         out["model_challenger_score"] = np.nan
+        out["pca_challenger_score"] = np.nan
+        out["if_challenger_score"] = np.nan
+        out["lof_challenger_score"] = np.nan
         skipped_text = "; ".join(skipped_methods) if skipped_methods else "no challenger method produced scores"
         out["model_challenger_warning"] = f"Challenger model skipped: {skipped_text}."
         return out
@@ -2539,6 +2551,9 @@ def score_scoring_month(
             "scoring_strategy",
             "model_challenger_score",
             "model_challenger_warning",
+            "pca_challenger_score",
+            "if_challenger_score",
+            "lof_challenger_score",
             "pca_challenger_anomaly_flag",
             "if_challenger_anomaly_flag",
             "lof_challenger_anomaly_flag",

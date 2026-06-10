@@ -186,7 +186,7 @@ Challenger modeller production driver degildir. Final `ANOMALI_FLAG` robust evid
 - Isolation Forest score
 - Local Outlier Factor score
 
-Raw ana metrik, raw segment ve raw musteri hacmi dogrudan modele verilmez. Kullanilan feature seti customer/peer z-score'lari, recent regime, data gap, peer quality ve actual/expected residual alanlaridir. Detail tabloda aggregate `MODEL_CHALLENGER_SKORU`, `MODEL_CHALLENGER_UYARI` ve `PCA/IF/LOF_CHALLENGER_ANOMALI_FLAG` alanlari bulunur.
+Raw ana metrik, raw segment ve raw musteri hacmi dogrudan modele verilmez. Kullanilan feature seti customer/peer z-score'lari, recent regime, data gap, peer quality ve actual/expected residual alanlaridir. Detail tabloda aggregate `MODEL_CHALLENGER_SKORU`, model bazli `PCA/IF/LOF_CHALLENGER_SKORU`, `MODEL_CHALLENGER_UYARI` ve `PCA/IF/LOF_CHALLENGER_ANOMALI_FLAG` alanlari bulunur.
 
 Challenger alanlari scoring ayina ait diagnostic'tir. Detail tablo musteri serisini gosterdigi icin bu kolonlar yalniz `DONEM_AY = MODEL_DONEM_AY` satirinda doludur; gecmis ay satirlarinda bos kalir.
 
@@ -308,6 +308,9 @@ Detail tablo tek satir = skorlanan musterinin ilgili ay satiri olacak sekilde mu
 | SKORLAMA_STRATEJISI | SKOR_STRATEJI | Customer-first/peer fallback scoring stratejisi. |
 | MODEL_CHALLENGER_SKORU | CHL_SKOR | PCA/IF/LOF aggregate challenger skoru; sadece scoring ay satirinda doludur. |
 | MODEL_CHALLENGER_UYARI | CHL_UYARI | Challenger model yorumu; sadece scoring ay satirinda doludur. |
+| PCA_CHALLENGER_SKORU | CHL_PCA_SKOR | PCA reconstruction-error percentile skoru; sadece scoring ay satirinda doludur. |
+| IF_CHALLENGER_SKORU | CHL_IF_SKOR | Isolation Forest percentile skoru; sadece scoring ay satirinda doludur. |
+| LOF_CHALLENGER_SKORU | CHL_LOF_SKOR | Local Outlier Factor percentile skoru; sadece scoring ay satirinda doludur. |
 | PCA_CHALLENGER_ANOMALI_FLAG | CHL_PCA_FLG | PCA challenger flag; sadece scoring ay satirinda doludur. |
 | IF_CHALLENGER_ANOMALI_FLAG | CHL_IF_FLG | Isolation Forest challenger flag; sadece scoring ay satirinda doludur. |
 | LOF_CHALLENGER_ANOMALI_FLAG | CHL_LOF_FLG | Local Outlier Factor challenger flag; sadece scoring ay satirinda doludur. |
