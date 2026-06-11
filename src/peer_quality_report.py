@@ -32,6 +32,9 @@ NORMALIZED_TO_OUTPUT = {
     "feature_bucket_q5": "FEATURE_BUCKET_Q5",
     "feature_bucket_q8": "FEATURE_BUCKET_Q8",
     "behavior_cluster": "DAVRANIS_CLUSTER",
+    "behavior_level_bucket": "DAVRANIS_SEVIYE_BUCKET",
+    "behavior_volatility_bucket": "DAVRANIS_VOLATILITE_BUCKET",
+    "behavior_trend_bucket": "DAVRANIS_TREND_BUCKET",
     "_global_key": "_GLOBAL_KEY",
 }
 
@@ -257,6 +260,12 @@ def add_peer_instance_keys(decisions: pd.DataFrame, scoring_keys: pd.DataFrame) 
                 out[output_col] = out[output_col].combine_first(out[right_col])
     if "DAVRANIS_CLUSTER" not in out.columns and "DAVRANIS_CLUSTER_REBUILT" in out.columns:
         out["DAVRANIS_CLUSTER"] = out["DAVRANIS_CLUSTER_REBUILT"]
+    if "DAVRANIS_SEVIYE_BUCKET" not in out.columns and "DAVRANIS_SEVIYE_BUCKET_REBUILT" in out.columns:
+        out["DAVRANIS_SEVIYE_BUCKET"] = out["DAVRANIS_SEVIYE_BUCKET_REBUILT"]
+    if "DAVRANIS_VOLATILITE_BUCKET" not in out.columns and "DAVRANIS_VOLATILITE_BUCKET_REBUILT" in out.columns:
+        out["DAVRANIS_VOLATILITE_BUCKET"] = out["DAVRANIS_VOLATILITE_BUCKET_REBUILT"]
+    if "DAVRANIS_TREND_BUCKET" not in out.columns and "DAVRANIS_TREND_BUCKET_REBUILT" in out.columns:
+        out["DAVRANIS_TREND_BUCKET"] = out["DAVRANIS_TREND_BUCKET_REBUILT"]
     if "EXPOSURE_BUCKET" in out.columns:
         out["EXPOSURE_BUCKET"] = out["EXPOSURE_BUCKET"].fillna("exposure_unknown")
     if "FEATURE_RATIO_BUCKET" in out.columns:

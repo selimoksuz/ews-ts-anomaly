@@ -242,6 +242,7 @@ Decision table:
 - Tek satir = scoring ayindaki musteri
 - Ham input kolonlari
 - `ANOMALI_FLAG`
+- `ANOMALI_SKORU`
 - `ANOMALI_NEDENI`
 
 Detail table:
@@ -252,6 +253,7 @@ Detail table:
 - Trend, sezon, p-value, z-score, evidence driver ve reason detaylari
 - Challenger diagnostic, peer kalite, peer kalibrasyon ve feature-ratio gate alanlari
 - `ANOMALI_SKORU` ham p-value skoru degil, final etiketle uyumlu ay ici operasyonel risk skorudur. Ham kanit gucu `ANA_SINYAL_SKORU`, `PRIMARY_SINYAL_SKORU`, `MUSTERI_SINYAL_SKORU` ve `PEER_SINYAL_SKORU` alanlarinda izlenir.
+- Decision tablosundaki `ANOMALI_NEDENI` human-readable karar metnidir; guven yuzdesi bu metinde yazmaz. Guven detayi sadece detail tablosundaki `GUVEN_SKORU` alaninda izlenir.
 - `ANOMALI_FLAG` tum detail satirlarinda 0/1 olarak doludur; scoring ayinda anomaly ise 1, diger satirlar 0 olur.
 - Fiziksel kolon sirasi sabittir: ham input, seri/data quality, peer aylik metrikler, scoring beklenen/gercek metrikler, musteri sinyalleri, peer sinyalleri, challenger, peer kalite, behavior, onceki skor diagnostigi, evidence driver ve final karar alanlari.
 - Oracle yaziminda tablo kolon seti veya kolon sirasi degisirse `create_table: true` iken tablo yeniden olusturulur; boylece Oracle fiziksel kolon sirasi da dokumandaki sirayla uyumlu kalir.

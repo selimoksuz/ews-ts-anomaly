@@ -432,6 +432,50 @@ def median_score_delta(base_run: core.ModelRun, perturbed_run: core.ModelRun, cu
     return float((merged["perturbed_score"] - merged["base_score"]).median())
 
 
+def sample_stress_customers(base_scores: pd.DataFrame, sample_size: int) -> dict[str, pd.Series]:
+    positive = base_scores.loc[
+        base_scores["bill_amount"].notna() & base_scores["bill_amount"].gt(0),
+        "customer_id",
+    ].drop_duplicates()
+    samples: dict[str, pd.Series] = {
+        "all_positive": positive.sample(n=min(sample_size, len(positive)), random_state=42) if len(positive) else positive
+    }
+    reliable_statuses = {
+        "CUSTOMER_TREND_AND_SEASONAL_AVAILABLE",
+        "CUSTOMER_TREND_AVAILABLE",
+        "CUSTOMER_HISTORY_AVAILABLE",
+    }
+    reliable = base_scores.loc[base_scores["customer_id"].isin(set(positive.astype(str)))].copy()
+    reliable_mask = reliable["anomaly_label"].eq("NORMAL") & reliable["scoreability_status"].isin(reliable_statuses)
+    if "confidence" in reliable.columns:
+        reliable_mask &= pd.to_numeric(reliable["confidence"], errors="coerce").fillna(0.0).ge(65.0)
+    if "peer_objective_score" in reliable.columns:
+        reliable_mask &= pd.to_numeric(reliable["peer_objective_score"], errors="coerce").fillna(0.0).ge(60.0)
+    reliable_ids = reliable.loc[reliable_mask, "customer_id"].drop_duplicates()
+    samples["reliable_normal"] = (
+        reliable_ids.sample(n=min(sample_size, len(reliable_ids)), random_state=43) if len(reliable_ids) else reliable_ids
+    )
+    return samples
+
+
+def stress_cohort_metrics(
+    base_run: core.ModelRun,
+    spike_run: core.ModelRun,
+    drop_run: core.ModelRun,
+    samples: dict[str, pd.Series],
+) -> dict[str, dict[str, Any]]:
+    metrics: dict[str, dict[str, Any]] = {}
+    for name, customer_ids in samples.items():
+        metrics[name] = {
+            "sample_size": int(len(customer_ids)),
+            "spike_detection_rate": detection_rate(spike_run, customer_ids, "HIGH"),
+            "drop_detection_rate": detection_rate(drop_run, customer_ids, "LOW"),
+            "spike_median_score_delta": median_score_delta(base_run, spike_run, customer_ids),
+            "drop_median_score_delta": median_score_delta(base_run, drop_run, customer_ids),
+        }
+    return metrics
+
+
 def run_stress_test_sensitivity(
     ctx: ValidationContext,
     base_run: core.ModelRun,
@@ -441,17 +485,18 @@ def run_stress_test_sensitivity(
 ) -> dict[str, Any]:
     if len(base_run.scores) == 0:
         return {"status": "skipped", "reason": "no_scored_rows"}
-    sample = (
-        base_run.scores.loc[base_run.scores["bill_amount"].notna() & base_run.scores["bill_amount"].gt(0), "customer_id"]
-        .drop_duplicates()
-        .sample(n=min(sample_size, base_run.scores["customer_id"].nunique()), random_state=42)
-    )
-    if len(sample) == 0:
+    samples = sample_stress_customers(base_run.scores, sample_size)
+    all_sample = samples["all_positive"]
+    if len(all_sample) == 0:
         return {"status": "skipped", "reason": "no_positive_main_metric_rows"}
-    log_step(f"stress_test_sensitivity_start sample={len(sample)}")
+    perturb_ids = pd.concat([ids for ids in samples.values() if len(ids)], ignore_index=True).drop_duplicates()
+    log_step(
+        "stress_test_sensitivity_start "
+        f"sample={len(all_sample)} reliable_sample={len(samples['reliable_normal'])}"
+    )
     base_window = implementation.apply_rolling_window(ctx.prepared_full, ctx.scoring_month, ctx.rolling_window_months)
-    spike_prepared = perturb_scoring_values(base_window, ctx.scoring_month, sample, spike_factor)
-    drop_prepared = perturb_scoring_values(base_window, ctx.scoring_month, sample, drop_factor)
+    spike_prepared = perturb_scoring_values(base_window, ctx.scoring_month, perturb_ids, spike_factor)
+    drop_prepared = perturb_scoring_values(base_window, ctx.scoring_month, perturb_ids, drop_factor)
     spike_run = core.score_scoring_month(
         spike_prepared,
         ctx.scoring_month,
@@ -474,19 +519,30 @@ def run_stress_test_sensitivity(
         score_aggregation=ctx.model_config.get("score_aggregation", {}),
         derived_features_config=ctx.derived_features,
     )
+    cohort_metrics = stress_cohort_metrics(base_run, spike_run, drop_run, samples)
+    all_metrics = cohort_metrics["all_positive"]
+    reliable_metrics = cohort_metrics["reliable_normal"]
     payload = {
         "status": "generated",
-        "sample_size": int(len(sample)),
+        "sample_size": int(len(all_sample)),
+        "reliable_sample_size": int(len(samples["reliable_normal"])),
         "spike_factor": float(spike_factor),
         "drop_factor": float(drop_factor),
-        "spike_detection_rate": detection_rate(spike_run, sample, "HIGH"),
-        "drop_detection_rate": detection_rate(drop_run, sample, "LOW"),
-        "spike_median_score_delta": median_score_delta(base_run, spike_run, sample),
-        "drop_median_score_delta": median_score_delta(base_run, drop_run, sample),
+        "spike_detection_rate": all_metrics["spike_detection_rate"],
+        "drop_detection_rate": all_metrics["drop_detection_rate"],
+        "spike_median_score_delta": all_metrics["spike_median_score_delta"],
+        "drop_median_score_delta": all_metrics["drop_median_score_delta"],
+        "reliable_spike_detection_rate": reliable_metrics["spike_detection_rate"],
+        "reliable_drop_detection_rate": reliable_metrics["drop_detection_rate"],
+        "reliable_spike_median_score_delta": reliable_metrics["spike_median_score_delta"],
+        "reliable_drop_median_score_delta": reliable_metrics["drop_median_score_delta"],
+        "cohort_metrics": cohort_metrics,
     }
     log_step(
         "stress_test_sensitivity_done "
-        f"spike_rate={payload['spike_detection_rate']} drop_rate={payload['drop_detection_rate']}"
+        f"spike_rate={payload['spike_detection_rate']} drop_rate={payload['drop_detection_rate']} "
+        f"reliable_spike_rate={payload['reliable_spike_detection_rate']} "
+        f"reliable_drop_rate={payload['reliable_drop_detection_rate']}"
     )
     return payload
 
@@ -556,21 +612,53 @@ def validate_output_tables(decision: pd.DataFrame, detail: pd.DataFrame) -> pd.D
 
     if "ANOMALI_NEDENI" in decision.columns:
         missing_reason = int(decision["ANOMALI_NEDENI"].isna().sum() + decision["ANOMALI_NEDENI"].astype(str).str.strip().eq("").sum())
+        reason_mentions_confidence = int(
+            decision["ANOMALI_NEDENI"]
+            .fillna("")
+            .astype(str)
+            .str.contains(r"\bguven\b|\bgüven\b|confidence", case=False, regex=True)
+            .sum()
+        )
         add_check(
             "decision_reason_not_blank",
             "PASS" if missing_reason == 0 else "FAIL",
             missing_reason,
             "Decision reason must be filled for all decision rows",
         )
+        add_check(
+            "decision_reason_without_confidence_text",
+            "PASS" if reason_mentions_confidence == 0 else "FAIL",
+            reason_mentions_confidence,
+            "Decision reason must not include confidence text",
+        )
     else:
         add_check("decision_reason_exists", "FAIL", "missing", "ANOMALI_NEDENI column not found")
 
-    raw_like_columns = [col for col in decision.columns if col not in {"ANOMALI_FLAG", "ANOMALI_NEDENI"}]
+    if "ANOMALI_SKORU" in decision.columns:
+        score = pd.to_numeric(decision["ANOMALI_SKORU"], errors="coerce")
+        missing_score = int(score.isna().sum())
+        out_of_range_score = int((score.dropna().lt(0) | score.dropna().gt(100)).sum())
+        add_check(
+            "decision_anomaly_score_not_missing",
+            "PASS" if missing_score == 0 else "FAIL",
+            missing_score,
+            "ANOMALI_SKORU missing count",
+        )
+        add_check(
+            "decision_anomaly_score_range",
+            "PASS" if out_of_range_score == 0 else "FAIL",
+            out_of_range_score,
+            "ANOMALI_SKORU must be between 0 and 100",
+        )
+    else:
+        add_check("decision_anomaly_score_exists", "FAIL", "missing", "ANOMALI_SKORU column not found")
+
+    raw_like_columns = [col for col in decision.columns if col not in {"ANOMALI_FLAG", "ANOMALI_SKORU", "ANOMALI_NEDENI"}]
     add_check(
         "decision_contains_raw_input_columns",
         "PASS" if raw_like_columns else "FAIL",
         len(raw_like_columns),
-        "Decision table must contain raw input columns plus ANOMALI_FLAG and ANOMALI_NEDENI",
+        "Decision table must contain raw input columns plus ANOMALI_FLAG, ANOMALI_SKORU, and ANOMALI_NEDENI",
     )
     duplicate_decision_rows = int(decision.duplicated().sum()) if len(decision) else 0
     add_check(
@@ -713,6 +801,11 @@ def write_markdown_report(
             f"- Drop detection rate: {stress_test.get('drop_detection_rate')}",
             f"- Spike median score delta: {stress_test.get('spike_median_score_delta')}",
             f"- Drop median score delta: {stress_test.get('drop_median_score_delta')}",
+            f"- Reliable normal sample size: {stress_test.get('reliable_sample_size')}",
+            f"- Reliable spike detection rate: {stress_test.get('reliable_spike_detection_rate')}",
+            f"- Reliable drop detection rate: {stress_test.get('reliable_drop_detection_rate')}",
+            f"- Reliable spike median score delta: {stress_test.get('reliable_spike_median_score_delta')}",
+            f"- Reliable drop median score delta: {stress_test.get('reliable_drop_median_score_delta')}",
             "",
             "## Files",
             "",

@@ -740,7 +740,7 @@ def decision_label_text(row: pd.Series) -> str:
     if "PEER_SELF_CONFLICT" in action:
         return "sinyal celiskisi review"
     if "LOW_CONFIDENCE" in action or "SPARSE_HISTORY" in action:
-        return "dusuk guven review"
+        return "ek inceleme review"
     if action.startswith("WATCHLIST"):
         return "watchlist"
     if label in {"HIGH_MAIN_METRIC_ANOMALY", "HIGH_BILL_ANOMALY"} or action.startswith("LIKELY_HIGH"):
@@ -840,7 +840,6 @@ def augment_scores_for_outputs(scores: pd.DataFrame) -> pd.DataFrame:
 def build_human_reason(row: pd.Series) -> str:
     label = str(row.get("anomaly_label", "NORMAL"))
     score = row.get("final_anomaly_score", np.nan)
-    confidence = row.get("confidence", np.nan)
     signal = row.get("strongest_signal_label", "major sinyal yok")
     signal_score = row.get("strongest_signal_score_pct", np.nan)
     signal_detail = strongest_signal_detail(row)
@@ -866,13 +865,13 @@ def build_human_reason(row: pd.Series) -> str:
             )
         return (
             f"Anomali degil. Ana sinyal: {signal} ({fmt_num(signal_score, 1)}%). {signal_detail} "
-            f"Karar: {decision}; operasyonel skor {fmt_num(score, 1)}, guven {fmt_num(confidence, 1)}%."
+            f"Karar: {decision}; operasyonel skor {fmt_num(score, 1)}."
             f"{seasonal_text}{raw_text}"
         )
 
     return (
         f"Ana neden: {signal} ({fmt_num(signal_score, 1)}%). {signal_detail} "
-        f"Karar: {decision}; skor {fmt_num(score, 1)}, guven {fmt_num(confidence, 1)}%."
+        f"Karar: {decision}; skor {fmt_num(score, 1)}."
     )
 
 
@@ -902,6 +901,7 @@ def build_decision_table(
     else:
         scored_out = restore_input_columns(scored, profile)
     scored_out["ANOMALI_FLAG"] = scored["ANOMALI_FLAG"].to_numpy()
+    scored_out["ANOMALI_SKORU"] = pd.to_numeric(scored["final_anomaly_score"], errors="coerce").to_numpy()
     scored_out["ANOMALI_NEDENI"] = scored["human_readable_reason"].to_numpy()
 
     pieces = [scored_out]
@@ -921,12 +921,13 @@ def build_decision_table(
         else:
             ns_out = restore_input_columns(ns, profile)
         ns_out["ANOMALI_FLAG"] = ns["ANOMALI_FLAG"].to_numpy()
+        ns_out["ANOMALI_SKORU"] = np.nan
         ns_out["ANOMALI_NEDENI"] = ns["human_readable_reason"].to_numpy()
         pieces.append(ns_out)
 
     out = pd.concat(pieces, ignore_index=True, sort=False)
     input_cols = input_output_columns(profile, list(out.columns))
-    output_cols = input_cols + ["ANOMALI_FLAG", "ANOMALI_NEDENI"]
+    output_cols = input_cols + ["ANOMALI_FLAG", "ANOMALI_SKORU", "ANOMALI_NEDENI"]
     source_names = input_column_map(profile)
     sort_cols = [
         col
@@ -2224,10 +2225,13 @@ def run_implementation_scoring(
                 "diagnostic only" if include_prior_score_diagnostic else "not calculated in this production run"
             ),
             "score_aggregation": core.merged_score_aggregation(score_aggregation),
-            "primary_tables": {
-                "decision_table": "one row per scoring-month customer; raw input columns plus ANOMALI_FLAG and ANOMALI_NEDENI only",
-                "detail_table": "one row per customer-month for scoring customers; customer series, model metrics, selected-peer evidence, and explanations",
-            },
+        "primary_tables": {
+            "decision_table": (
+                "one row per scoring-month customer; raw input columns plus "
+                "ANOMALI_FLAG, ANOMALI_SKORU, and ANOMALI_NEDENI"
+            ),
+            "detail_table": "one row per customer-month for scoring customers; customer series, model metrics, selected-peer evidence, and explanations",
+        },
         },
     }
     if oracle_payload is not None:

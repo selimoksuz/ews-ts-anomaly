@@ -239,7 +239,8 @@ Decision tablo tek satir = scoring ayindaki musteri olacak sekilde tasarlanir. K
 |---|---|---|---|
 | Ham input kolonlari | Inputtaki ad | Kaynaktan gelen ve decision output'a tasinan kolonlar; ornek: `MUSTERINO`, `DONEM_AY`, ana metrik, segment/faaliyet/sube gibi kolonlar. | Decision table karar tuketimi icindir; bu kolonlar karar nedenini ham kaynak satiriyla baglamak, downstream join yapmak ve kullanicinin skorlanan gercek degeri gormesi icin korunur. |
 | ANOMALI_FLAG | ANOMALI_FLAG | 1 ise scoring ayinda anomaly/watchlist karari var, 0 ise yok. | Final karar kolonudur. Robust evidence-first sisteminden gelir; challenger modeller bu flag'i dogrudan degistirmez. |
-| ANOMALI_NEDENI | ANOMALI_NEDENI | Human-readable karar nedeni. | Final reason kolonudur. Ana sinyal, beklenen/gercek farki, musteri/peer guvenilirligi ve veri yeterlilik durumuna gore uretilir. |
+| ANOMALI_SKORU | ANOMALI_SKORU | Nihai operasyonel anomaly skoru. | 0-100 arasi final karar skorudur. Ham p-value skoru degildir; final etiketle uyumlu ay ici risk skorudur. |
+| ANOMALI_NEDENI | ANOMALI_NEDENI | Human-readable karar nedeni. | Final reason kolonudur. Ana sinyal, beklenen/gercek farki, musteri/peer guvenilirligi ve veri yeterlilik durumuna gore uretilir; decision reason metninde guven yuzdesi yazilmaz. Guven detayi detail tablosundaki `GUVEN_SKORU` alaninda kalir. |
 
 ### Detail Table
 
