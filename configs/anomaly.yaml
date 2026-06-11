@@ -43,20 +43,6 @@ model:
       denominator: TURNOVER_AMT
       use_as_peer_variable: true
       use_as_anomaly_signal: true
-      # Referans feature peer bucket'i tek sabit kirilim degil, objective-driven aday setidir.
-      # Sistem her varyanti history uzerinden fit eder; peer objective hangisini daha iyi bulursa onu secer.
-      peer_bucket_variants:
-        enabled: true
-        min_positive_rows: 100
-        variants:
-          - name: q3
-            quantiles: [0.333333, 0.666667]
-          - name: q4
-            quantiles: [0.25, 0.50, 0.75]
-          - name: q5
-            quantiles: [0.20, 0.40, 0.60, 0.80]
-          - name: q8
-            quantiles: [0.125, 0.25, 0.375, 0.50, 0.625, 0.75, 0.875]
       quality_gate:
         # true ise oran skora girmeden once kaynak ve peer kalite kontrollerinden gecmelidir.
         enabled: true
@@ -121,7 +107,7 @@ model:
         - historical_peer_z
         - current_peer_z
         - peer_trend_z
-        - turnover_intensity_z
+        - feature_ratio_z
       # PCA dependency-free calisir; IsolationForest ve LOF icin scikit-learn gerekir.
       methods:
         - pca
@@ -203,152 +189,19 @@ model:
       coarse_peer_cap: 65.0
 
 peer_selection:
-  # Peer adaylarinda kullanilabilecek generic degiskenler.
-  # Behavior kolonlari sadece scoring ayindan onceki musteri gecmisinden turetilir.
-  priority_variables:
-    - customer_segment
-    - sector
-    - feature_bucket_q3
-    - feature_bucket_q4
-    - feature_bucket_q5
-    - feature_bucket_q8
-    - active_subscriber_bucket
-    - behavior_level_bucket
-    - behavior_volatility_bucket
-    - behavior_trend_bucket
-    - behavior_cluster
-  # Ileri seviye override gerekirse acilabilir:
-  # mandatory_variables:
-  #   - segment_variables
-  # fallback_variables:
-  #   - feature_peer_variables
+  # Peer adaylari otomatik uretilir:
+  # - variables.segment_variables icindeki kolonlar
+  # - model.derived_features ile aktif edilen generic peer feature bucket'lari
+  # - behavior_peer aktifse scoring ayi oncesi musteri davranis bucket'lari
+  # Bu alanda proses-spesifik veya uretilmis kolon listesi yazilmaz.
+  priority_variables: auto
   # Hicbir peer yeterli degilse global peer adayini da dene.
   include_global: true
   # Bir peer instance'inda kullanilabilecek maksimum degisken sayisi.
   max_variables_per_peer: 6
-  # Peer adaylarini oncelik path'i uzerinden uretir.
-  candidate_strategy: priority_path
-  # Denenen aday seti. Branch/sube cok parcaladigi icin destek gecmediginden
-  # karar adaylarinda tutulmaz; detail'de ham veri olarak kalir.
-  explicit_levels:
-    - name: segment_behavior_level_vol
-      columns:
-        - customer_segment
-        - behavior_level_bucket
-        - behavior_volatility_bucket
-    - name: segment_behavior_level
-      columns:
-        - customer_segment
-        - behavior_level_bucket
-    - name: sector_behavior_level
-      columns:
-        - sector
-        - behavior_level_bucket
-    - name: segment_sector_behavior_level
-      columns:
-        - customer_segment
-        - sector
-        - behavior_level_bucket
-    - name: segment_behavior
-      columns:
-        - customer_segment
-        - behavior_cluster
-    - name: sector_behavior
-      columns:
-        - sector
-        - behavior_cluster
-    - name: behavior_level
-      columns:
-        - behavior_level_bucket
-    - name: behavior
-      columns:
-        - behavior_cluster
-    - name: segment_sector_feature_q3_exposure
-      columns:
-        - customer_segment
-        - sector
-        - feature_bucket_q3
-        - active_subscriber_bucket
-    - name: segment_sector_feature_q4_exposure
-      columns:
-        - customer_segment
-        - sector
-        - feature_bucket_q4
-        - active_subscriber_bucket
-    - name: segment_sector_feature_q5_exposure
-      columns:
-        - customer_segment
-        - sector
-        - feature_bucket_q5
-        - active_subscriber_bucket
-    - name: segment_sector_feature_q8_exposure
-      columns:
-        - customer_segment
-        - sector
-        - feature_bucket_q8
-        - active_subscriber_bucket
-    - name: segment_sector
-      columns:
-        - customer_segment
-        - sector
-    - name: segment_feature_q3
-      columns:
-        - customer_segment
-        - feature_bucket_q3
-    - name: segment_feature_q4
-      columns:
-        - customer_segment
-        - feature_bucket_q4
-    - name: segment_feature_q5
-      columns:
-        - customer_segment
-        - feature_bucket_q5
-    - name: segment_feature_q8
-      columns:
-        - customer_segment
-        - feature_bucket_q8
-    - name: sector_feature_q3_exposure
-      columns:
-        - sector
-        - feature_bucket_q3
-        - active_subscriber_bucket
-    - name: sector_feature_q4_exposure
-      columns:
-        - sector
-        - feature_bucket_q4
-        - active_subscriber_bucket
-    - name: sector_feature_q5_exposure
-      columns:
-        - sector
-        - feature_bucket_q5
-        - active_subscriber_bucket
-    - name: sector_feature_q8_exposure
-      columns:
-        - sector
-        - feature_bucket_q8
-        - active_subscriber_bucket
-    - name: sector_feature_q3
-      columns:
-        - sector
-        - feature_bucket_q3
-    - name: sector_feature_q4
-      columns:
-        - sector
-        - feature_bucket_q4
-    - name: sector_feature_q5
-      columns:
-        - sector
-        - feature_bucket_q5
-    - name: sector_feature_q8
-      columns:
-        - sector
-        - feature_bucket_q8
-    - name: segment
-      columns:
-        - customer_segment
-    - name: sector
-      columns:
-        - sector
+  # Segment degiskenleri, feature bucket'lari ve davranis bucket'lari arasindan
+  # objective'e girecek aday lattice'i otomatik kurar.
+  candidate_strategy: objective_lattice
   # Destek gecen peerler arasinda objective skoru en iyi olani secer.
   selection_mode: objective
   objective_weights:
@@ -393,30 +246,11 @@ peer_selection:
     mean_median_full_penalty_ratio: 8.0
     # Raw standart sapma / medyan orani bu seviyeye gelirse oynaklik cezasi tam kabul edilir.
     std_median_full_penalty_ratio: 12.0
-  # Auto inferred degiskenlerde cok yuksek cardinality'li kolonlari elemek icin ust sinir.
+  # Yuksek cardinality'li segment kolonlari tek basina denenir; bu esigi asarsa
+  # feature/behavior bucket'lariyla derinlestirilmez.
   max_inferred_cardinality: 250
   # Peer seciminden tamamen cikarmak istedigin degiskenleri buraya yaz.
   exclude_variables: []
-  blocked_values:
-    # Bu degerler peer degiskeninde varsa ilgili aday destek gecmis sayilmaz.
-    behavior_cluster:
-      - behavior_unknown
-      - ""
-      - nan
-      - None
-    feature_bucket:
-      - feature_missing
-      - feature_zero
-      - feature_unknown
-      - ""
-      - nan
-      - None
-    turnover_bucket:
-      - turnover_missing
-      - turnover_unknown
-      - ""
-      - nan
-      - None
 
 peer_support:
   # Peer'in tum gecmiste minimum satir destegi.

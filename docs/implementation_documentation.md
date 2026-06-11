@@ -80,18 +80,6 @@ model:
       denominator: TURNOVER_AMT
       use_as_peer_variable: true
       use_as_anomaly_signal: true
-      peer_bucket_variants:
-        enabled: true
-        min_positive_rows: 100
-        variants:
-          - name: q3
-            quantiles: [0.333333, 0.666667]
-          - name: q4
-            quantiles: [0.25, 0.50, 0.75]
-          - name: q5
-            quantiles: [0.20, 0.40, 0.60, 0.80]
-          - name: q8
-            quantiles: [0.125, 0.25, 0.375, 0.50, 0.625, 0.75, 0.875]
     behavior_peer:
       enabled: false
     bucket_features:
@@ -100,7 +88,7 @@ model:
         use_as_peer_variable: true
 ```
 
-Farkli proseslerde `denominator` ve `bucket_features.source` alanlari degistirilir; kod icinde proses-spesifik kolon adi aranmaz. Referans feature bucket'i tek sabit kirilim degildir; `peer_bucket_variants` altindaki q3/q4/q5/q8 adaylari history uzerinden fit edilir ve peer objective icinde ayri ayri yaristirilir.
+Farkli proseslerde `denominator` ve `bucket_features.source` alanlari degistirilir; kod icinde proses-spesifik kolon adi aranmaz. Referans feature bucket'i tek sabit kirilim degildir; engine varsayilan bucket cozumlerini history uzerinden fit eder ve peer objective icinde ayri ayri yaristirir. Config'te uretilmis q-bucket kolonlari yazilmaz.
 
 Skorlanacak ay `configs/anomaly.yaml` icindeki `model.scoring_month` ile secilir:
 
@@ -169,7 +157,7 @@ Peer objective agirliklari `configs/anomaly.yaml` icinde `peer_selection.objecti
 
 `distribution`, peer'in normal dagilip dagilmadigini degil robust sekilde karsilastirilabilir olup olmadigini olcer. Bilesenleri `peer_selection.distribution_quality` altindan parametriktir: scoring ay log IQR/MAD, gecmis aylik log IQR/MAD medyani, robust tail-rate, log skew/kurtosis ve dusuk agirlikli raw ortalama/medyan ile std/medyan diagnostikleri. Temsil skoru destek/spesifiklik tabanini `0.50 + 0.50 * PEER_DAGILIM_SKORU / 100` carpanindan gecirdigi icin genis ama kalabalik peer otomatik strong temsil sayilmaz.
 
-Production config'te behavior peer aktiftir. `behavior_level_bucket`, `behavior_volatility_bucket`, `behavior_trend_bucket` ve `behavior_cluster` sadece scoring ayindan onceki musteri gecmisiyle uretilir. Denemelerde behavior adaylari secili peer ortalama dagilim skorunu yaklasik 34.6'dan 47.4'e cikardigi icin `peer_selection.explicit_levels` icine alinmistir. Son Oracle run'inda objective-driven q3/q4/q5/q8 referans feature bucket adaylari da denendi; feature bucket adaylari 2,868 scoring musterisi icin secildi, behavior adaylari 14,745 scoring musterisi icin secildi ve secili peer ortalama dagilim skoru 47.49 oldu. Branch/sube adaylari destek gecmedigi icin explicit adaylarda tutulmaz; ham kolon olarak decision/detail tablolarinda kalir.
+Production config'te behavior peer aktiftir. `behavior_level_bucket`, `behavior_volatility_bucket`, `behavior_trend_bucket` ve `behavior_cluster` sadece scoring ayindan onceki musteri gecmisiyle uretilir. Bu alanlar config'te peer seviyesi olarak tek tek yazilmaz; `peer_selection.candidate_strategy: objective_lattice` segment degiskenleri, behavior bucket'lari ve referans feature bucket'lari arasindan adaylari otomatik kurar. Branch/sube gibi cok parcalayan kolonlar destek gecmezse objective tarafindan elenir veya daha genis peer'e dusulur.
 
 Feature ratio skora girmeden once `model.derived_features.feature_ratio.quality_gate` ile kontrol edilir. Global gate gecmezse veya secilen peer icinde `min_peer_ratio_rows` / `min_peer_ratio_mad` gecmezse oran sadece diagnostic kalir. Detail tabloda gate sonucu ve nedeni `FEATURE_ORAN_*_GATE_*` kolonlariyla izlenir.
 

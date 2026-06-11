@@ -21,7 +21,7 @@ SIGNAL_COLUMNS = [
     ("historical_peer", "historical_peer_z", "historical_peer_score", "gecmis peer beklentisi"),
     ("current_peer", "current_peer_z", "current_peer_score", "ayni ay peer medyani"),
     ("peer_trend", "peer_trend_z", "peer_trend_score", "peer trendi"),
-    ("turnover_intensity", "turnover_intensity_z", "turnover_intensity_score", "ana metrik/referans feature orani"),
+    ("feature_ratio", "feature_ratio_z", "feature_ratio_score", "ana metrik/referans feature orani"),
     ("self_history", "self_history_z", "self_history_score", "musterinin kendi gecmisi"),
     ("customer_trend", "customer_trend_z", "customer_trend_score", "musteri trendi"),
     ("customer_seasonal", "customer_seasonal_z", "customer_seasonal_score", "musteri sezonalligi"),
@@ -32,7 +32,7 @@ PEER_KEY_COLUMNS = [
     "branch_id",
     "sector",
     "customer_segment",
-    "turnover_bucket",
+    "feature_ratio_bucket",
     "active_subscriber_bucket",
     "behavior_cluster",
     "_global_key",
@@ -66,7 +66,7 @@ LOGICAL_TO_NORMALIZED = {
     "sector": "sector",
     "active_subscriber": "active_subscriber",
     "bill_amount": "bill_amount",
-    "turnover_amt": "turnover_amt",
+    "reference_feature": "reference_feature",
 }
 
 MODEL_DECISION_RENAME = {
@@ -114,8 +114,8 @@ MODEL_DECISION_RENAME = {
     "current_peer_score": "GUNCEL_PEER_SKORU",
     "peer_trend_z": "PEER_TREND_Z",
     "peer_trend_score": "PEER_TREND_SKORU",
-    "turnover_intensity_z": "FEATURE_ORAN_Z",
-    "turnover_intensity_score": "FEATURE_ORAN_SKORU",
+    "feature_ratio_z": "FEATURE_ORAN_Z",
+    "feature_ratio_score": "FEATURE_ORAN_SKORU",
     "feature_ratio_signal_requested": "FEATURE_ORAN_SINYAL_ISTENDI",
     "feature_ratio_quality_gate_passed": "FEATURE_ORAN_GLOBAL_GATE_GECTI",
     "feature_ratio_quality_gate_reasons": "FEATURE_ORAN_GLOBAL_GATE_NEDENI",
@@ -398,7 +398,7 @@ def input_column_map(profile: dict[str, Any]) -> dict[str, str]:
         "sector": "REF_ALTFAALIYET",
         "active_subscriber": "AKTIF_ABONE",
         "bill_amount": "FATURA_TTR",
-        "turnover_amt": "TURNOVER_AMT",
+        "reference_feature": "TURNOVER_AMT",
     }
 
 
@@ -678,7 +678,7 @@ def operational_decision(action_label: Any, anomaly_label: Any, is_scored: bool 
 
 def strongest_signal(row: pd.Series) -> tuple[str, str, float, float]:
     def output_signal_name(value: str) -> str:
-        return "feature_ratio" if value == "turnover_intensity" else value
+        return value
 
     primary_signal = row.get("primary_signal_name", "")
     if isinstance(primary_signal, str) and primary_signal:
@@ -722,7 +722,7 @@ def safe_ratio(numerator: Any, denominator: Any) -> float:
 
 def display_peer_columns(value: Any) -> str:
     replacements = {
-        "turnover_bucket": "feature_ratio_bucket",
+        "feature_ratio_bucket": "feature_ratio_bucket",
         "active_subscriber_bucket": "exposure_bucket",
     }
     text = str(value)
@@ -796,14 +796,14 @@ def strongest_signal_detail(row: pd.Series) -> str:
             f"Skorlanan ana metrik {fmt_num(actual)}; peer trend beklentisi "
             f"{fmt_num(peer_trend)}; ana metrik/peer trend orani {fmt_num(safe_ratio(actual, peer_trend), 3)}."
         )
-    if signal_name in {"turnover_intensity", "feature_ratio"}:
-        bill_turnover = row.get("bill_to_turnover_ratio", np.nan)
+    if signal_name == "feature_ratio":
+        main_reference_ratio = row.get("main_to_reference_ratio", np.nan)
         numerator_col = row.get("ratio_numerator_source_col", "ana_metrik")
         denominator_col = row.get("ratio_denominator_source_col", "referans_feature")
         return (
             f"Skorlanan ana metrik {fmt_num(actual)}; referans feature {denominator_col}="
-            f"{fmt_num(row.get('turnover_amt', np.nan))}; {numerator_col}/{denominator_col} "
-            f"orani {fmt_num(bill_turnover, 6)}."
+            f"{fmt_num(row.get('reference_feature', np.nan))}; {numerator_col}/{denominator_col} "
+            f"orani {fmt_num(main_reference_ratio, 6)}."
         )
     return (
         f"Skorlanan ana metrik {fmt_num(actual)}; beklenen ana metrik {fmt_num(expected)}; "
@@ -827,9 +827,6 @@ def augment_scores_for_outputs(scores: pd.DataFrame) -> pd.DataFrame:
         lambda row: operational_decision(row.get("action_label"), row.get("anomaly_label"), True),
         axis=1,
     )
-    for col in ["primary_signal_name", "secondary_signal_name"]:
-        if col in out.columns:
-            out[col] = out[col].replace({"turnover_intensity": "feature_ratio"})
     out["is_main_metric_anomaly"] = out["anomaly_label"].isin(
         ["HIGH_MAIN_METRIC_ANOMALY", "LOW_MAIN_METRIC_ANOMALY", "HIGH_BILL_ANOMALY", "LOW_BILL_ANOMALY"]
     )
@@ -956,9 +953,9 @@ def month_range(start_period: int, end_period: int) -> list[int]:
 def build_peer_monthly_stats(prepared: pd.DataFrame, peer_group_columns: list[str]) -> dict[str, pd.DataFrame]:
     valid = prepared.loc[prepared["valid_bill_for_model"] & prepared["bill_amount"].notna()].copy()
     ratio_enabled = bool(prepared.attrs.get("feature_ratio", {}).get("enabled", False))
-    valid["bill_to_turnover_ratio"] = np.where(
-        ratio_enabled & valid["turnover_for_model"].astype(float).gt(0),
-        valid["bill_amount"] / valid["turnover_for_model"].astype(float),
+    valid["main_to_reference_ratio"] = np.where(
+        ratio_enabled & valid["reference_feature_for_model"].astype(float).gt(0),
+        valid["bill_amount"] / valid["reference_feature_for_model"].astype(float),
         np.nan,
     )
     out: dict[str, pd.DataFrame] = {}
@@ -972,8 +969,8 @@ def build_peer_monthly_stats(prepared: pd.DataFrame, peer_group_columns: list[st
                 peer_month_customer_count=("customer_id", "nunique"),
                 peer_month_bill_median=("bill_amount", "median"),
                 peer_month_bill_mean=("bill_amount", "mean"),
-                peer_month_turnover_median=("turnover_for_model", "median"),
-                peer_month_bill_to_turnover_median=("bill_to_turnover_ratio", "median"),
+                peer_month_reference_feature_median=("reference_feature_for_model", "median"),
+                peer_month_main_to_reference_median=("main_to_reference_ratio", "median"),
             )
             .reset_index()
         )
@@ -999,10 +996,10 @@ def build_detail_context(scores: pd.DataFrame, not_scored: pd.DataFrame) -> pd.D
         "branch_id",
         "customer_segment",
         "sector",
-        "turnover_bucket",
+        "feature_ratio_bucket",
         "active_subscriber_bucket",
         "bill_amount",
-        "turnover_amt",
+        "reference_feature",
         "ratio_numerator_source_col",
         "ratio_denominator_source_col",
         "feature_ratio_enabled",
@@ -1022,11 +1019,11 @@ def build_detail_context(scores: pd.DataFrame, not_scored: pd.DataFrame) -> pd.D
         "customer_recent3_median_bill",
         "customer_recent3_range_log",
         "actual_to_expected_ratio",
-        "bill_to_turnover_ratio",
+        "main_to_reference_ratio",
         "historical_peer_z",
         "current_peer_z",
         "peer_trend_z",
-        "turnover_intensity_z",
+        "feature_ratio_z",
         "self_history_z",
         "customer_trend_z",
         "customer_seasonal_z",
@@ -1034,7 +1031,7 @@ def build_detail_context(scores: pd.DataFrame, not_scored: pd.DataFrame) -> pd.D
         "historical_peer_score",
         "current_peer_score",
         "peer_trend_score",
-        "turnover_intensity_score",
+        "feature_ratio_score",
         "self_history_score",
         "customer_trend_score",
         "customer_seasonal_score",
@@ -1166,10 +1163,10 @@ def build_detail_context(scores: pd.DataFrame, not_scored: pd.DataFrame) -> pd.D
         "branch_id": "scoring_branch_id",
         "customer_segment": "scoring_customer_segment",
         "sector": "scoring_sector",
-        "turnover_bucket": "scoring_turnover_bucket",
+        "feature_ratio_bucket": "scoring_feature_ratio_bucket",
         "active_subscriber_bucket": "scoring_active_subscriber_bucket",
         "bill_amount": "scoring_bill_amount",
-        "turnover_amt": "scoring_turnover_amt",
+        "reference_feature": "scoring_reference_feature",
         "expected_bill_amount": "scoring_peer_expected_bill_amount",
         "prior_median_bill": "scoring_customer_prior_median_bill",
         "human_readable_reason": "decision_reason_sentence",
@@ -1272,8 +1269,8 @@ def merge_peer_stats(detail: pd.DataFrame, peer_stats: dict[str, pd.DataFrame]) 
         "peer_month_customer_count",
         "peer_month_bill_median",
         "peer_month_bill_mean",
-        "peer_month_turnover_median",
-        "peer_month_bill_to_turnover_median",
+        "peer_month_reference_feature_median",
+        "peer_month_main_to_reference_median",
     ]
     for group_cols_text, stats in peer_stats.items():
         mask = detail["peer_group_columns"].eq(group_cols_text)
@@ -1306,17 +1303,17 @@ def build_detail_table(
     history_before_scoring = history.loc[history["invoice_month"].lt(scoring_month)]
     effective_derived = derived_features_config or profile.get("derived_features", {})
     feature_edges = core.fit_feature_bucket_edges(history_before_scoring, effective_derived)
-    legacy_edges = core.fit_turnover_edges(history_before_scoring)
+    legacy_edges = core.fit_reference_feature_edges(history_before_scoring)
     history = core.assign_feature_buckets(history, feature_edges)
-    history = core.assign_turnover_bucket(history, legacy_edges)
+    history = core.assign_feature_ratio_bucket(history, legacy_edges)
     behavior_enabled = bool(profile.get("behavior_peer_enabled", core.behavior_peer_enabled(derived_features_config)))
     if behavior_enabled:
         behavior = core.build_behavior_clusters(history.loc[history["invoice_month"].lt(scoring_month)])
         history = core.assign_behavior_clusters(history, behavior)
     ratio_enabled = bool(profile.get("feature_ratio_enabled", False))
-    history["bill_to_turnover_ratio"] = np.where(
-        ratio_enabled & history["turnover_for_model"].astype(float).gt(0),
-        history["bill_amount"] / history["turnover_for_model"].astype(float),
+    history["main_to_reference_ratio"] = np.where(
+        ratio_enabled & history["reference_feature_for_model"].astype(float).gt(0),
+        history["bill_amount"] / history["reference_feature_for_model"].astype(float),
         np.nan,
     )
 
@@ -1345,10 +1342,10 @@ def build_detail_table(
         "active_subscriber",
         "active_subscriber_bucket",
         "active_subscriber_missing_flag",
-        "turnover_bucket",
+        "feature_ratio_bucket",
         "bill_amount",
-        "turnover_amt",
-        "bill_to_turnover_ratio",
+        "reference_feature",
+        "main_to_reference_ratio",
         "source_row_count",
         "customer_obs_count_total",
         "month_gap_from_previous",
@@ -1361,10 +1358,10 @@ def build_detail_table(
             "active_subscriber": "customer_month_active_subscriber",
             "active_subscriber_bucket": "customer_month_active_subscriber_bucket",
             "active_subscriber_missing_flag": "customer_month_active_subscriber_missing_flag",
-            "turnover_bucket": "customer_month_turnover_bucket",
+            "feature_ratio_bucket": "customer_month_feature_ratio_bucket",
             "bill_amount": "customer_bill_amount",
-            "turnover_amt": "customer_turnover_amt",
-            "bill_to_turnover_ratio": "customer_bill_to_turnover_ratio",
+            "reference_feature": "customer_reference_feature",
+            "main_to_reference_ratio": "customer_main_to_reference_ratio",
         }
     )
     detail = grid.merge(customer_series, on=["customer_id", "invoice_month"], how="left")
@@ -1414,8 +1411,8 @@ def build_detail_table(
         "current_peer_score",
         "peer_trend_z",
         "peer_trend_score",
-        "turnover_intensity_z",
-        "turnover_intensity_score",
+        "feature_ratio_z",
+        "feature_ratio_score",
         "feature_ratio_signal_requested",
         "feature_ratio_quality_gate_passed",
         "feature_ratio_quality_gate_reasons",
@@ -1513,8 +1510,8 @@ def build_detail_table(
             out[source_name] = detail["customer_month_active_subscriber"]
         elif logical == "bill_amount":
             out[source_name] = detail["customer_bill_amount"]
-        elif logical == "turnover_amt":
-            out[source_name] = detail["customer_turnover_amt"]
+        elif logical == "reference_feature":
+            out[source_name] = detail["customer_reference_feature"]
 
     out["ANA_METRIK_EKSIK_MI"] = detail["customer_bill_missing_flag"]
     ratio_settings = profile.get("feature_ratio", {})
@@ -1522,7 +1519,7 @@ def build_detail_table(
     if ratio_enabled:
         out["ORAN_PAY_KOLON"] = str(ratio_settings.get("numerator_source_col", ""))
         out["ORAN_PAYDA_KOLON"] = str(ratio_settings.get("denominator_source_col", ""))
-        out["MUSTERI_ANA_METRIK_PAYDA_ORANI"] = detail["customer_bill_to_turnover_ratio"]
+        out["MUSTERI_ANA_METRIK_PAYDA_ORANI"] = detail["customer_main_to_reference_ratio"]
     out["MUSTERI_TOPLAM_AY_ADET"] = detail["customer_obs_count_total"]
     out["ONCEKI_AYA_GAP"] = detail["month_gap_from_previous"]
     out["PEER_SEVIYE"] = detail["peer_group_level_name"]
@@ -1532,8 +1529,8 @@ def build_detail_table(
     out["PEER_AYLIK_ANA_METRIK_MEDYAN"] = detail["peer_month_bill_median"]
     out["PEER_AYLIK_ANA_METRIK_ORTALAMA"] = detail["peer_month_bill_mean"]
     if ratio_enabled:
-        out["PEER_AYLIK_ORAN_PAYDA_MEDYAN"] = detail["peer_month_turnover_median"]
-        out["PEER_AYLIK_ANA_METRIK_PAYDA_ORAN_MEDYAN"] = detail["peer_month_bill_to_turnover_median"]
+        out["PEER_AYLIK_ORAN_PAYDA_MEDYAN"] = detail["peer_month_reference_feature_median"]
+        out["PEER_AYLIK_ANA_METRIK_PAYDA_ORAN_MEDYAN"] = detail["peer_month_main_to_reference_median"]
     out["MUSTERI_PEER_ANA_METRIK_ORANI"] = detail["customer_vs_peer_month_ratio"]
     out["MUSTERI_PEER_ORAN_PCTL"] = detail["customer_vs_peer_ratio_percentile"]
     out["MUSTERI_PEER_ORAN_REF_N"] = detail["customer_vs_peer_ratio_reference_n"]
@@ -1573,8 +1570,8 @@ def build_detail_table(
         "current_peer_score": "GUNCEL_PEER_SKORU",
         "peer_trend_z": "PEER_TREND_Z",
         "peer_trend_score": "PEER_TREND_SKORU",
-        "turnover_intensity_z": "FEATURE_ORAN_Z",
-        "turnover_intensity_score": "FEATURE_ORAN_SKORU",
+        "feature_ratio_z": "FEATURE_ORAN_Z",
+        "feature_ratio_score": "FEATURE_ORAN_SKORU",
         "feature_ratio_signal_requested": "FEATURE_ORAN_SINYAL_ISTENDI",
         "feature_ratio_quality_gate_passed": "FEATURE_ORAN_GLOBAL_GATE_GECTI",
         "feature_ratio_quality_gate_reasons": "FEATURE_ORAN_GLOBAL_GATE_NEDENI",

@@ -181,7 +181,7 @@ def role_map_from_variable_groups(config: dict[str, Any]) -> dict[str, str]:
     ratio_enabled = str(ratio.get("enabled", "auto")).strip().lower()
     denominator = _resolve_variable_reference(ratio.get("denominator"), out, groups)
     if denominator and ratio_enabled not in {"false", "0", "no", "hayir"}:
-        out["turnover_amt"] = denominator
+        out["reference_feature"] = denominator
 
     bucket_features = derived_features_from_config(config).get("bucket_features", [])
     if isinstance(bucket_features, list):
@@ -224,13 +224,20 @@ def peer_variable_names_from_config(config: dict[str, Any]) -> list[str]:
         peers.append(reverse_role_map.get(column, column))
     ratio = _ratio_feature_config(config)
     ratio_peer_enabled = str(ratio.get("use_as_peer_variable", True)).strip().lower() not in {"false", "0", "no", "hayir"}
-    if "turnover_amt" in role_map and ratio_peer_enabled:
-        peers.extend(_feature_bucket_names_from_config(config) or ["turnover_bucket"])
+    if "reference_feature" in role_map and ratio_peer_enabled:
+        peers.extend(_feature_bucket_names_from_config(config) or ["feature_ratio_bucket"])
     if "active_subscriber" in role_map:
         peers.append("active_subscriber_bucket")
     behavior = _behavior_peer_config(config)
     if bool(behavior.get("enabled", False)) and bool(behavior.get("use_as_peer_variable", True)):
-        peers.append("behavior_cluster")
+        peers.extend(
+            [
+                "behavior_level_bucket",
+                "behavior_volatility_bucket",
+                "behavior_trend_bucket",
+                "behavior_cluster",
+            ]
+        )
     return list(dict.fromkeys(peers))
 
 

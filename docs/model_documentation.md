@@ -46,17 +46,18 @@ Musteri yeterince okunabiliyorsa karar driver'i oncelikle customer family olur. 
 
 ## Adaptif Peer Secimi
 
-Peer adaylari `variables.segment_variables` listesinden ve `model.derived_features` ile acikca uretilen operatif bucket'lardan uretilir. Mevcut production config'te peer seviyeleri `peer_selection.explicit_levels` ile sabittir; bunun sebebi branch/sube gibi cok parcalayan kolonlarin destek gecmemesi ve davranis bazli peer adaylarinin daha iyi dagilim kalitesi vermesidir.
+Peer adaylari `variables.segment_variables` listesinden ve `model.derived_features` ile aktif edilen generic bucket'lardan otomatik uretilir. Production config artik proses-spesifik `explicit_levels` tasimaz; engine aday lattice'ini kurar, destek/kalibrasyon/dagilim/objective skorlarina gore en iyi peer'i secer.
 
-Aktif production aday setinde su aileler denenir:
+Otomatik aday setinde su aileler denenir:
 
-- Davranis bazli adaylar: `segment_behavior_level_vol`, `segment_behavior_level`, `segment_behavior`, `sector_behavior_level`, `sector_behavior`, `behavior_level`, `behavior`.
-- Referans feature bucket adaylari: `segment_sector_feature_q*_exposure`, `segment_feature_q*`, `sector_feature_q*_exposure`, `sector_feature_q*`.
-- Is/segment adaylari: `segment_sector`, `segment`, `sector`.
+- Segment adaylari: `variables.segment_variables` icindeki kolonlarin tekli/coklu kombinasyonlari.
+- Referans feature bucket adaylari: aktif `feature_ratio` denominator'i history uzerinden bucket'lanir ve segment adaylariyla yaristirilir.
+- Davranis adaylari: `behavior_peer` aktifse level/volatilite/trend bucket'lari ve cluster, scoring ayindan onceki musteri gecmisiyle uretilir.
+- Global fallback: hicbir aday destek gecmezse global peer denenir.
 
 `behavior_*` alanlari scoring ayini kullanmadan, yalnizca scoring ayindan onceki musteri gecmisinden uretilir. Bu nedenle peer secimine musteri davranis seviyesini katar ama scoring ayina leakage yaratmaz.
 
-Referans feature bucket'i tek sabit kirilim degildir. `model.derived_features.feature_ratio.peer_bucket_variants` altinda q3/q4/q5/q8 gibi alternatif bucket cozumleri tanimlanir. Her run'da bu bucket edge'leri sadece history uzerinden fit edilir, scoring ayina aynen uygulanir ve her varyant peer objective icinde ayri aday olarak yaristirilir. Boylece `TURNOVER_AMT` veya baska bir denominator icin bucket sayisi manuel sabitlenmez; destek, dagilim, kalibrasyon ve temsil skoruna gore objective hangi bucket cozumunu daha iyi bulursa o secilir.
+Referans feature bucket'i tek sabit kirilim degildir. Engine varsayilan olarak birden fazla quantile cozumunu history uzerinden fit eder, scoring ayina aynen uygular ve her varyanti peer objective icinde ayri aday olarak yaristirir. Config'te q3/q4/q5/q8 gibi uretilmis kolonlari yazmak gerekmez; yalnizca referans feature'in hangi kolon oldugu belirtilir.
 
 Peer adaylari su kriterlerle degerlendirilir:
 
@@ -104,7 +105,7 @@ Bu agirliklar normalize edilir; toplam 1 olmak zorunda degildir.
 
 Ana anomaly residual'i yine medyan/MAD tabanlidir. Raw mean/median veya std/median tek basina peer'i gecersiz yapmaz; ama detail/peer quality raporunda peer'in neden genis veya riskli oldugunu aciklar. `PEER_DAGILIM_SKORU`, `PEER_TEMSIL_SKORU` ve `PEER_OBJECTIVE_SKORU` birlikte okunur.
 
-2026-03 denemesinde mevcut segment/sector/tek feature-bucket/exposure adaylari secili peer ortalama dagilim skorunu yaklasik 34.6 seviyesinde birakti. Behavior bucket/cluster adaylari eklendiginde secili peer ortalama dagilim skoru yaklasik 47.4'e cikti ve not-scored satir sayisi 0 kaldi. Son revizyonda referans feature bucket q3/q4/q5/q8 olarak objective-driven denendi; secili peer ortalama dagilim skoru 47.49 oldu. Feature bucket adaylari 2,868 scoring musterisi icin secildi, behavior adaylari 14,745 scoring musterisi icin secildi. Bu sonuc feature bucket optimizasyonunun faydali ama tek basina yeterli olmadigini; behavior peer'in mevcut veriyle daha guclu iyilestirme getirdigini gosterir.
+2026-03 denemesinde behavior ve referans feature bucket adaylari peer objective icinde yaristirildi; secili peer ortalama dagilim skoru 47.49 oldu. Bu deger hala mukemmel homojenlik degil; bu nedenle peer quality raporu ve customer-first karar mantigi production'da korunur.
 
 `calibration` peer'in gecmis aylarda bir sonraki ay referansi olarak ne kadar iyi calistigini olcer. Scoring ayi kullanilmaz. Scoring ayindan onceki son kalibrasyon aylarinda peer aylik medyani, yalnizca daha onceki aylarla kurulan expected degere gore test edilir. Bilesenleri:
 
@@ -118,7 +119,7 @@ Ana anomaly residual'i yine medyan/MAD tabanlidir. Raw mean/median veya std/medi
 
 - Peer kolonu yoksa skor dusuk baz seviye alir.
 - Daha fazla peer kolonu kullanildikca `depth` artar.
-- `priority_variables` icindeki oncelikli kolonlar kullanildikca `priority` artar.
+- Config auto modda ise `variables.segment_variables` ve aktif derived peer degiskenlerinin sirasi priority hesaplamasinda kullanilir.
 - Skor 0-100 araligina tasinir.
 
 Bu skor tek basina "iyi peer" demek degildir. Destek azsa `PEER_DESTEK_SKORU`, dagilim kotuyse `PEER_DAGILIM_SKORU`, gecmis referans performansi zayifsa `PEER_KALIBRASYON_SKORU` objective'i dusurur.
@@ -139,13 +140,7 @@ Peer gate:
 
 Gate gecmezse oran detail tabloda diagnostic olarak kalir; `feature_ratio` sinyali final evidence aggregation'a girmez.
 
-Peer bucket tarafinda ayni referans feature icin birden fazla bucket cozumlenebilir:
-
-- `peer_bucket_variants.enabled`: referans feature bucket adaylarini acar/kapatir.
-- `peer_bucket_variants.min_positive_rows`: bucket edge fit etmek icin gereken minimum pozitif denominator satiri.
-- `peer_bucket_variants.variants`: q3/q4/q5/q8 gibi quantile listeleri.
-
-Bu bucket'lar anomaly sinyali degil, peer adayidir. Oran sinyali kalite gate gecmezse final skora girmez; buna ragmen referans feature bucket'i peer seciminde kullanilabilir. Bunun sebebi denominator'in musteri hacmini temsil ederek peer'i daraltabilmesidir. Ancak hangi bucket cozumunun kullanilacagina sabit kural karar vermez; peer objective karar verir.
+Peer bucket'lar anomaly sinyali degil, peer adayidir. Oran sinyali kalite gate gecmezse final skora girmez; buna ragmen referans feature bucket'i peer seciminde kullanilabilir. Bunun sebebi denominator'in musteri hacmini temsil ederek peer'i daraltabilmesidir. Ancak hangi bucket cozumunun kullanilacagina sabit kural karar vermez; peer objective karar verir.
 
 ## Sinyal Aileleri
 

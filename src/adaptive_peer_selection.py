@@ -10,7 +10,17 @@ import pandas as pd
 
 DEFAULT_BLOCKED_VALUES: dict[str, tuple[str, ...]] = {
     "behavior_cluster": ("behavior_unknown", "", "nan", "None"),
-    "turnover_bucket": ("turnover_unknown", "", "nan", "None"),
+    "behavior_level_bucket": ("level_unknown", "", "nan", "None"),
+    "behavior_volatility_bucket": ("vol_unknown", "", "nan", "None"),
+    "behavior_trend_bucket": ("trend_unknown", "", "nan", "None"),
+    "feature_ratio_bucket": (
+        "reference_feature_missing",
+        "reference_feature_zero",
+        "reference_feature_unknown",
+        "",
+        "nan",
+        "None",
+    ),
     "feature_bucket": ("feature_missing", "feature_zero", "feature_unknown", "", "nan", "None"),
 }
 
@@ -50,11 +60,11 @@ DEFAULT_TECHNICAL_EXCLUSIONS = {
     "month_of_year",
     "bill_amount",
     "log_bill",
-    "turnover_amt",
-    "turnover_for_model",
-    "log_turnover",
-    "bill_to_turnover_log_ratio",
-    "bill_to_turnover_ratio",
+    "reference_feature",
+    "reference_feature_for_model",
+    "log_reference_feature",
+    "main_to_reference_log_ratio",
+    "main_to_reference_ratio",
     "valid_bill_for_model",
     "negative_bill_flag",
     "zero_bill_flag",
@@ -64,7 +74,7 @@ DEFAULT_TECHNICAL_EXCLUSIONS = {
     "month_gap_from_previous",
     "active_subscriber",
     "active_subscriber_missing_flag",
-    "turnover_positive_flag",
+    "reference_feature_positive_flag",
     "behavior_history_n",
     "behavior_level_bucket",
     "behavior_volatility_bucket",
@@ -110,13 +120,13 @@ DEFAULT_TECHNICAL_PREFIXES = (
     "self_history_",
     "signal_",
     "source_",
-    "turnover_intensity_",
+    "feature_ratio_",
     "watchlist_",
 )
 
 DEFAULT_PREFERRED_VARIABLES = (
     "customer_segment",
-    "turnover_bucket",
+    "feature_ratio_bucket",
     "sector",
     "branch_id",
     "active_subscriber_bucket",
@@ -125,7 +135,7 @@ DEFAULT_PREFERRED_VARIABLES = (
 
 VARIABLE_NAME_ALIASES = {
     "customer_segment": "segment",
-    "turnover_bucket": "feature_ratio_bucket",
+    "feature_ratio_bucket": "feature_ratio_bucket",
     "feature_bucket_q3": "feature_q3",
     "feature_bucket_q4": "feature_q4",
     "feature_bucket_q5": "feature_q5",
@@ -134,8 +144,17 @@ VARIABLE_NAME_ALIASES = {
     "active_subscriber_bucket": "exposure_bucket",
     "branch_id": "branch",
     "behavior_cluster": "behavior",
+    "behavior_level_bucket": "behavior_level",
+    "behavior_volatility_bucket": "behavior_volatility",
+    "behavior_trend_bucket": "behavior_trend",
     "_global_key": "global",
 }
+
+BEHAVIOR_BUCKET_COLUMNS = (
+    "behavior_level_bucket",
+    "behavior_volatility_bucket",
+    "behavior_trend_bucket",
+)
 
 
 @dataclass(frozen=True)
@@ -168,12 +187,12 @@ class PeerSupportThresholds:
 @dataclass(frozen=True)
 class PeerSelectionConfig:
     priority_variables: tuple[str, ...] = ()
-    mandatory_variables: tuple[str, ...] = ("customer_segment",)
-    fallback_variables: tuple[str, ...] = ("sector", "turnover_bucket", "active_subscriber_bucket")
+    mandatory_variables: tuple[str, ...] = ()
+    fallback_variables: tuple[str, ...] = ()
     explicit_levels: tuple[PeerCandidate, ...] = ()
     include_global: bool = True
     max_variables_per_peer: int = 6
-    candidate_strategy: str = "priority_path"
+    candidate_strategy: str = "objective_lattice"
     selection_mode: str = "objective"
     objective_weights: Mapping[str, float] | None = None
     distribution_quality: Mapping[str, float] | None = None
@@ -308,13 +327,14 @@ def infer_peer_variables(frame: list[str] | pd.Index | pd.DataFrame, config: Pee
 
 def build_adaptive_peer_candidates(
     frame_columns: list[str] | pd.Index | pd.DataFrame,
-    has_turnover_signal: bool,
+    has_feature_ratio_signal: bool,
     config: PeerSelectionConfig | None = None,
 ) -> list[PeerCandidate]:
     rules = config or PeerSelectionConfig()
     variables = list(available_peer_variables(frame_columns, rules))
-    if not has_turnover_signal:
-        variables = [var for var in variables if var != "turnover_bucket" and not var.startswith("feature_bucket_")]
+    high_cardinality_variables = _high_cardinality_peer_variables(frame_columns, variables, rules.max_inferred_cardinality)
+    if not has_feature_ratio_signal:
+        variables = [var for var in variables if var != "feature_ratio_bucket" and not var.startswith("feature_bucket_")]
 
     if rules.explicit_levels:
         return _validated_explicit_candidates(rules.explicit_levels, variables, rules.include_global)
@@ -323,6 +343,8 @@ def build_adaptive_peer_candidates(
     optional = [var for var in variables if var not in mandatory]
     if rules.candidate_strategy == "all_combinations":
         return _build_all_combination_candidates(variables, mandatory, optional, rules)
+    if rules.candidate_strategy in {"auto", "objective_lattice", "adaptive_lattice"}:
+        return _build_objective_lattice_candidates(variables, mandatory, optional, rules, high_cardinality_variables)
 
     return _build_priority_path_candidates(variables, mandatory, optional, rules)
 
@@ -388,6 +410,139 @@ def _build_priority_path_candidates(
         candidates.append(tuple())
 
     return _sort_and_format_candidates(candidates, variables)
+
+
+def _is_feature_bucket_variable(variable: str) -> bool:
+    return variable == "feature_ratio_bucket" or variable.startswith("feature_bucket_")
+
+
+def _is_behavior_variable(variable: str) -> bool:
+    return variable == "behavior_cluster" or variable in BEHAVIOR_BUCKET_COLUMNS
+
+
+def _is_exposure_bucket_variable(variable: str) -> bool:
+    return variable == "active_subscriber_bucket"
+
+
+def _is_engine_derived_peer_variable(variable: str) -> bool:
+    return (
+        _is_feature_bucket_variable(variable)
+        or _is_behavior_variable(variable)
+        or _is_exposure_bucket_variable(variable)
+    )
+
+
+def _limited_combinations(variables: list[str], max_size: int) -> list[tuple[str, ...]]:
+    out: list[tuple[str, ...]] = []
+    upper = min(max_size, len(variables))
+    for size in range(upper, 0, -1):
+        out.extend(tuple(combo) for combo in combinations(variables, size))
+    return out
+
+
+def _append_if_valid(
+    candidates: list[tuple[str, ...]],
+    columns: tuple[str, ...],
+    max_variables_per_peer: int,
+) -> None:
+    deduped = dedupe(columns)
+    if not deduped or len(deduped) > max_variables_per_peer:
+        return
+    feature_bucket_count = sum(1 for col in deduped if col.startswith("feature_bucket_"))
+    if feature_bucket_count > 1:
+        return
+    if "feature_ratio_bucket" in deduped and feature_bucket_count:
+        return
+    if "behavior_cluster" in deduped and any(col in BEHAVIOR_BUCKET_COLUMNS for col in deduped):
+        return
+    candidates.append(tuple(deduped))
+
+
+def _build_objective_lattice_candidates(
+    variables: list[str],
+    mandatory: list[str],
+    optional: list[str],
+    rules: PeerSelectionConfig,
+    high_cardinality_variables: set[str] | None = None,
+) -> list[PeerCandidate]:
+    high_cardinality_variables = high_cardinality_variables or set()
+    base_variables = [var for var in variables if not _is_engine_derived_peer_variable(var)]
+    if mandatory:
+        base_variables = list(dedupe([*mandatory, *[var for var in base_variables if var not in mandatory]]))
+    feature_buckets = [var for var in variables if _is_feature_bucket_variable(var)]
+    exposure_buckets = [var for var in variables if _is_exposure_bucket_variable(var)]
+    behavior_components = [var for var in BEHAVIOR_BUCKET_COLUMNS if var in variables]
+    has_behavior_cluster = "behavior_cluster" in variables
+
+    candidates: list[tuple[str, ...]] = []
+    base_combos = _limited_combinations(base_variables, min(3, rules.max_variables_per_peer))
+    if mandatory:
+        mandatory_set = set(mandatory)
+        base_combos = [combo for combo in base_combos if mandatory_set.issubset(combo)]
+    if not base_combos and optional:
+        base_combos = [(var,) for var in optional if not _is_engine_derived_peer_variable(var)]
+
+    for combo in base_combos:
+        _append_if_valid(candidates, combo, rules.max_variables_per_peer)
+
+    behavior_sets: list[tuple[str, ...]] = []
+    if len(behavior_components) >= 2:
+        behavior_sets.append(tuple(behavior_components[:2]))
+    if behavior_components:
+        behavior_sets.append((behavior_components[0],))
+    if has_behavior_cluster:
+        behavior_sets.append(("behavior_cluster",))
+
+    primary_bases = base_combos or [tuple()]
+    derived_bases = [
+        base
+        for base in primary_bases
+        if len(base) <= 2 and not any(var in high_cardinality_variables for var in base)
+    ] or [tuple()]
+    for base in derived_bases:
+        for behavior_set in behavior_sets:
+            _append_if_valid(candidates, tuple([*base, *behavior_set]), rules.max_variables_per_peer)
+
+    for bucket in feature_buckets:
+        for base in derived_bases:
+            _append_if_valid(candidates, tuple([*base, bucket]), rules.max_variables_per_peer)
+            for exposure in exposure_buckets:
+                _append_if_valid(candidates, tuple([*base, bucket, exposure]), rules.max_variables_per_peer)
+
+    for exposure in exposure_buckets:
+        for base in derived_bases:
+            _append_if_valid(candidates, tuple([*base, exposure]), rules.max_variables_per_peer)
+
+    for fallback in rules.fallback_variables:
+        if fallback in variables:
+            _append_if_valid(candidates, (fallback,), rules.max_variables_per_peer)
+
+    for bucket in feature_buckets:
+        _append_if_valid(candidates, (bucket,), rules.max_variables_per_peer)
+    for behavior_set in behavior_sets:
+        _append_if_valid(candidates, behavior_set, rules.max_variables_per_peer)
+
+    if rules.include_global:
+        candidates.append(tuple())
+
+    return _sort_and_format_candidates(candidates, variables)
+
+
+def _high_cardinality_peer_variables(
+    frame: list[str] | pd.Index | pd.DataFrame,
+    variables: list[str],
+    max_cardinality: int,
+) -> set[str]:
+    if not isinstance(frame, pd.DataFrame):
+        return set()
+    out: set[str] = set()
+    for variable in variables:
+        if variable not in frame.columns:
+            continue
+        unique_count = int(frame[variable].nunique(dropna=True))
+        if unique_count > int(max_cardinality):
+            out.add(variable)
+    return out
 
 
 def _validated_explicit_candidates(

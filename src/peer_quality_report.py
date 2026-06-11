@@ -25,7 +25,6 @@ NORMALIZED_TO_OUTPUT = {
     "sector": "REF_ALTFAALIYET",
     "active_subscriber_bucket": "EXPOSURE_BUCKET",
     "exposure_bucket": "EXPOSURE_BUCKET",
-    "turnover_bucket": "FEATURE_RATIO_BUCKET",
     "feature_ratio_bucket": "FEATURE_RATIO_BUCKET",
     "feature_bucket_q3": "FEATURE_BUCKET_Q3",
     "feature_bucket_q4": "FEATURE_BUCKET_Q4",
@@ -40,7 +39,7 @@ NORMALIZED_TO_OUTPUT = {
 
 
 PEER_COLUMN_ALIASES = {
-    "feature_ratio_bucket": "turnover_bucket",
+    "feature_ratio_bucket": "feature_ratio_bucket",
     "exposure_bucket": "active_subscriber_bucket",
 }
 
@@ -130,27 +129,25 @@ def build_scoring_context(prepared: pd.DataFrame, scoring_month: int) -> tuple[p
     profile = prepared.attrs.get("profile", {}) if hasattr(prepared, "attrs") else {}
     derived_features = profile.get("derived_features", {})
     feature_edges = core.fit_feature_bucket_edges(history, derived_features)
-    legacy_edges = core.fit_turnover_edges(history)
+    legacy_edges = core.fit_reference_feature_edges(history)
     scoring = core.assign_feature_buckets(scoring, feature_edges)
     history = core.assign_feature_buckets(history, feature_edges)
-    scoring = core.assign_turnover_bucket(scoring, legacy_edges)
-    history = core.assign_turnover_bucket(history, legacy_edges)
+    scoring = core.assign_feature_ratio_bucket(scoring, legacy_edges)
+    history = core.assign_feature_ratio_bucket(history, legacy_edges)
     if bool(prepared.attrs.get("behavior_peer_enabled", False)):
         behavior = core.build_behavior_clusters(history)
         scoring = core.assign_behavior_clusters(scoring, behavior)
         history = core.assign_behavior_clusters(history, behavior)
     scoring["_global_key"] = "ALL"
     history["_global_key"] = "ALL"
+    feature_bucket_cols = [str(column) for column in feature_edges.keys()]
     wanted_cols = [
         "customer_id",
         "branch_id",
         "customer_segment",
         "sector",
-        "turnover_bucket",
-        "feature_bucket_q3",
-        "feature_bucket_q4",
-        "feature_bucket_q5",
-        "feature_bucket_q8",
+        "feature_ratio_bucket",
+        *feature_bucket_cols,
         "active_subscriber_bucket",
         "behavior_cluster",
         "behavior_history_n",
@@ -166,11 +163,8 @@ def build_scoring_context(prepared: pd.DataFrame, scoring_month: int) -> tuple[p
             "branch_id": output_mapping.get("branch_id", "SUBE_KD"),
             "customer_segment": output_mapping.get("customer_segment", "SEGMENTAD"),
             "sector": output_mapping.get("sector", "REF_ALTFAALIYET"),
-            "turnover_bucket": "FEATURE_RATIO_BUCKET",
-            "feature_bucket_q3": "FEATURE_BUCKET_Q3",
-            "feature_bucket_q4": "FEATURE_BUCKET_Q4",
-            "feature_bucket_q5": "FEATURE_BUCKET_Q5",
-            "feature_bucket_q8": "FEATURE_BUCKET_Q8",
+            "feature_ratio_bucket": "FEATURE_RATIO_BUCKET",
+            **{column: column.upper() for column in feature_bucket_cols},
             "active_subscriber_bucket": "EXPOSURE_BUCKET",
             "behavior_cluster": "DAVRANIS_CLUSTER_REBUILT",
             "behavior_history_n": "DAVRANIS_GECMIS_ADET_REBUILT",
@@ -318,7 +312,7 @@ def build_normalized_peer_key(row: pd.Series, columns: list[str]) -> str:
     if not columns:
         return "global=ALL"
     labels = {
-        "turnover_bucket": "feature_ratio_bucket",
+        "feature_ratio_bucket": "feature_ratio_bucket",
         "active_subscriber_bucket": "exposure_bucket",
     }
     return " | ".join(f"{labels.get(column, column)}={row.get(column, np.nan)}" for column in columns)

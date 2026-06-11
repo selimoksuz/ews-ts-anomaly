@@ -20,7 +20,7 @@ COLUMN_ALIASES = {
     "invoice_month": ["DONEM_AY"],
     "sector": ["REF_ALTFAALIYET"],
     "bill_amount": ["FATURA_TTR"],
-    "turnover_amt": ["TURNOVER_AMT"],
+    "reference_feature": ["TURNOVER_AMT"],
     "active_subscriber": ["AKTIF_ABONE"],
 }
 
@@ -126,7 +126,7 @@ DEFAULT_SCORE_AGGREGATION: dict[str, Any] = {
             "historical_peer_z",
             "current_peer_z",
             "peer_trend_z",
-            "turnover_intensity_z",
+            "feature_ratio_z",
         ],
         "random_state": 42,
         "min_rows": 200,
@@ -170,10 +170,10 @@ SIGNAL_DEFINITIONS: tuple[dict[str, str], ...] = (
     {"name": "current_peer", "family": "peer", "z_col": "current_peer_z", "score_col": "current_peer_score"},
     {"name": "peer_trend", "family": "peer", "z_col": "peer_trend_z", "score_col": "peer_trend_score"},
     {
-        "name": "turnover_intensity",
+        "name": "feature_ratio",
         "family": "peer",
-        "z_col": "turnover_intensity_z",
-        "score_col": "turnover_intensity_score",
+        "z_col": "feature_ratio_z",
+        "score_col": "feature_ratio_score",
     },
 )
 
@@ -198,7 +198,7 @@ DEFAULT_DERIVED_FEATURES: dict[str, Any] = {
     "feature_ratio": {
         "enabled": "auto",
         "numerator": "bill_amount",
-        "denominator": "turnover_amt",
+        "denominator": "reference_feature",
         "use_as_peer_variable": True,
         "use_as_anomaly_signal": True,
         "quality_gate": {
@@ -473,7 +473,7 @@ def fit_feature_bucket_edges(
     history: pd.DataFrame,
     derived_features_config: Mapping[str, Any] | None = None,
 ) -> dict[str, list[float]]:
-    positive = history.loc[history["turnover_for_model"].astype(float).gt(0), "log_turnover"].dropna()
+    positive = history.loc[history["reference_feature_for_model"].astype(float).gt(0), "log_reference_feature"].dropna()
     edges: dict[str, list[float]] = {}
     for spec in feature_bucket_variant_specs(derived_features_config):
         if len(positive) < int(spec["min_positive_rows"]):
@@ -486,15 +486,15 @@ def fit_feature_bucket_edges(
 
 def assign_feature_buckets(df: pd.DataFrame, edges_by_column: Mapping[str, list[float]]) -> pd.DataFrame:
     out = df.copy()
-    turnover_source = out["turnover_for_model"].astype(float)
-    zero_mask = turnover_source.fillna(0).eq(0)
-    pos = turnover_source.gt(0)
+    reference_feature_source = out["reference_feature_for_model"].astype(float)
+    zero_mask = reference_feature_source.fillna(0).eq(0)
+    pos = reference_feature_source.gt(0)
     for column, edges in edges_by_column.items():
         name = str(column).removeprefix("feature_bucket_")
         out[column] = "feature_missing"
         out.loc[zero_mask, column] = "feature_zero"
         if pos.any() and edges:
-            bucket_no = np.searchsorted(np.asarray(edges), out.loc[pos, "log_turnover"].to_numpy(), side="right") + 1
+            bucket_no = np.searchsorted(np.asarray(edges), out.loc[pos, "log_reference_feature"].to_numpy(), side="right") + 1
             out.loc[pos, column] = [f"{name}_b{int(i)}" for i in bucket_no]
         elif pos.any():
             out.loc[pos, column] = "feature_positive"
@@ -551,7 +551,7 @@ def feature_ratio_settings(
     values = normalize_derived_features_config(config)
     ratio = dict(values.get("feature_ratio", {}))
     quality_gate = dict(ratio.get("quality_gate", {}))
-    denominator_role = str(ratio.get("denominator", "turnover_amt"))
+    denominator_role = str(ratio.get("denominator", "reference_feature"))
     numerator_role = str(ratio.get("numerator", "bill_amount"))
     has_denominator = bool(cols and (denominator_role in cols or denominator_role in set(cols.values())))
     enabled_default = has_denominator and bool(denominator_usable)
@@ -565,7 +565,7 @@ def feature_ratio_settings(
         "numerator_role": numerator_role,
         "denominator_role": denominator_role,
         "numerator_source_col": source_column(numerator_role, "bill_amount"),
-        "denominator_source_col": source_column(denominator_role, "turnover_amt"),
+        "denominator_source_col": source_column(denominator_role, "reference_feature"),
         "quality_gate": quality_gate,
         "quality_gate_enabled": bool(quality_gate.get("enabled", True)),
     }
@@ -1094,9 +1094,9 @@ def prepare_source_frame(
             "invoice_month": to_numeric_series(raw[cols["invoice_month"]]).astype(int),
             "sector": raw[cols["sector"]] if "sector" in cols else "UNKNOWN_SECTOR",
             "bill_amount": to_numeric_series(raw[cols["bill_amount"]]).astype(float),
-            "turnover_amt": (
-                to_numeric_series(raw[cols["turnover_amt"]]).astype(float)
-                if "turnover_amt" in cols
+            "reference_feature": (
+                to_numeric_series(raw[cols["reference_feature"]]).astype(float)
+                if "reference_feature" in cols
                 else pd.Series(np.nan, index=raw.index, dtype=float)
             ),
         }
@@ -1126,7 +1126,7 @@ def prepare_source_frame(
             "active_subscriber": ("active_subscriber", "max"),
             "active_subscriber_missing_flag": ("active_subscriber_missing_flag", "max"),
             "bill_amount": ("bill_amount", "sum"),
-            "turnover_amt": ("turnover_amt", first_nonnull),
+            "reference_feature": ("reference_feature", first_nonnull),
             "source_row_count": ("bill_amount", "size"),
         }
         source_aggregation_by_logical = {
@@ -1149,21 +1149,21 @@ def prepare_source_frame(
     monthly["month_of_year"] = monthly["invoice_month"].astype(int) % 100
     monthly["calendar_month"] = monthly["invoice_month"].map(period_label)
     monthly["bill_amount"] = monthly["bill_amount"].astype(float)
-    monthly["turnover_amt"] = monthly["turnover_amt"].astype(float)
+    monthly["reference_feature"] = monthly["reference_feature"].astype(float)
     monthly["active_subscriber_missing_flag"] = monthly["active_subscriber_missing_flag"].fillna(False).astype(bool)
     monthly["active_subscriber"] = monthly["active_subscriber"].fillna(1).astype(float)
-    turnover_missing_rate = float(monthly["turnover_amt"].isna().mean())
-    turnover_missing_or_zero_rate = float(monthly["turnover_amt"].fillna(0).le(0).mean())
-    turnover_diff = (monthly["bill_amount"] - monthly["turnover_amt"]).abs()
-    turnover_equal_bill_rate = float((turnover_diff <= 1e-6).mean())
-    turnover_usable_for_model = "turnover_amt" in cols and turnover_missing_rate < 0.98 and turnover_equal_bill_rate < 0.98
+    reference_feature_missing_rate = float(monthly["reference_feature"].isna().mean())
+    reference_feature_missing_or_zero_rate = float(monthly["reference_feature"].fillna(0).le(0).mean())
+    reference_feature_diff = (monthly["bill_amount"] - monthly["reference_feature"]).abs()
+    reference_feature_equal_main_rate = float((reference_feature_diff <= 1e-6).mean())
+    reference_feature_usable_for_model = "reference_feature" in cols and reference_feature_missing_rate < 0.98 and reference_feature_equal_main_rate < 0.98
     raw_ratio_config = dict(normalize_derived_features_config(derived_features_config).get("feature_ratio", {}))
     ratio_explicitly_enabled = str(raw_ratio_config.get("enabled", "auto")).strip().lower() in {"true", "1", "yes", "evet"}
-    if ratio_explicitly_enabled and "turnover_amt" not in cols:
+    if ratio_explicitly_enabled and "reference_feature" not in cols:
         raise ValueError(
             "model.derived_features.feature_ratio is enabled, but its denominator column could not be resolved."
         )
-    if ratio_explicitly_enabled and not turnover_usable_for_model:
+    if ratio_explicitly_enabled and not reference_feature_usable_for_model:
         raise ValueError(
             "model.derived_features.feature_ratio is enabled, but the denominator is missing, zero, "
             "or effectively identical to the main metric feature."
@@ -1171,30 +1171,30 @@ def prepare_source_frame(
     ratio_settings = feature_ratio_settings(
         derived_features_config,
         cols,
-        denominator_usable=bool(turnover_usable_for_model),
+        denominator_usable=bool(reference_feature_usable_for_model),
     )
     ratio_enabled = bool(ratio_settings["enabled"])
     quality_gate = dict(ratio_settings.get("quality_gate", {}))
     gate_enabled = bool(ratio_settings.get("quality_gate_enabled", True))
-    ratio_valid_coverage = float(monthly["turnover_amt"].gt(0).mean()) if "turnover_amt" in monthly else 0.0
+    ratio_valid_coverage = float(monthly["reference_feature"].gt(0).mean()) if "reference_feature" in monthly else 0.0
     max_missing_or_zero = float(quality_gate.get("max_denominator_missing_or_zero_rate", 0.50))
     min_monthly_coverage = float(quality_gate.get("min_monthly_valid_coverage", 0.50))
     gate_reasons: list[str] = []
     if gate_enabled and ratio_enabled:
-        if turnover_missing_or_zero_rate > max_missing_or_zero:
+        if reference_feature_missing_or_zero_rate > max_missing_or_zero:
             gate_reasons.append(
-                f"denominator_missing_or_zero_rate={turnover_missing_or_zero_rate:.3f}>{max_missing_or_zero:.3f}"
+                f"denominator_missing_or_zero_rate={reference_feature_missing_or_zero_rate:.3f}>{max_missing_or_zero:.3f}"
             )
         if ratio_valid_coverage < min_monthly_coverage:
             gate_reasons.append(f"monthly_valid_coverage={ratio_valid_coverage:.3f}<{min_monthly_coverage:.3f}")
     ratio_quality_gate_passed = bool(ratio_enabled and (not gate_enabled or not gate_reasons))
     ratio_settings["quality_gate_passed"] = ratio_quality_gate_passed
     ratio_settings["quality_gate_reasons"] = "; ".join(gate_reasons) if gate_reasons else "passed"
-    ratio_settings["denominator_missing_or_zero_rate"] = turnover_missing_or_zero_rate
+    ratio_settings["denominator_missing_or_zero_rate"] = reference_feature_missing_or_zero_rate
     ratio_settings["monthly_valid_coverage"] = ratio_valid_coverage
     ratio_settings["use_as_anomaly_signal_requested"] = bool(ratio_settings["use_as_anomaly_signal"])
     ratio_settings["use_as_anomaly_signal"] = bool(ratio_settings["use_as_anomaly_signal"] and ratio_quality_gate_passed)
-    monthly["turnover_for_model"] = np.where(turnover_usable_for_model, monthly["turnover_amt"], np.nan)
+    monthly["reference_feature_for_model"] = np.where(reference_feature_usable_for_model, monthly["reference_feature"], np.nan)
     monthly["active_subscriber_bucket"] = pd.cut(
         monthly["active_subscriber"],
         bins=[-np.inf, 1, 2, 4, 9, np.inf],
@@ -1206,9 +1206,9 @@ def prepare_source_frame(
     monthly["negative_bill_flag"] = monthly["bill_amount"].lt(0).fillna(False)
     monthly["zero_bill_flag"] = monthly["bill_amount"].eq(0).fillna(False)
     monthly["log_bill"] = np.where(monthly["valid_bill_for_model"], np.log1p(monthly["bill_amount"]), np.nan)
-    monthly["turnover_positive_flag"] = monthly["turnover_for_model"].astype(float).gt(0)
-    monthly["log_turnover"] = np.where(monthly["turnover_positive_flag"], np.log1p(monthly["turnover_for_model"]), np.nan)
-    monthly["bill_to_turnover_log_ratio"] = np.where(ratio_enabled, monthly["log_bill"] - monthly["log_turnover"], np.nan)
+    monthly["reference_feature_positive_flag"] = monthly["reference_feature_for_model"].astype(float).gt(0)
+    monthly["log_reference_feature"] = np.where(monthly["reference_feature_positive_flag"], np.log1p(monthly["reference_feature_for_model"]), np.nan)
+    monthly["main_to_reference_log_ratio"] = np.where(ratio_enabled, monthly["log_bill"] - monthly["log_reference_feature"], np.nan)
 
     monthly = monthly.sort_values(["customer_id", "invoice_month"]).reset_index(drop=True)
     if monthly["customer_id"].nunique(dropna=False) == len(monthly):
@@ -1240,10 +1240,10 @@ def prepare_source_frame(
         "detected_separator": None,
         "active_subscriber_present": "active_subscriber" in cols,
         "active_subscriber_missing_rate": float(monthly["active_subscriber_missing_flag"].mean()),
-        "turnover_equal_bill_rate": turnover_equal_bill_rate,
-        "turnover_usable_for_model": bool(turnover_usable_for_model),
-        "turnover_missing_rate": turnover_missing_rate,
-        "turnover_missing_or_zero_rate": turnover_missing_or_zero_rate,
+        "reference_feature_equal_main_rate": reference_feature_equal_main_rate,
+        "reference_feature_usable_for_model": bool(reference_feature_usable_for_model),
+        "reference_feature_missing_rate": reference_feature_missing_rate,
+        "reference_feature_missing_or_zero_rate": reference_feature_missing_or_zero_rate,
         "derived_features": normalize_derived_features_config(derived_features_config),
         "feature_ratio": ratio_settings,
         "feature_ratio_enabled": bool(ratio_settings["enabled"]),
@@ -1282,25 +1282,25 @@ def read_source(
     return monthly, profile
 
 
-def fit_turnover_edges(history: pd.DataFrame) -> list[float]:
-    positive = history.loc[history["turnover_for_model"].astype(float).gt(0), "log_turnover"].dropna()
+def fit_reference_feature_edges(history: pd.DataFrame) -> list[float]:
+    positive = history.loc[history["reference_feature_for_model"].astype(float).gt(0), "log_reference_feature"].dropna()
     if len(positive) < 100:
         return []
     edges = np.quantile(positive, [0.20, 0.40, 0.60, 0.80])
     return [float(x) for x in np.unique(edges) if np.isfinite(x)]
 
 
-def assign_turnover_bucket(df: pd.DataFrame, edges: list[float]) -> pd.DataFrame:
+def assign_feature_ratio_bucket(df: pd.DataFrame, edges: list[float]) -> pd.DataFrame:
     out = df.copy()
-    out["turnover_bucket"] = "turnover_missing"
-    turnover_source = out["turnover_for_model"].astype(float)
-    out.loc[turnover_source.fillna(0).eq(0), "turnover_bucket"] = "turnover_zero"
-    pos = turnover_source.gt(0)
+    out["feature_ratio_bucket"] = "reference_feature_missing"
+    reference_feature_source = out["reference_feature_for_model"].astype(float)
+    out.loc[reference_feature_source.fillna(0).eq(0), "feature_ratio_bucket"] = "reference_feature_zero"
+    pos = reference_feature_source.gt(0)
     if edges:
-        bucket_no = np.searchsorted(np.asarray(edges), out.loc[pos, "log_turnover"].to_numpy(), side="right") + 1
-        out.loc[pos, "turnover_bucket"] = [f"turnover_q{int(i)}" for i in bucket_no]
+        bucket_no = np.searchsorted(np.asarray(edges), out.loc[pos, "log_reference_feature"].to_numpy(), side="right") + 1
+        out.loc[pos, "feature_ratio_bucket"] = [f"feature_ratio_q{int(i)}" for i in bucket_no]
     else:
-        out.loc[pos, "turnover_bucket"] = "turnover_positive"
+        out.loc[pos, "feature_ratio_bucket"] = "reference_feature_positive"
     return out
 
 
@@ -1335,13 +1335,13 @@ def build_level_stats(
     hist_valid = filter_frame_to_scoring_keys(hist_valid_all, scoring, key)
     recent = hist_valid.loc[hist_valid["month_ord"].between(scoring_ord - 3, scoring_ord - 1)]
     moy = hist_valid.loc[hist_valid["month_of_year"].eq(scoring_moy)]
-    ratio = hist_valid.loc[hist_valid["bill_to_turnover_log_ratio"].notna()]
+    ratio = hist_valid.loc[hist_valid["main_to_reference_log_ratio"].notna()]
 
     base = robust_group_stats(hist_valid, key, "log_bill", "hist")
     recent_stats = robust_group_stats(recent, key, "log_bill", "recent")
     moy_stats = robust_group_stats(moy, key, "log_bill", "moy")
     current_stats = robust_group_stats(scoring_valid, key, "log_bill", "current")
-    ratio_stats = robust_group_stats(ratio, key, "bill_to_turnover_log_ratio", "ratio")
+    ratio_stats = robust_group_stats(ratio, key, "main_to_reference_log_ratio", "ratio")
     trend_stats = trend_group_stats(hist_valid, key, "peer")
     distribution_stats = peer_distribution_stats(hist_valid, key, peer_config, scoring_valid)
     calibration_stats = peer_calibration_stats(hist_valid, key, scoring_month)
@@ -2454,15 +2454,15 @@ def score_scoring_month(
     effective_derived = derived_features_config or profile.get("derived_features", {})
     emit("bucket_assignment_start")
     feature_bucket_edges = fit_feature_bucket_edges(history_raw, effective_derived)
-    legacy_edges = fit_turnover_edges(history_raw)
+    legacy_edges = fit_reference_feature_edges(history_raw)
     history = assign_feature_buckets(history_raw, feature_bucket_edges)
     scoring = assign_feature_buckets(scoring_raw, feature_bucket_edges)
-    history = assign_turnover_bucket(history, legacy_edges)
-    scoring = assign_turnover_bucket(scoring, legacy_edges)
+    history = assign_feature_ratio_bucket(history, legacy_edges)
+    scoring = assign_feature_ratio_bucket(scoring, legacy_edges)
     emit(
         "bucket_assignment_done "
-        f"feature_bucket_variants={len(feature_bucket_edges)} legacy_turnover_edges={len(legacy_edges)} "
-        f"ratio_peer_rows={int(history['turnover_for_model'].notna().sum()):,}"
+        f"feature_bucket_variants={len(feature_bucket_edges)} legacy_reference_feature_edges={len(legacy_edges)} "
+        f"ratio_peer_rows={int(history['reference_feature_for_model'].notna().sum()):,}"
     )
     ratio_settings = profile.get("feature_ratio") or feature_ratio_settings(effective_derived, None)
     ratio_signal_enabled = bool(ratio_settings.get("use_as_anomaly_signal", False))
@@ -2499,7 +2499,7 @@ def score_scoring_month(
     aggregation_config = merged_score_aggregation(score_aggregation)
     peer_levels = adaptive.build_adaptive_peer_candidates(
         scoring,
-        has_turnover_signal=bool(ratio_peer_enabled and history["turnover_for_model"].notna().any()),
+        has_feature_ratio_signal=bool(ratio_peer_enabled and history["reference_feature_for_model"].notna().any()),
         config=peer_rules,
     )
     emit(
@@ -2587,9 +2587,9 @@ def score_scoring_month(
             selected["expected_bill_amount"],
             1e-6,
         )
-        selected["bill_to_turnover_ratio"] = np.where(
-            selected["turnover_for_model"].astype(float).gt(0),
-            selected["bill_amount"] / selected["turnover_for_model"].astype(float),
+        selected["main_to_reference_ratio"] = np.where(
+            selected["reference_feature_for_model"].astype(float).gt(0),
+            selected["bill_amount"] / selected["reference_feature_for_model"].astype(float),
             np.nan,
         )
         selected["peer_seasonality_adjustment_log"] = selected["moy_median"] - selected["hist_median"]
@@ -2647,13 +2647,13 @@ def score_scoring_month(
         )
         ratio_peer_gate = (
             ratio_signal_enabled
-            & selected["bill_to_turnover_log_ratio"].notna()
+            & selected["main_to_reference_log_ratio"].notna()
             & selected["ratio_n"].fillna(0).ge(min_peer_ratio_rows)
             & selected["ratio_mad"].fillna(0).ge(min_peer_ratio_mad)
         )
-        selected["turnover_intensity_z"] = np.where(
+        selected["feature_ratio_z"] = np.where(
             ratio_peer_gate,
-            (selected["bill_to_turnover_log_ratio"] - selected["ratio_median"]) / np.maximum(selected["ratio_mad"].astype(float), MIN_LOG_SCALE),
+            (selected["main_to_reference_log_ratio"] - selected["ratio_median"]) / np.maximum(selected["ratio_mad"].astype(float), MIN_LOG_SCALE),
             np.nan,
         )
         selected["ratio_numerator_source_col"] = str(ratio_settings.get("numerator_source_col", "bill_amount"))
@@ -2668,7 +2668,7 @@ def score_scoring_month(
             [
                 ~selected["feature_ratio_enabled"],
                 selected["feature_ratio_signal_requested"] & ~selected["feature_ratio_quality_gate_passed"],
-                ratio_signal_enabled & selected["bill_to_turnover_log_ratio"].isna(),
+                ratio_signal_enabled & selected["main_to_reference_log_ratio"].isna(),
                 ratio_signal_enabled & selected["ratio_n"].fillna(0).lt(min_peer_ratio_rows),
                 ratio_signal_enabled & selected["ratio_mad"].fillna(0).lt(min_peer_ratio_mad),
                 ratio_peer_gate,
@@ -2769,7 +2769,7 @@ def score_scoring_month(
         hist_component = score_from_z(selected["historical_peer_z"])
         current_component = score_from_z(selected["current_peer_z"])
         peer_trend_component = score_from_z(selected["peer_trend_z"])
-        turnover_component = score_from_z(selected["turnover_intensity_z"])
+        feature_ratio_component = score_from_z(selected["feature_ratio_z"])
         self_component = score_from_z(selected["self_history_z"])
         customer_trend_component = score_from_z(selected["customer_trend_z"])
         customer_seasonal_component = score_from_z(selected["customer_seasonal_z"])
@@ -2779,11 +2779,10 @@ def score_scoring_month(
         has_customer_trend = selected["customer_trend_z"].notna().to_numpy()
         has_customer_seasonal = selected["customer_seasonal_z"].notna().to_numpy()
         has_peer_trend = selected["peer_trend_z"].notna().to_numpy()
-        has_turnover = selected["turnover_intensity_z"].notna().to_numpy()
         selected["historical_peer_score"] = hist_component
         selected["current_peer_score"] = current_component
         selected["peer_trend_score"] = peer_trend_component
-        selected["turnover_intensity_score"] = turnover_component
+        selected["feature_ratio_score"] = feature_ratio_component
         selected["self_history_score"] = self_component
         selected["customer_trend_score"] = customer_trend_component
         selected["customer_seasonal_score"] = customer_seasonal_component
@@ -2939,7 +2938,7 @@ def score_scoring_month(
             "invoice_month",
             "customer_segment",
             "sector",
-            "turnover_bucket",
+            "feature_ratio_bucket",
             "behavior_cluster",
             "behavior_history_n",
             "behavior_level_bucket",
@@ -2952,7 +2951,7 @@ def score_scoring_month(
             "active_subscriber_bucket",
             "active_subscriber_missing_flag",
             "bill_amount",
-            "turnover_amt",
+            "reference_feature",
             "ratio_numerator_source_col",
             "ratio_denominator_source_col",
             "feature_ratio_enabled",
@@ -2975,11 +2974,11 @@ def score_scoring_month(
             "customer_recent3_median_bill",
             "customer_recent3_range_log",
             "actual_to_expected_ratio",
-            "bill_to_turnover_ratio",
+            "main_to_reference_ratio",
             "historical_peer_z",
             "current_peer_z",
             "peer_trend_z",
-            "turnover_intensity_z",
+            "feature_ratio_z",
             "self_history_z",
             "customer_trend_z",
             "customer_seasonal_z",
@@ -2988,7 +2987,7 @@ def score_scoring_month(
             "historical_peer_score",
             "current_peer_score",
             "peer_trend_score",
-            "turnover_intensity_score",
+            "feature_ratio_score",
             "self_history_score",
             "customer_trend_score",
             "customer_seasonal_score",
@@ -3182,9 +3181,9 @@ def build_reason_codes(row: pd.Series) -> str:
     peer_trend_z = row.get("peer_trend_z", np.nan)
     if pd.notna(peer_trend_z) and abs(float(peer_trend_z)) >= 2.5:
         reasons.append("PEER_TREND_JUMP" if peer_trend_z > 0 else "PEER_TREND_DROP")
-    turnover_z = row.get("turnover_intensity_z", np.nan)
-    if pd.notna(turnover_z) and abs(float(turnover_z)) >= 2.5:
-        reasons.append("FEATURE_RATIO_HIGH" if turnover_z > 0 else "FEATURE_RATIO_LOW")
+    ratio_z = row.get("feature_ratio_z", np.nan)
+    if pd.notna(ratio_z) and abs(float(ratio_z)) >= 2.5:
+        reasons.append("FEATURE_RATIO_HIGH" if ratio_z > 0 else "FEATURE_RATIO_LOW")
     self_z = row.get("self_history_z", np.nan)
     if pd.notna(self_z) and abs(float(self_z)) >= 2.5:
         reasons.append("SELF_HISTORY_JUMP" if self_z > 0 else "SELF_HISTORY_DROP")
@@ -3247,7 +3246,7 @@ def strongest_signed_signal(row: pd.Series, cols: list[str]) -> float:
 
 
 def has_peer_self_conflict(row: pd.Series) -> bool:
-    peer_signal = strongest_signed_signal(row, ["historical_peer_z", "current_peer_z", "peer_trend_z", "turnover_intensity_z"])
+    peer_signal = strongest_signed_signal(row, ["historical_peer_z", "current_peer_z", "peer_trend_z", "feature_ratio_z"])
     customer_signal = strongest_signed_signal(
         row,
         ["self_history_z", "customer_trend_z", "customer_seasonal_z", "customer_recent_regime_z"],
@@ -3265,7 +3264,7 @@ def has_customer_peer_mismatch(row: pd.Series) -> bool:
         return False
     if numeric_or_default(row, "prior_n", 0.0) < MIN_CUSTOMER_TREND_ROWS:
         return False
-    peer_signal = max_abs_signal(row, ["historical_peer_z", "current_peer_z", "peer_trend_z", "turnover_intensity_z"])
+    peer_signal = max_abs_signal(row, ["historical_peer_z", "current_peer_z", "peer_trend_z", "feature_ratio_z"])
     customer_signal = max_abs_signal(row, ["self_history_z", "customer_trend_z", "customer_seasonal_z", "customer_recent_regime_z"])
     return peer_signal >= 2.5 and customer_signal < 1.5
 
@@ -3276,7 +3275,7 @@ def peer_alignment(row: pd.Series) -> tuple[str, str, float, float]:
 
     peer_signal = strongest_signed_signal(
         row,
-        ["historical_peer_z", "current_peer_z", "peer_trend_z", "turnover_intensity_z"],
+        ["historical_peer_z", "current_peer_z", "peer_trend_z", "feature_ratio_z"],
     )
     customer_signal = strongest_signed_signal(
         row,
@@ -3338,7 +3337,7 @@ def evidence_strength(row: pd.Series) -> str:
         "historical_peer_z",
         "current_peer_z",
         "peer_trend_z",
-        "turnover_intensity_z",
+        "feature_ratio_z",
         "self_history_z",
         "customer_trend_z",
         "customer_seasonal_z",
@@ -3636,7 +3635,7 @@ def build_diagnostic_tables(prepared: pd.DataFrame, run: ModelRun, backtest_summ
             "customer_segment",
             "sector",
             "branch_id",
-            "turnover_bucket",
+            "feature_ratio_bucket",
             "active_subscriber_bucket",
             "bill_amount",
             "expected_bill_amount",
@@ -3648,8 +3647,8 @@ def build_diagnostic_tables(prepared: pd.DataFrame, run: ModelRun, backtest_summ
             "customer_recent3_median_bill",
             "customer_recent3_range_log",
             "actual_to_expected_ratio",
-            "turnover_amt",
-            "bill_to_turnover_ratio",
+            "reference_feature",
+            "main_to_reference_ratio",
             "final_anomaly_score",
             "previous_final_anomaly_score",
             "score_delta_vs_previous_month",
@@ -3665,7 +3664,7 @@ def build_diagnostic_tables(prepared: pd.DataFrame, run: ModelRun, backtest_summ
             "historical_peer_z",
             "current_peer_z",
             "peer_trend_z",
-            "turnover_intensity_z",
+            "feature_ratio_z",
             "self_history_z",
             "customer_trend_z",
             "customer_seasonal_z",
@@ -3756,9 +3755,9 @@ def build_diagnostic_tables(prepared: pd.DataFrame, run: ModelRun, backtest_summ
             "sector",
             "active_subscriber",
             "active_subscriber_missing_flag",
-            "turnover_bucket",
+            "feature_ratio_bucket",
             "bill_amount",
-            "turnover_amt",
+            "reference_feature",
         ]
         audited_series = prepared.loc[
             prepared["customer_id"].isin(sample_ids),
