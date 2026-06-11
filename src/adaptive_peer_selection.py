@@ -11,15 +11,35 @@ import pandas as pd
 DEFAULT_BLOCKED_VALUES: dict[str, tuple[str, ...]] = {
     "behavior_cluster": ("behavior_unknown", "", "nan", "None"),
     "turnover_bucket": ("turnover_unknown", "", "nan", "None"),
+    "feature_bucket": ("feature_missing", "feature_zero", "feature_unknown", "", "nan", "None"),
 }
 
 DEFAULT_OBJECTIVE_WEIGHTS: dict[str, float] = {
-    "representability": 0.25,
-    "distribution": 0.20,
+    "representability": 0.20,
+    "distribution": 0.30,
     "calibration": 0.20,
-    "stability": 0.15,
-    "specificity": 0.20,
+    "stability": 0.10,
+    "specificity": 0.10,
     "support": 0.10,
+}
+
+DEFAULT_DISTRIBUTION_QUALITY: dict[str, float] = {
+    "iqr_weight": 0.30,
+    "mad_weight": 0.25,
+    "tail_weight": 0.20,
+    "skew_weight": 0.05,
+    "kurtosis_weight": 0.05,
+    "mean_median_weight": 0.05,
+    "std_median_weight": 0.10,
+    "current_iqr_log_full_penalty": 1.60,
+    "history_iqr_log_full_penalty": 1.80,
+    "current_mad_log_full_penalty": 0.90,
+    "history_mad_log_full_penalty": 1.00,
+    "skew_full_penalty": 2.0,
+    "kurtosis_full_penalty": 6.0,
+    "tail_full_penalty": 0.10,
+    "mean_median_full_penalty_ratio": 8.0,
+    "std_median_full_penalty_ratio": 12.0,
 }
 
 DEFAULT_TECHNICAL_EXCLUSIONS = {
@@ -106,6 +126,10 @@ DEFAULT_PREFERRED_VARIABLES = (
 VARIABLE_NAME_ALIASES = {
     "customer_segment": "segment",
     "turnover_bucket": "feature_ratio_bucket",
+    "feature_bucket_q3": "feature_q3",
+    "feature_bucket_q4": "feature_q4",
+    "feature_bucket_q5": "feature_q5",
+    "feature_bucket_q8": "feature_q8",
     "sector": "sector",
     "active_subscriber_bucket": "exposure_bucket",
     "branch_id": "branch",
@@ -126,7 +150,7 @@ class PeerSupportThresholds:
     min_season_rows: int = 15
     min_recent_rows: int = 25
     min_current_rows: int = 20
-    min_distribution_score: float = 35.0
+    min_distribution_score: float = 20.0
     strong_history_rows: int = 800
     strong_season_rows: int = 100
     strong_recent_rows: int = 150
@@ -152,6 +176,7 @@ class PeerSelectionConfig:
     candidate_strategy: str = "priority_path"
     selection_mode: str = "objective"
     objective_weights: Mapping[str, float] | None = None
+    distribution_quality: Mapping[str, float] | None = None
     excluded_variables: tuple[str, ...] = ()
     max_inferred_cardinality: int = 250
     blocked_values: Mapping[str, tuple[str, ...]] | None = None
@@ -183,6 +208,10 @@ class PeerSelectionConfig:
             objective_weights={
                 str(key): float(value)
                 for key, value in dict(values.get("objective_weights", DEFAULT_OBJECTIVE_WEIGHTS)).items()
+            },
+            distribution_quality={
+                str(key): float(value)
+                for key, value in dict(values.get("distribution_quality", DEFAULT_DISTRIBUTION_QUALITY)).items()
             },
             excluded_variables=tuple(str(item) for item in values.get("exclude_variables", values.get("excluded_variables", ()))),
             max_inferred_cardinality=int(values.get("max_inferred_cardinality", cls.max_inferred_cardinality)),
@@ -226,6 +255,7 @@ def with_excluded_variables(config: PeerSelectionConfig, extra_exclusions: list[
         candidate_strategy=config.candidate_strategy,
         selection_mode=config.selection_mode,
         objective_weights=config.objective_weights,
+        distribution_quality=config.distribution_quality,
         excluded_variables=dedupe([*config.excluded_variables, *[str(item) for item in extra_exclusions]]),
         max_inferred_cardinality=config.max_inferred_cardinality,
         blocked_values=config.blocked_values,
@@ -284,7 +314,7 @@ def build_adaptive_peer_candidates(
     rules = config or PeerSelectionConfig()
     variables = list(available_peer_variables(frame_columns, rules))
     if not has_turnover_signal:
-        variables = [var for var in variables if var != "turnover_bucket"]
+        variables = [var for var in variables if var != "turnover_bucket" and not var.startswith("feature_bucket_")]
 
     if rules.explicit_levels:
         return _validated_explicit_candidates(rules.explicit_levels, variables, rules.include_global)
@@ -410,6 +440,10 @@ def support_mask(
     for column, values in dict(blocked_values or DEFAULT_BLOCKED_VALUES).items():
         if column in candidate.columns and column in candidate_frame.columns:
             mask = mask & ~candidate_frame[column].astype(str).isin(values)
+    generic_blocked = tuple(dict(blocked_values or DEFAULT_BLOCKED_VALUES).get("feature_bucket", ()))
+    for column in candidate.columns:
+        if column.startswith("feature_bucket_") and column in candidate_frame.columns and generic_blocked:
+            mask = mask & ~candidate_frame[column].astype(str).isin(generic_blocked)
     return mask
 
 
@@ -432,6 +466,10 @@ def support_failure_summary(
     ]
     for column, values in dict(blocked_values or DEFAULT_BLOCKED_VALUES).items():
         if column in candidate.columns and str(row.get(column, "")) in values:
+            failed.append(f"{column}_missing")
+    generic_blocked = tuple(dict(blocked_values or DEFAULT_BLOCKED_VALUES).get("feature_bucket", ()))
+    for column in candidate.columns:
+        if column.startswith("feature_bucket_") and str(row.get(column, "")) in generic_blocked:
             failed.append(f"{column}_missing")
     distribution_score = support_value(row, "peer_distribution_quality_score")
     if distribution_score < thresholds.min_distribution_score:
@@ -466,17 +504,15 @@ def representability_score(
     recent_support = min(support_value(row, "recent_n") / max(thresholds.strong_recent_rows, 1), 1.0)
     current_support = min(support_value(row, "current_n") / max(thresholds.strong_current_rows, 1), 1.0)
     distribution_quality = min(max(support_value(row, "peer_distribution_quality_score"), 0.0) / 100.0, 1.0)
-    return float(
-        100.0
-        * (
-            0.22 * hist_support
-            + 0.13 * season_support
-            + 0.18 * recent_support
-            + 0.22 * current_support
-            + 0.10 * specificity_score(candidate, config)
-            + 0.15 * distribution_quality
-        )
+    base_support = (
+        0.26 * hist_support
+        + 0.15 * season_support
+        + 0.21 * recent_support
+        + 0.26 * current_support
+        + 0.12 * specificity_score(candidate, config)
     )
+    distribution_factor = 0.50 + 0.50 * distribution_quality
+    return float(100.0 * base_support * distribution_factor)
 
 
 def _numeric_array(frame: pd.DataFrame, col: str, default: float = 0.0) -> np.ndarray:
@@ -497,14 +533,15 @@ def representability_score_frame(
     current_support = np.minimum(_numeric_array(frame, "current_n") / max(thresholds.strong_current_rows, 1), 1.0)
     distribution_quality = np.minimum(np.maximum(_numeric_array(frame, "peer_distribution_quality_score"), 0.0) / 100.0, 1.0)
     specificity = specificity_score(candidate, config)
-    return 100.0 * (
-        0.22 * hist_support
-        + 0.13 * season_support
-        + 0.18 * recent_support
-        + 0.22 * current_support
-        + 0.10 * specificity
-        + 0.15 * distribution_quality
+    base_support = (
+        0.26 * hist_support
+        + 0.15 * season_support
+        + 0.21 * recent_support
+        + 0.26 * current_support
+        + 0.12 * specificity
     )
+    distribution_factor = 0.50 + 0.50 * distribution_quality
+    return 100.0 * base_support * distribution_factor
 
 
 def support_strength_score(row: pd.Series, thresholds: PeerSupportThresholds) -> float:
@@ -639,15 +676,21 @@ def representability_status_series(
     scores: pd.Series | np.ndarray,
     candidate: PeerCandidate,
     config: PeerSelectionConfig | None = None,
+    distribution_scores: pd.Series | np.ndarray | None = None,
 ) -> np.ndarray:
     values = np.asarray(scores, dtype=float)
     if not candidate.columns or len(candidate.columns) == 1 or specificity_score(candidate, config) < 0.45:
         return np.full(len(values), "COARSE_PEER_REVIEW", dtype=object)
-    return np.select(
+    statuses = np.select(
         [values >= 80.0, values >= 60.0, values >= 40.0],
         ["STRONG_PEER_REPRESENTATION", "GOOD_PEER_REPRESENTATION", "MEDIUM_PEER_REPRESENTATION"],
         default="WEAK_PEER_REPRESENTATION",
     ).astype(object)
+    if distribution_scores is not None:
+        distribution = np.asarray(distribution_scores, dtype=float)
+        limited = np.isfinite(distribution) & (distribution < 60.0) & (values >= 40.0)
+        statuses[limited] = "LIMITED_WIDE_PEER_REVIEW"
+    return statuses
 
 
 def selection_reason(row: pd.Series, candidate: PeerCandidate, prior_attempts: list[str]) -> str:

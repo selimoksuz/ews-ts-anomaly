@@ -161,6 +161,13 @@ MODEL_DECISION_RENAME = {
     "peer_log_ratio_skew": "PEER_LOG_ORAN_SKEW",
     "peer_log_ratio_kurtosis": "PEER_LOG_ORAN_KURTOSIS",
     "peer_tail_rate": "PEER_TAIL_RATE",
+    "peer_mean_median_ratio": "PEER_MEAN_MEDYAN_ORANI",
+    "peer_mean_median_gap_log": "PEER_MEAN_MEDYAN_GAP_LOG",
+    "peer_std_median_ratio": "PEER_STD_MEDYAN_ORANI",
+    "peer_current_iqr_log": "PEER_GUNCEL_IQR_LOG",
+    "peer_history_monthly_iqr_log": "PEER_GECMIS_AYLIK_IQR_LOG",
+    "peer_current_mad_log": "PEER_GUNCEL_MAD_LOG",
+    "peer_history_monthly_mad_log": "PEER_GECMIS_AYLIK_MAD_LOG",
     "peer_selection_reason": "PEER_SECIM_GEREKCESI",
     "scoring_strategy": "SKORLAMA_STRATEJISI",
     "behavior_cluster": "DAVRANIS_CLUSTER",
@@ -285,6 +292,13 @@ ORACLE_COLUMN_ALIASES = {
     "PEER_LOG_ORAN_SKEW": "PEER_LOG_SKEW",
     "PEER_LOG_ORAN_KURTOSIS": "PEER_LOG_KURT",
     "PEER_TAIL_RATE": "PEER_TAIL_RATE",
+    "PEER_MEAN_MEDYAN_ORANI": "PEER_MM_ORAN",
+    "PEER_MEAN_MEDYAN_GAP_LOG": "PEER_MM_GAP_LOG",
+    "PEER_STD_MEDYAN_ORANI": "PEER_STD_MED_ORAN",
+    "PEER_GUNCEL_IQR_LOG": "PEER_GUN_IQR_LOG",
+    "PEER_GECMIS_AYLIK_IQR_LOG": "PEER_GEC_IQR_LOG",
+    "PEER_GUNCEL_MAD_LOG": "PEER_GUN_MAD_LOG",
+    "PEER_GECMIS_AYLIK_MAD_LOG": "PEER_GEC_MAD_LOG",
     "PEER_SECIM_GEREKCESI": "PEER_SECIM_NEDEN",
     "SKORLAMA_STRATEJISI": "SKOR_STRATEJI",
     "MODEL_CHALLENGER_SKORU": "CHL_SKOR",
@@ -512,6 +526,13 @@ DETAIL_OUTPUT_COLUMN_GROUPS = [
         "PEER_LOG_ORAN_SKEW",
         "PEER_LOG_ORAN_KURTOSIS",
         "PEER_TAIL_RATE",
+        "PEER_MEAN_MEDYAN_ORANI",
+        "PEER_MEAN_MEDYAN_GAP_LOG",
+        "PEER_STD_MEDYAN_ORANI",
+        "PEER_GUNCEL_IQR_LOG",
+        "PEER_GECMIS_AYLIK_IQR_LOG",
+        "PEER_GUNCEL_MAD_LOG",
+        "PEER_GECMIS_AYLIK_MAD_LOG",
         "PEER_KALIBRASYON_SKORU",
         "PEER_KALIBRASYON_AY_ADET",
         "PEER_KALIBRASYON_MEDYAN_ABS_RESIDUAL",
@@ -1052,6 +1073,13 @@ def build_detail_context(scores: pd.DataFrame, not_scored: pd.DataFrame) -> pd.D
         "peer_log_ratio_skew",
         "peer_log_ratio_kurtosis",
         "peer_tail_rate",
+        "peer_mean_median_ratio",
+        "peer_mean_median_gap_log",
+        "peer_std_median_ratio",
+        "peer_current_iqr_log",
+        "peer_history_monthly_iqr_log",
+        "peer_current_mad_log",
+        "peer_history_monthly_mad_log",
         "peer_selection_reason",
         "scoring_strategy",
         "model_challenger_score",
@@ -1274,8 +1302,12 @@ def build_detail_table(
     derived_features_config: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
     history = prepared.copy()
-    edges = core.fit_turnover_edges(history.loc[history["invoice_month"].lt(scoring_month)])
-    history = core.assign_turnover_bucket(history, edges)
+    history_before_scoring = history.loc[history["invoice_month"].lt(scoring_month)]
+    effective_derived = derived_features_config or profile.get("derived_features", {})
+    feature_edges = core.fit_feature_bucket_edges(history_before_scoring, effective_derived)
+    legacy_edges = core.fit_turnover_edges(history_before_scoring)
+    history = core.assign_feature_buckets(history, feature_edges)
+    history = core.assign_turnover_bucket(history, legacy_edges)
     behavior_enabled = bool(profile.get("behavior_peer_enabled", core.behavior_peer_enabled(derived_features_config)))
     if behavior_enabled:
         behavior = core.build_behavior_clusters(history.loc[history["invoice_month"].lt(scoring_month)])
@@ -1582,6 +1614,13 @@ def build_detail_table(
         "peer_log_ratio_skew": "PEER_LOG_ORAN_SKEW",
         "peer_log_ratio_kurtosis": "PEER_LOG_ORAN_KURTOSIS",
         "peer_tail_rate": "PEER_TAIL_RATE",
+        "peer_mean_median_ratio": "PEER_MEAN_MEDYAN_ORANI",
+        "peer_mean_median_gap_log": "PEER_MEAN_MEDYAN_GAP_LOG",
+        "peer_std_median_ratio": "PEER_STD_MEDYAN_ORANI",
+        "peer_current_iqr_log": "PEER_GUNCEL_IQR_LOG",
+        "peer_history_monthly_iqr_log": "PEER_GECMIS_AYLIK_IQR_LOG",
+        "peer_current_mad_log": "PEER_GUNCEL_MAD_LOG",
+        "peer_history_monthly_mad_log": "PEER_GECMIS_AYLIK_MAD_LOG",
         "peer_selection_reason": "PEER_SECIM_GEREKCESI",
         "scoring_strategy": "SKORLAMA_STRATEJISI",
         "behavior_cluster": "DAVRANIS_CLUSTER",
@@ -2090,6 +2129,7 @@ def run_implementation_scoring(
         scoring_weights=scoring_weights,
         score_aggregation=score_aggregation,
         derived_features_config=derived_features_config,
+        progress=progress,
     )
     progress(
         "score_scoring_month_done "
@@ -2107,6 +2147,7 @@ def run_implementation_scoring(
             scoring_weights=scoring_weights,
             score_aggregation=score_aggregation,
             derived_features_config=derived_features_config,
+            progress=progress,
         )
         progress("prior_score_diagnostic_done")
 

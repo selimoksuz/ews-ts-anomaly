@@ -216,6 +216,7 @@ def run_peer_quality_report_from_frames(
         column_map=column_map,
         source_name=source_name,
         derived_features_config=derived_features,
+        progress=log_step,
     )
     log_step("peer_quality_report_done")
     return {"output_dir": str(output_dir), "status": "generated", **result}

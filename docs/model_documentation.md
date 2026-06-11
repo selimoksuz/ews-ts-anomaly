@@ -46,7 +46,17 @@ Musteri yeterince okunabiliyorsa karar driver'i oncelikle customer family olur. 
 
 ## Adaptif Peer Secimi
 
-Peer adaylari `variables.segment_variables` listesinden ve `model.derived_features` ile acikca uretilen operatif bucket'lardan uretilir. `priority_variables: auto` ise kullanicinin yazdigi segment degiskenleri ana peer aday setidir; feature kolonlari sadece config'te ratio/bucket/behavior olarak isaretlenirse peer adaylarina eklenir.
+Peer adaylari `variables.segment_variables` listesinden ve `model.derived_features` ile acikca uretilen operatif bucket'lardan uretilir. Mevcut production config'te peer seviyeleri `peer_selection.explicit_levels` ile sabittir; bunun sebebi branch/sube gibi cok parcalayan kolonlarin destek gecmemesi ve davranis bazli peer adaylarinin daha iyi dagilim kalitesi vermesidir.
+
+Aktif production aday setinde su aileler denenir:
+
+- Davranis bazli adaylar: `segment_behavior_level_vol`, `segment_behavior_level`, `segment_behavior`, `sector_behavior_level`, `sector_behavior`, `behavior_level`, `behavior`.
+- Referans feature bucket adaylari: `segment_sector_feature_q*_exposure`, `segment_feature_q*`, `sector_feature_q*_exposure`, `sector_feature_q*`.
+- Is/segment adaylari: `segment_sector`, `segment`, `sector`.
+
+`behavior_*` alanlari scoring ayini kullanmadan, yalnizca scoring ayindan onceki musteri gecmisinden uretilir. Bu nedenle peer secimine musteri davranis seviyesini katar ama scoring ayina leakage yaratmaz.
+
+Referans feature bucket'i tek sabit kirilim degildir. `model.derived_features.feature_ratio.peer_bucket_variants` altinda q3/q4/q5/q8 gibi alternatif bucket cozumleri tanimlanir. Her run'da bu bucket edge'leri sadece history uzerinden fit edilir, scoring ayina aynen uygulanir ve her varyant peer objective icinde ayri aday olarak yaristirilir. Boylece `TURNOVER_AMT` veya baska bir denominator icin bucket sayisi manuel sabitlenmez; destek, dagilim, kalibrasyon ve temsil skoruna gore objective hangi bucket cozumunu daha iyi bulursa o secilir.
 
 Peer adaylari su kriterlerle degerlendirilir:
 
@@ -65,25 +75,36 @@ Destek ve kalite esikleri gecilmezse daha genis peer seviyesine dusulur. Peer se
 
 Peer secimi `peer_selection.objective_weights` ile skorlanir. Varsayilan agirliklar:
 
-- `representability`: 0.25
-- `distribution`: 0.20
+- `representability`: 0.20
+- `distribution`: 0.30
 - `calibration`: 0.20
-- `stability`: 0.15
-- `specificity`: 0.20
+- `stability`: 0.10
+- `specificity`: 0.10
 - `support`: 0.10
 
 Bu agirliklar normalize edilir; toplam 1 olmak zorunda degildir.
 
-`representability` peer'in musteriyi temsil etme gucudur. Bilesenleri:
+`representability` peer'in musteriyi temsil etme gucudur. Once destek ve spesifiklik tabani hesaplanir, sonra bu taban dagilim kalite carpanina sokulur. Boylece yeterli satir destegi olsa bile heterojen/heavy-tail bir peer otomatik olarak strong temsil gibi gorunmez.
 
-- History support: `hist_n / strong_history_rows`, agirlik 0.22
-- Season support: `moy_n / strong_season_rows`, agirlik 0.13
-- Recent support: `recent_n / strong_recent_rows`, agirlik 0.18
-- Current support: `current_n / strong_current_rows`, agirlik 0.22
-- Specificity: peer kiriliminin dar/bilgi tasiyan olmasi, agirlik 0.10
-- Distribution quality: peer dagilim skoru, agirlik 0.15
+- History support: `hist_n / strong_history_rows`, taban agirlik 0.26
+- Season support: `moy_n / strong_season_rows`, taban agirlik 0.15
+- Recent support: `recent_n / strong_recent_rows`, taban agirlik 0.21
+- Current support: `current_n / strong_current_rows`, taban agirlik 0.26
+- Specificity: peer kiriliminin dar/bilgi tasiyan olmasi, taban agirlik 0.12
+- Distribution factor: `0.50 + 0.50 * PEER_DAGILIM_SKORU / 100`
 
-`distribution` peer icindeki ana metrik dagiliminin saglikli olup olmadigini izler. Skew, kurtosis ve robust tail rate birlikte kullanilir. Merkez olcu medyan, sapma olcu MAD'dir. Ortalama ve standart sapma karar parametresi degil, raporlamada yardimci istatistiktir.
+`distribution` peer'in normal dagilip dagilmadigini degil, robust sekilde karsilastirilabilir olup olmadigini izler. Ana metriklerde heavy-tail dogal oldugu icin normal dagilim hedeflenmez. Dagilim skoru asagidaki bilesenlerle hesaplanir ve bilesen agirliklari `peer_selection.distribution_quality` altindan yonetilir:
+
+- Skorlanan ay log IQR: ayni ay icinde peer genisligi.
+- Gecmis aylik log IQR medyani: peer'in tipik aylik genisligi.
+- Skorlanan ay ve gecmis aylik log MAD: robust scale genisligi.
+- Robust tail rate: medyan/MAD etrafinda robust outlier payi.
+- Log skew/kurtosis: dusuk agirlikli heavy-tail sekil diagnostigi.
+- Raw ortalama/medyan ve raw std/medyan: rapor ve dusuk agirlikli diagnostic ceza.
+
+Ana anomaly residual'i yine medyan/MAD tabanlidir. Raw mean/median veya std/median tek basina peer'i gecersiz yapmaz; ama detail/peer quality raporunda peer'in neden genis veya riskli oldugunu aciklar. `PEER_DAGILIM_SKORU`, `PEER_TEMSIL_SKORU` ve `PEER_OBJECTIVE_SKORU` birlikte okunur.
+
+2026-03 denemesinde mevcut segment/sector/tek feature-bucket/exposure adaylari secili peer ortalama dagilim skorunu yaklasik 34.6 seviyesinde birakti. Behavior bucket/cluster adaylari eklendiginde secili peer ortalama dagilim skoru yaklasik 47.4'e cikti ve not-scored satir sayisi 0 kaldi. Son revizyonda referans feature bucket q3/q4/q5/q8 olarak objective-driven denendi; secili peer ortalama dagilim skoru 47.49 oldu. Feature bucket adaylari 2,868 scoring musterisi icin secildi, behavior adaylari 14,745 scoring musterisi icin secildi. Bu sonuc feature bucket optimizasyonunun faydali ama tek basina yeterli olmadigini; behavior peer'in mevcut veriyle daha guclu iyilestirme getirdigini gosterir.
 
 `calibration` peer'in gecmis aylarda bir sonraki ay referansi olarak ne kadar iyi calistigini olcer. Scoring ayi kullanilmaz. Scoring ayindan onceki son kalibrasyon aylarinda peer aylik medyani, yalnizca daha onceki aylarla kurulan expected degere gore test edilir. Bilesenleri:
 
@@ -117,6 +138,14 @@ Peer gate:
 - `min_peer_ratio_mad`: secilen peer icinde minimum ratio MAD.
 
 Gate gecmezse oran detail tabloda diagnostic olarak kalir; `feature_ratio` sinyali final evidence aggregation'a girmez.
+
+Peer bucket tarafinda ayni referans feature icin birden fazla bucket cozumlenebilir:
+
+- `peer_bucket_variants.enabled`: referans feature bucket adaylarini acar/kapatir.
+- `peer_bucket_variants.min_positive_rows`: bucket edge fit etmek icin gereken minimum pozitif denominator satiri.
+- `peer_bucket_variants.variants`: q3/q4/q5/q8 gibi quantile listeleri.
+
+Bu bucket'lar anomaly sinyali degil, peer adayidir. Oran sinyali kalite gate gecmezse final skora girmez; buna ragmen referans feature bucket'i peer seciminde kullanilabilir. Bunun sebebi denominator'in musteri hacmini temsil ederek peer'i daraltabilmesidir. Ancak hangi bucket cozumunun kullanilacagina sabit kural karar vermez; peer objective karar verir.
 
 ## Sinyal Aileleri
 
@@ -347,6 +376,13 @@ Asagidaki alias tablosu teknik kolon eslemesini ve kisa anlamini verir; kolonun 
 | PEER_LOG_ORAN_SKEW | PEER_LOG_SKEW | Peer log oran dagilimi skew. |
 | PEER_LOG_ORAN_KURTOSIS | PEER_LOG_KURT | Peer log oran dagilimi kurtosis. |
 | PEER_TAIL_RATE | PEER_TAIL_RATE | Peer robust tail rate. |
+| PEER_MEAN_MEDYAN_ORANI | PEER_MM_ORAN | Peer raw ana metrik ortalama/medyan orani; heavy-tail kalite cezasinda kullanilir. |
+| PEER_MEAN_MEDYAN_GAP_LOG | PEER_MM_GAP_LOG | Peer ortalama/medyan oraninin log mutlak farki. |
+| PEER_STD_MEDYAN_ORANI | PEER_STD_MED_ORAN | Peer raw ana metrik std/medyan orani; oynaklik kalite cezasinda kullanilir. |
+| PEER_GUNCEL_IQR_LOG | PEER_GUN_IQR_LOG | Scoring ayinda secilen peer'in log ana metrik IQR genisligi. Dagilim kalitesinde aktif kullanilir. |
+| PEER_GECMIS_AYLIK_IQR_LOG | PEER_GEC_IQR_LOG | Gecmis aylarda secilen peer'in aylik log IQR medyani. Tipik peer genisligini olcer. |
+| PEER_GUNCEL_MAD_LOG | PEER_GUN_MAD_LOG | Scoring ayinda secilen peer'in IQR'dan turetilen robust log MAD yaklasimi. Dagilim kalitesinde aktif kullanilir. |
+| PEER_GECMIS_AYLIK_MAD_LOG | PEER_GEC_MAD_LOG | Gecmis aylarda secilen peer'in aylik robust log MAD medyani. Dagilim kalitesinde aktif kullanilir. |
 | PEER_SECIM_GEREKCESI | PEER_SECIM_NEDEN | Secilen peer'in gerekcesi. |
 | SKORLAMA_STRATEJISI | SKOR_STRATEJI | Customer-first/peer fallback scoring stratejisi. |
 | MODEL_CHALLENGER_SKORU | CHL_SKOR | Config `aggregate_methods` listesindeki challenger modellerinden hesaplanan aggregate skor; sadece scoring ay satirinda doludur. |
@@ -506,7 +542,8 @@ Cikarilan veya sinirlanan parcalar:
 
 - `*_FINAL_AGIRLIK` detail outputtan cikarildi. Final karar weighted average olmadigi icin bu isim yanlis izlenim veriyordu.
 - Feature ratio default karar sinyali olmaktan cikarildi; kalite gate gecerse aktif.
-- Behavior cluster default kapali. Mevcut veri ve peer quality sonucunda default faydasi kanitlanmadigi icin production driver degil.
+- Behavior cluster production config'te peer adayi olarak acik; ancak anomaly sinyali degil, sadece peer secimini iyilestiren leakage-safe turevdir.
+- Referans feature bucket'i tek q5 gibi sabit tutulmaz; q3/q4/q5/q8 adaylari objective icinde yaristirilir.
 - Autoencoder/LSTM production kapsamina alinmadi.
 - Raw IF/LOF/PCA production kapsamina alinmadi.
 - Performance ve project risk review output klasorleri kalici proje ciktisi olmaktan cikarildi.
@@ -534,6 +571,8 @@ Monitor ciktisi:
 - `validation_label_breakdown.csv`: label ve direction bazinda sayim ve skor medyanlari.
 - `validation_stress_test_sensitivity.json`: gercek scoring datasindaki ornek musterilere kontrollu spike/drop perturbation uygulaninca skor tepkisini izler. Bu test gercek data rolling backtest'in yerine gecmez; ek stres testidir.
 - `validation_output_integrity.csv`: decision/detail tablolarinda satir var mi, `ANOMALI_FLAG` missing mi, flag 0/1 disina cikmis mi, decision reason bos mu kontrolleri.
+
+Output integrity kosullu kolonlari ayrica ele alir. Feature-ratio gate gecmediginde `FEATURE_ORAN_*`, son-3-ay rejimi kosulu olusmadiginda `MUSTERI_SON3_REJIM_*` ve ikincil sinyal yoksa `SECONDARY_SINYAL_P_DEGERI` bos kalabilir; bunlar `detail_expected_conditional_missing_columns` altinda PASS diagnostik olarak raporlanir, genel missing problemi sayilmaz.
 
 Bu monitor target uretmez. Amac her ay yeni veri eklendiginde gercek data uzerinde modelin stabilitesi, peer kalitesi, scoreability orani ve output sozlesmesi bozuldu mu sorusuna cevap vermektir.
 

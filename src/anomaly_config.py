@@ -26,6 +26,8 @@ VARIABLE_TOKEN_ALIASES = {
     "feature_buckets",
 }
 
+DEFAULT_FEATURE_BUCKET_VARIANTS = ("q3", "q4", "q5", "q8")
+
 
 def load_yaml_config(path: Path) -> dict[str, Any]:
     try:
@@ -107,6 +109,34 @@ def _behavior_peer_config(config: dict[str, Any]) -> dict[str, Any]:
     raw = derived_features_from_config(config)
     behavior = raw.get("behavior_peer", {})
     return dict(behavior) if isinstance(behavior, dict) else {}
+
+
+def _feature_bucket_names_from_config(config: dict[str, Any]) -> list[str]:
+    ratio = _ratio_feature_config(config)
+    raw = ratio.get("peer_bucket_variants", {})
+    if raw is False:
+        return []
+    if isinstance(raw, dict):
+        if str(raw.get("enabled", True)).strip().lower() in {"false", "0", "no", "hayir"}:
+            return []
+        variants = raw.get("variants", DEFAULT_FEATURE_BUCKET_VARIANTS)
+    elif isinstance(raw, list):
+        variants = raw
+    else:
+        variants = DEFAULT_FEATURE_BUCKET_VARIANTS
+    names: list[str] = []
+    for idx, item in enumerate(variants):
+        if isinstance(item, dict):
+            raw_name = item.get("name", f"q{idx + 1}")
+            quantiles = item.get("quantiles", [])
+            if isinstance(quantiles, list) and not quantiles:
+                continue
+        else:
+            raw_name = str(item)
+        clean = _clean_key(str(raw_name))[:24]
+        if clean:
+            names.append(f"feature_bucket_{clean}")
+    return list(dict.fromkeys(names))
 
 
 def variable_groups_from_config(config: dict[str, Any]) -> dict[str, list[str]]:
@@ -195,7 +225,7 @@ def peer_variable_names_from_config(config: dict[str, Any]) -> list[str]:
     ratio = _ratio_feature_config(config)
     ratio_peer_enabled = str(ratio.get("use_as_peer_variable", True)).strip().lower() not in {"false", "0", "no", "hayir"}
     if "turnover_amt" in role_map and ratio_peer_enabled:
-        peers.append("turnover_bucket")
+        peers.extend(_feature_bucket_names_from_config(config) or ["turnover_bucket"])
     if "active_subscriber" in role_map:
         peers.append("active_subscriber_bucket")
     behavior = _behavior_peer_config(config)

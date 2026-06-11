@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import html
 import json
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
 
 import anomaly_model as core
+
+
+def log_step(message: str) -> None:
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}", flush=True)
 
 
 NORMALIZED_TO_OUTPUT = {
@@ -22,6 +27,10 @@ NORMALIZED_TO_OUTPUT = {
     "exposure_bucket": "EXPOSURE_BUCKET",
     "turnover_bucket": "FEATURE_RATIO_BUCKET",
     "feature_ratio_bucket": "FEATURE_RATIO_BUCKET",
+    "feature_bucket_q3": "FEATURE_BUCKET_Q3",
+    "feature_bucket_q4": "FEATURE_BUCKET_Q4",
+    "feature_bucket_q5": "FEATURE_BUCKET_Q5",
+    "feature_bucket_q8": "FEATURE_BUCKET_Q8",
     "behavior_cluster": "DAVRANIS_CLUSTER",
     "_global_key": "_GLOBAL_KEY",
 }
@@ -115,9 +124,14 @@ def build_scoring_context(prepared: pd.DataFrame, scoring_month: int) -> tuple[p
     history = prepared.loc[prepared["invoice_month"].lt(scoring_month)].copy()
     scoring = prepared.loc[prepared["invoice_month"].eq(scoring_month)].copy()
     output_mapping = report_column_mapping(prepared)
-    edges = core.fit_turnover_edges(history)
-    scoring = core.assign_turnover_bucket(scoring, edges)
-    history = core.assign_turnover_bucket(history, edges)
+    profile = prepared.attrs.get("profile", {}) if hasattr(prepared, "attrs") else {}
+    derived_features = profile.get("derived_features", {})
+    feature_edges = core.fit_feature_bucket_edges(history, derived_features)
+    legacy_edges = core.fit_turnover_edges(history)
+    scoring = core.assign_feature_buckets(scoring, feature_edges)
+    history = core.assign_feature_buckets(history, feature_edges)
+    scoring = core.assign_turnover_bucket(scoring, legacy_edges)
+    history = core.assign_turnover_bucket(history, legacy_edges)
     if bool(prepared.attrs.get("behavior_peer_enabled", False)):
         behavior = core.build_behavior_clusters(history)
         scoring = core.assign_behavior_clusters(scoring, behavior)
@@ -130,6 +144,10 @@ def build_scoring_context(prepared: pd.DataFrame, scoring_month: int) -> tuple[p
         "customer_segment",
         "sector",
         "turnover_bucket",
+        "feature_bucket_q3",
+        "feature_bucket_q4",
+        "feature_bucket_q5",
+        "feature_bucket_q8",
         "active_subscriber_bucket",
         "behavior_cluster",
         "behavior_history_n",
@@ -146,6 +164,10 @@ def build_scoring_context(prepared: pd.DataFrame, scoring_month: int) -> tuple[p
             "customer_segment": output_mapping.get("customer_segment", "SEGMENTAD"),
             "sector": output_mapping.get("sector", "REF_ALTFAALIYET"),
             "turnover_bucket": "FEATURE_RATIO_BUCKET",
+            "feature_bucket_q3": "FEATURE_BUCKET_Q3",
+            "feature_bucket_q4": "FEATURE_BUCKET_Q4",
+            "feature_bucket_q5": "FEATURE_BUCKET_Q5",
+            "feature_bucket_q8": "FEATURE_BUCKET_Q8",
             "active_subscriber_bucket": "EXPOSURE_BUCKET",
             "behavior_cluster": "DAVRANIS_CLUSTER_REBUILT",
             "behavior_history_n": "DAVRANIS_GECMIS_ADET_REBUILT",
@@ -300,7 +322,9 @@ def aggregate_bill_stats(frame: pd.DataFrame, columns: list[str], level_name: st
         "PEER_KEY_DEGERLERI",
         f"{prefix}_ortalama",
         f"{prefix}_medyan",
+        f"{prefix}_ortalama_medyan_oran",
         f"{prefix}_std",
+        f"{prefix}_std_medyan_oran",
         f"{prefix}_min",
         f"{prefix}_max",
     ]
@@ -324,6 +348,12 @@ def aggregate_bill_stats(frame: pd.DataFrame, columns: list[str], level_name: st
             }
         )
         .reset_index()
+    )
+    stats[f"{prefix}_ortalama_medyan_oran"] = (
+        stats[f"{prefix}_ortalama"].astype(float) / np.maximum(stats[f"{prefix}_medyan"].astype(float), 1e-6)
+    )
+    stats[f"{prefix}_std_medyan_oran"] = (
+        stats[f"{prefix}_std"].astype(float) / np.maximum(stats[f"{prefix}_medyan"].astype(float), 1e-6)
     )
     stats["PEER_SEVIYE"] = level_name
     stats["PEER_KEY_DEGERLERI"] = stats.apply(lambda row: build_normalized_peer_key(row, columns), axis=1)
@@ -432,17 +462,23 @@ def weak_peer_review(peer_instance_summary: pd.DataFrame) -> pd.DataFrame:
     kalibrasyon_skor = numeric_with_default(work, "kalibrasyon_skor_medyan", 50.0)
     anomaly_watch_oran = numeric_with_default(work, "anomaly_watch_oran", 0.0)
     peer_guncel_adet_min = numeric_with_default(work, "peer_guncel_adet_min", 0.0)
+    mean_median_ratio = numeric_with_default(work, "peer_guncel_ana_metrik_ortalama_medyan_oran", 1.0)
+    std_median_ratio = numeric_with_default(work, "peer_guncel_ana_metrik_std_medyan_oran", 0.0)
     work["temsil_skor_medyan"] = temsil_skor
     work["dagilim_skor_medyan"] = dagilim_skor
     work["kalibrasyon_skor_medyan"] = kalibrasyon_skor
     work["anomaly_watch_oran"] = anomaly_watch_oran
     work["peer_guncel_adet_min"] = peer_guncel_adet_min
+    work["peer_guncel_ana_metrik_ortalama_medyan_oran"] = mean_median_ratio
+    work["peer_guncel_ana_metrik_std_medyan_oran"] = std_median_ratio
     work["review_skoru"] = (
         (100 - temsil_skor) * 0.30
         + (100 - dagilim_skor) * 0.25
         + (100 - kalibrasyon_skor) * 0.25
         + anomaly_watch_oran * 100 * 0.20
         + np.where(peer_guncel_adet_min < 25, 10, 0)
+        + np.minimum(np.maximum(mean_median_ratio - 1.0, 0.0) / 3.0, 1.0) * 15
+        + np.minimum(np.maximum(std_median_ratio, 0.0) / 3.0, 1.0) * 15
     )
     reasons = []
     for _, row in work.iterrows():
@@ -451,6 +487,10 @@ def weak_peer_review(peer_instance_summary: pd.DataFrame) -> pd.DataFrame:
             row_reasons.append("temsil dusuk")
         if row.get("dagilim_skor_medyan", 100) < 60:
             row_reasons.append("heavy-tail/dagilim zayif")
+        if row.get("peer_guncel_ana_metrik_ortalama_medyan_oran", 1.0) >= 4.0:
+            row_reasons.append("ortalama/medyan orani yuksek")
+        if row.get("peer_guncel_ana_metrik_std_medyan_oran", 0.0) >= 3.0:
+            row_reasons.append("std/medyan orani yuksek")
         if row.get("kalibrasyon_skor_medyan", 100) < 60:
             row_reasons.append("gecmis kalibrasyon zayif")
         if row.get("peer_guncel_adet_min", 999) < 25:
@@ -562,12 +602,16 @@ def write_markdown_report(
         "PEER_KEY_DEGERLERI",
         "peer_guncel_ana_metrik_medyan",
         "peer_guncel_ana_metrik_ortalama",
+        "peer_guncel_ana_metrik_ortalama_medyan_oran",
         "peer_guncel_ana_metrik_std",
+        "peer_guncel_ana_metrik_std_medyan_oran",
         "peer_guncel_ana_metrik_min",
         "peer_guncel_ana_metrik_max",
         "peer_gecmis_ana_metrik_medyan",
         "peer_gecmis_ana_metrik_ortalama",
+        "peer_gecmis_ana_metrik_ortalama_medyan_oran",
         "peer_gecmis_ana_metrik_std",
+        "peer_gecmis_ana_metrik_std_medyan_oran",
         "peer_gecmis_ana_metrik_min",
         "peer_gecmis_ana_metrik_max",
     ]
@@ -604,13 +648,13 @@ def write_markdown_report(
 
 ## Review Gerektiren Peer Gruplari
 
-{markdown_table(weak_review, ["PEER_SEVIYE", "PEER_KEY_DEGERLERI", "review_skoru", "review_nedeni", "peer_guncel_ana_metrik_medyan", "peer_guncel_ana_metrik_ortalama", "peer_guncel_ana_metrik_std", "peer_guncel_ana_metrik_min", "peer_guncel_ana_metrik_max", "temsil_skor_medyan", "dagilim_skor_medyan", "kalibrasyon_skor_medyan", "anomaly_watch_oran"], 30)}
+{markdown_table(weak_review, ["PEER_SEVIYE", "PEER_KEY_DEGERLERI", "review_skoru", "review_nedeni", "peer_guncel_ana_metrik_medyan", "peer_guncel_ana_metrik_ortalama", "peer_guncel_ana_metrik_ortalama_medyan_oran", "peer_guncel_ana_metrik_std", "peer_guncel_ana_metrik_std_medyan_oran", "peer_guncel_ana_metrik_min", "peer_guncel_ana_metrik_max", "temsil_skor_medyan", "dagilim_skor_medyan", "kalibrasyon_skor_medyan", "anomaly_watch_oran"], 30)}
 
 ## Metod Notu
 
 - Peer merkez olcusu medyandir.
 - Sapma olcusu MAD tabanli robust scale'dir.
-- Peer dagilim kalitesi skew, kurtosis ve robust tail rate ile izlenir.
+- Peer dagilim kalitesi log skew, log kurtosis, robust tail rate, raw ortalama/medyan ve raw std/medyan oranlariyla izlenir.
 - Peer kalibrasyonu scoring ayi kullanmadan gecmis holdout aylarda peer expected isabetini olcer.
 - Bu rapor karar modelini yeniden skorlamaz; mevcut final decision tablosunun peer kalitesini denetler.
 """
@@ -674,7 +718,7 @@ h1, h2 {{ color: #102a43; }}
 {f'<img class="chart" src="{html.escape(charts["peer_level"])}" alt="Peer seviyesi musteri adedi">' if "peer_level" in charts else ""}
 {html_table(peer_level_summary, ["PEER_SEVIYE", "musteri_adet", "musteri_pay", "temsil_skor_medyan", "dagilim_skor_medyan", "kalibrasyon_skor_medyan", "peer_guncel_adet_medyan", "anomaly_watch_oran"], 25)}
 <h2>Peer Instance Ana Metrik Dagilimi</h2>
-{html_table(peer_instance_summary, ["PEER_SEVIYE", "PEER_KEY_DEGERLERI", "peer_guncel_ana_metrik_medyan", "peer_guncel_ana_metrik_ortalama", "peer_guncel_ana_metrik_std", "peer_guncel_ana_metrik_min", "peer_guncel_ana_metrik_max", "peer_gecmis_ana_metrik_medyan", "peer_gecmis_ana_metrik_ortalama", "peer_gecmis_ana_metrik_std", "peer_gecmis_ana_metrik_min", "peer_gecmis_ana_metrik_max"], 40)}
+{html_table(peer_instance_summary, ["PEER_SEVIYE", "PEER_KEY_DEGERLERI", "peer_guncel_ana_metrik_medyan", "peer_guncel_ana_metrik_ortalama", "peer_guncel_ana_metrik_ortalama_medyan_oran", "peer_guncel_ana_metrik_std", "peer_guncel_ana_metrik_std_medyan_oran", "peer_guncel_ana_metrik_min", "peer_guncel_ana_metrik_max", "peer_gecmis_ana_metrik_medyan", "peer_gecmis_ana_metrik_ortalama", "peer_gecmis_ana_metrik_ortalama_medyan_oran", "peer_gecmis_ana_metrik_std", "peer_gecmis_ana_metrik_std_medyan_oran", "peer_gecmis_ana_metrik_min", "peer_gecmis_ana_metrik_max"], 40)}
 <h2>Peer Temsil Durumu</h2>
 {html_table(status_summary, ["PEER_TEMSIL_DURUMU", "musteri_adet", "musteri_pay", "anomaly_watch_oran", "dagilim_skor_medyan", "guven_medyan"], 20)}
 <h2>Peer Dagilim Kalitesi</h2>
@@ -683,8 +727,8 @@ h1, h2 {{ color: #102a43; }}
 <h2>Behavior Cluster Kapsami</h2>
 {html_table(behavior_summary, ["DAVRANIS_CLUSTER", "musteri_adet", "musteri_pay", "anomaly_watch_oran", "temsil_skor_medyan", "dagilim_skor_medyan"], 30)}
 <h2>Review Gerektiren Peer Gruplari</h2>
-{html_table(weak_review, ["PEER_SEVIYE", "PEER_KEY_DEGERLERI", "review_skoru", "review_nedeni", "peer_guncel_ana_metrik_medyan", "peer_guncel_ana_metrik_ortalama", "peer_guncel_ana_metrik_std", "peer_guncel_ana_metrik_min", "peer_guncel_ana_metrik_max", "temsil_skor_medyan", "dagilim_skor_medyan", "kalibrasyon_skor_medyan", "anomaly_watch_oran"], 40)}
-<div class="note"><strong>Metod notu:</strong> Peer merkez olcusu medyan, sapma olcusu MAD tabanli robust scale, skor olcusu modified robust z-score'dur. Ortalama ve standart sapma ana karar parametresi degildir.</div>
+{html_table(weak_review, ["PEER_SEVIYE", "PEER_KEY_DEGERLERI", "review_skoru", "review_nedeni", "peer_guncel_ana_metrik_medyan", "peer_guncel_ana_metrik_ortalama", "peer_guncel_ana_metrik_ortalama_medyan_oran", "peer_guncel_ana_metrik_std", "peer_guncel_ana_metrik_std_medyan_oran", "peer_guncel_ana_metrik_min", "peer_guncel_ana_metrik_max", "temsil_skor_medyan", "dagilim_skor_medyan", "kalibrasyon_skor_medyan", "anomaly_watch_oran"], 40)}
+<div class="note"><strong>Metod notu:</strong> Peer merkez olcusu medyan, ana anomaly residual'i MAD tabanli robust scale ile hesaplanir. Peer dagilim kalitesi ise log skew/kurtosis/tail-rate yaninda raw ortalama/medyan ve std/medyan oranlarini da cezalandirir.</div>
 </body>
 </html>
 """
@@ -772,8 +816,16 @@ def generate_peer_quality_report_from_frames(
     column_map: dict[str, str] | None = None,
     source_name: str | None = None,
     derived_features_config: dict[str, Any] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
+    def emit(message: str) -> None:
+        if progress is not None:
+            progress(f"peer_quality_detail {message}")
+
+    emit("decision_filter_start")
     decisions = evidence_frame.loc[evidence_frame["DONEM_AY"].astype(int).eq(scoring_month)].copy()
+    emit(f"decision_filter_done rows={len(decisions):,}")
+    emit("scoring_context_start")
     scoring_keys, history, scoring = scoring_context_from_source_frame(
         source_frame,
         scoring_month,
@@ -781,8 +833,19 @@ def generate_peer_quality_report_from_frames(
         source_name=source_name,
         derived_features_config=derived_features_config,
     )
+    emit(
+        "scoring_context_done "
+        f"history_rows={len(history):,} scoring_rows={len(scoring):,} scoring_keys={len(scoring_keys):,}"
+    )
+    emit("peer_quality_tables_start")
     tables = build_peer_quality_tables(decisions, scoring_keys, history, scoring)
+    emit(
+        "peer_quality_tables_done "
+        f"peer_levels={len(tables[0]):,} peer_instances={len(tables[1]):,} weak_reviews={len(tables[5]):,}"
+    )
+    emit("peer_quality_outputs_start")
     result = write_peer_quality_outputs(output_dir, scoring_month, decisions, *tables)
+    emit("peer_quality_outputs_done")
     return result
 
 
@@ -793,11 +856,14 @@ def main() -> None:
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    log_step("peer_quality_detail file_read_start")
     decisions = pd.read_csv(decision_path)
     scoring_month = core.normalize_scoring_month(args.scoring_month, decisions["DONEM_AY"])
     decisions = decisions.loc[decisions["DONEM_AY"].astype(int).eq(scoring_month)].copy()
+    log_step(f"peer_quality_detail file_read_done decision_rows={len(decisions):,}")
     column_map = json.loads(args.column_map_json) if args.column_map_json else None
     derived_features_config = json.loads(args.derived_features_json) if args.derived_features_json else None
+    log_step("peer_quality_detail scoring_context_start")
     scoring_keys, history, scoring = load_scoring_context(
         input_path,
         scoring_month,
@@ -806,8 +872,19 @@ def main() -> None:
         column_map=column_map,
         derived_features_config=derived_features_config,
     )
+    log_step(
+        "peer_quality_detail scoring_context_done "
+        f"history_rows={len(history):,} scoring_rows={len(scoring):,} scoring_keys={len(scoring_keys):,}"
+    )
+    log_step("peer_quality_detail peer_quality_tables_start")
     tables = build_peer_quality_tables(decisions, scoring_keys, history, scoring)
+    log_step(
+        "peer_quality_detail peer_quality_tables_done "
+        f"peer_levels={len(tables[0]):,} peer_instances={len(tables[1]):,} weak_reviews={len(tables[5]):,}"
+    )
+    log_step("peer_quality_detail peer_quality_outputs_start")
     print(write_peer_quality_outputs(out_dir, scoring_month, decisions, *tables))
+    log_step("peer_quality_detail peer_quality_outputs_done")
 
 
 if __name__ == "__main__":

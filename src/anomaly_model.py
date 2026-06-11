@@ -5,7 +5,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -35,9 +35,16 @@ MIN_CUSTOMER_SEASONAL_ROWS = 2
 MIN_BEHAVIOR_HISTORY_ROWS = 6
 MIN_CUSTOMER_RECENT_REGIME_ROWS = 3
 MAX_CUSTOMER_RECENT_REGIME_RANGE_LOG = 0.35
-MIN_PEER_DISTRIBUTION_SCORE = 35.0
+MIN_PEER_DISTRIBUTION_SCORE = 20.0
 MIN_LOG_SCALE = 0.20
 Z_SCORE_CAP = 3.0
+
+DEFAULT_FEATURE_BUCKET_VARIANTS: tuple[dict[str, Any], ...] = (
+    {"name": "q3", "quantiles": [0.333333, 0.666667]},
+    {"name": "q4", "quantiles": [0.25, 0.50, 0.75]},
+    {"name": "q5", "quantiles": [0.20, 0.40, 0.60, 0.80]},
+    {"name": "q8", "quantiles": [0.125, 0.25, 0.375, 0.50, 0.625, 0.75, 0.875]},
+)
 
 DEFAULT_SCORING_WEIGHTS: dict[str, Any] = {
     "customer_explainability": {
@@ -97,7 +104,7 @@ DEFAULT_SCORE_AGGREGATION: dict[str, Any] = {
     },
     "peer_reliability": {
         "min_peer_objective_score": 60.0,
-        "min_peer_distribution_score": 35.0,
+        "min_peer_distribution_score": 40.0,
         "coarse_peer_review_only": True,
     },
     "recent_regime": {
@@ -200,6 +207,11 @@ DEFAULT_DERIVED_FEATURES: dict[str, Any] = {
             "min_monthly_valid_coverage": 0.50,
             "min_peer_ratio_rows": MIN_RATIO_ROWS,
             "min_peer_ratio_mad": 0.001,
+        },
+        "peer_bucket_variants": {
+            "enabled": True,
+            "min_positive_rows": 100,
+            "variants": list(DEFAULT_FEATURE_BUCKET_VARIANTS),
         },
     },
     "behavior_peer": {
@@ -332,6 +344,39 @@ def robust_tail_rate(series: pd.Series, z_threshold: float = 3.0) -> float:
     return float(np.mean(np.abs((values - median) / scale) > z_threshold))
 
 
+def robust_iqr(series: pd.Series) -> float:
+    values = pd.Series(series).dropna().astype(float).to_numpy()
+    if values.size < 2:
+        return float("nan")
+    q25, q75 = np.quantile(values, [0.25, 0.75])
+    return float(q75 - q25)
+
+
+def robust_mad_no_floor(series: pd.Series) -> float:
+    values = pd.Series(series).dropna().astype(float).to_numpy()
+    if values.size < 2:
+        return float("nan")
+    median = float(np.median(values))
+    mad = float(np.median(np.abs(values - median)))
+    scale = 1.4826 * mad
+    if not np.isfinite(scale):
+        return float("nan")
+    return float(max(scale, 0.0))
+
+
+def grouped_iqr_stats(frame: pd.DataFrame, key: list[str], value_col: str, prefix: str) -> pd.DataFrame:
+    columns = key + [f"{prefix}_iqr_log", f"{prefix}_mad_log"]
+    if len(frame) == 0:
+        return pd.DataFrame(columns=columns)
+    quantiles = frame.groupby(key, dropna=False)[value_col].quantile([0.25, 0.75]).unstack()
+    if 0.25 not in quantiles.columns or 0.75 not in quantiles.columns:
+        return pd.DataFrame(columns=columns)
+    out = quantiles.rename(columns={0.25: "_q25", 0.75: "_q75"}).reset_index()
+    out[f"{prefix}_iqr_log"] = out["_q75"].astype(float) - out["_q25"].astype(float)
+    out[f"{prefix}_mad_log"] = out[f"{prefix}_iqr_log"].astype(float) / 1.349
+    return out[columns]
+
+
 def score_from_z(z: pd.Series | np.ndarray) -> np.ndarray:
     arr = np.asarray(z, dtype=float)
     return np.minimum(100.0, np.abs(arr) / Z_SCORE_CAP * 100.0)
@@ -354,6 +399,106 @@ def unique_quantile_edges(values: pd.Series, quantiles: list[float], min_count: 
         return []
     edges = np.quantile(valid, quantiles)
     return [float(x) for x in np.unique(edges) if np.isfinite(x)]
+
+
+def sanitize_bucket_variant_name(value: Any) -> str:
+    clean = re.sub(r"[^0-9a-zA-Z_]+", "_", str(value).strip().lower()).strip("_")
+    if not clean:
+        return "custom"
+    if clean[0].isdigit():
+        clean = f"b_{clean}"
+    return clean[:24]
+
+
+def _quantile_list(value: Any) -> list[float]:
+    raw = value if isinstance(value, (list, tuple, set)) else []
+    parsed: set[float] = set()
+    for item in raw:
+        try:
+            current = float(item)
+        except (TypeError, ValueError):
+            continue
+        if 0.0 < current < 1.0:
+            parsed.add(current)
+    quantiles = sorted(parsed)
+    return quantiles
+
+
+def feature_bucket_variant_specs(config: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+    values = normalize_derived_features_config(config)
+    ratio = dict(values.get("feature_ratio", {}))
+    bucket_config = ratio.get("peer_bucket_variants", {})
+    if isinstance(bucket_config, bool):
+        if not bucket_config:
+            return []
+        bucket_config = {}
+    if isinstance(bucket_config, list):
+        raw_variants = bucket_config
+        enabled = True
+        min_positive_rows = 100
+    else:
+        bucket_mapping = dict(bucket_config) if isinstance(bucket_config, Mapping) else {}
+        enabled = bool(bucket_mapping.get("enabled", True))
+        raw_variants = bucket_mapping.get("variants", DEFAULT_FEATURE_BUCKET_VARIANTS)
+        min_positive_rows = int(bucket_mapping.get("min_positive_rows", 100))
+    if not enabled or not _auto_bool(ratio.get("use_as_peer_variable", True), True):
+        return []
+
+    specs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    if not isinstance(raw_variants, list):
+        raw_variants = list(DEFAULT_FEATURE_BUCKET_VARIANTS)
+    for idx, raw in enumerate(raw_variants):
+        item = dict(raw) if isinstance(raw, Mapping) else {"name": f"q{idx + 1}", "quantiles": raw}
+        quantiles = _quantile_list(item.get("quantiles", []))
+        if not quantiles:
+            continue
+        name = sanitize_bucket_variant_name(item.get("name", f"q{len(quantiles) + 1}"))
+        column = f"feature_bucket_{name}"
+        if column in seen:
+            continue
+        seen.add(column)
+        specs.append(
+            {
+                "name": name,
+                "column": column,
+                "quantiles": quantiles,
+                "min_positive_rows": int(item.get("min_positive_rows", min_positive_rows)),
+            }
+        )
+    return specs
+
+
+def fit_feature_bucket_edges(
+    history: pd.DataFrame,
+    derived_features_config: Mapping[str, Any] | None = None,
+) -> dict[str, list[float]]:
+    positive = history.loc[history["turnover_for_model"].astype(float).gt(0), "log_turnover"].dropna()
+    edges: dict[str, list[float]] = {}
+    for spec in feature_bucket_variant_specs(derived_features_config):
+        if len(positive) < int(spec["min_positive_rows"]):
+            edges[str(spec["column"])] = []
+            continue
+        values = np.quantile(positive.astype(float), spec["quantiles"])
+        edges[str(spec["column"])] = [float(x) for x in np.unique(values) if np.isfinite(x)]
+    return edges
+
+
+def assign_feature_buckets(df: pd.DataFrame, edges_by_column: Mapping[str, list[float]]) -> pd.DataFrame:
+    out = df.copy()
+    turnover_source = out["turnover_for_model"].astype(float)
+    zero_mask = turnover_source.fillna(0).eq(0)
+    pos = turnover_source.gt(0)
+    for column, edges in edges_by_column.items():
+        name = str(column).removeprefix("feature_bucket_")
+        out[column] = "feature_missing"
+        out.loc[zero_mask, column] = "feature_zero"
+        if pos.any() and edges:
+            bucket_no = np.searchsorted(np.asarray(edges), out.loc[pos, "log_turnover"].to_numpy(), side="right") + 1
+            out.loc[pos, column] = [f"{name}_b{int(i)}" for i in bucket_no]
+        elif pos.any():
+            out.loc[pos, column] = "feature_positive"
+    return out
 
 
 def _deep_merge(base: Mapping[str, Any], overrides: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -596,38 +741,158 @@ def assign_behavior_clusters(frame: pd.DataFrame, behavior: pd.DataFrame) -> pd.
     return out
 
 
-def peer_distribution_quality_score(skew: float, kurtosis: float, tail_rate: float) -> float:
-    skew_penalty = min(abs(float(skew)) / 2.0, 1.0) if pd.notna(skew) else 0.50
-    kurtosis_penalty = min(max(float(kurtosis), 0.0) / 6.0, 1.0) if pd.notna(kurtosis) else 0.50
-    tail_penalty = min(max(float(tail_rate), 0.0) / 0.06, 1.0) if pd.notna(tail_rate) else 0.50
-    score = 100.0 * (1.0 - (0.30 * skew_penalty + 0.25 * kurtosis_penalty + 0.45 * tail_penalty))
+def distribution_quality_settings(peer_config: adaptive.PeerSelectionConfig | None) -> dict[str, float]:
+    settings = dict(adaptive.DEFAULT_DISTRIBUTION_QUALITY)
+    if peer_config and peer_config.distribution_quality:
+        settings.update({str(key): float(value) for key, value in peer_config.distribution_quality.items()})
+    return settings
+
+
+def normalized_weights(values: Mapping[str, float]) -> dict[str, float]:
+    positive = {key: max(float(value), 0.0) for key, value in values.items()}
+    total = sum(positive.values())
+    if total <= 0:
+        return {key: 0.0 for key in positive}
+    return {key: value / total for key, value in positive.items()}
+
+
+def peer_distribution_quality_score(
+    skew: float,
+    kurtosis: float,
+    tail_rate: float,
+    mean_median_ratio: float,
+    std_median_ratio: float,
+    current_iqr_log: float,
+    history_monthly_iqr_log: float,
+    current_mad_log: float,
+    history_monthly_mad_log: float,
+    settings: Mapping[str, float] | None = None,
+) -> float:
+    cfg = dict(settings or adaptive.DEFAULT_DISTRIBUTION_QUALITY)
+    weights = normalized_weights(
+        {
+            "iqr": cfg.get("iqr_weight", 0.30),
+            "mad": cfg.get("mad_weight", 0.25),
+            "tail": cfg.get("tail_weight", 0.20),
+            "skew": cfg.get("skew_weight", 0.05),
+            "kurtosis": cfg.get("kurtosis_weight", 0.05),
+            "mean_median": cfg.get("mean_median_weight", 0.05),
+            "std_median": cfg.get("std_median_weight", 0.10),
+        }
+    )
+    current_iqr_penalty = (
+        min(max(float(current_iqr_log), 0.0) / max(float(cfg.get("current_iqr_log_full_penalty", 1.60)), 1e-6), 1.0)
+        if pd.notna(current_iqr_log)
+        else 0.50
+    )
+    history_iqr_penalty = (
+        min(
+            max(float(history_monthly_iqr_log), 0.0) / max(float(cfg.get("history_iqr_log_full_penalty", 1.80)), 1e-6),
+            1.0,
+        )
+        if pd.notna(history_monthly_iqr_log)
+        else 0.50
+    )
+    iqr_penalty = max(current_iqr_penalty, history_iqr_penalty)
+    current_mad_penalty = (
+        min(max(float(current_mad_log), 0.0) / max(float(cfg.get("current_mad_log_full_penalty", 0.90)), 1e-6), 1.0)
+        if pd.notna(current_mad_log)
+        else 0.50
+    )
+    history_mad_penalty = (
+        min(
+            max(float(history_monthly_mad_log), 0.0) / max(float(cfg.get("history_mad_log_full_penalty", 1.00)), 1e-6),
+            1.0,
+        )
+        if pd.notna(history_monthly_mad_log)
+        else 0.50
+    )
+    mad_penalty = max(current_mad_penalty, history_mad_penalty)
+    skew_penalty = min(abs(float(skew)) / max(float(cfg.get("skew_full_penalty", 2.0)), 1e-6), 1.0) if pd.notna(skew) else 0.50
+    kurtosis_penalty = (
+        min(max(float(kurtosis), 0.0) / max(float(cfg.get("kurtosis_full_penalty", 6.0)), 1e-6), 1.0)
+        if pd.notna(kurtosis)
+        else 0.50
+    )
+    tail_penalty = (
+        min(max(float(tail_rate), 0.0) / max(float(cfg.get("tail_full_penalty", 0.06)), 1e-6), 1.0)
+        if pd.notna(tail_rate)
+        else 0.50
+    )
+    if pd.notna(mean_median_ratio) and float(mean_median_ratio) > 0:
+        ratio_gap_log = abs(float(np.log(max(float(mean_median_ratio), 1e-6))))
+        full_penalty_log = np.log(max(float(cfg.get("mean_median_full_penalty_ratio", 4.0)), 1.01))
+        mean_median_penalty = min(ratio_gap_log / max(full_penalty_log, 1e-6), 1.0)
+    else:
+        mean_median_penalty = 0.50
+    if pd.notna(std_median_ratio) and float(std_median_ratio) >= 0:
+        std_median_penalty = min(
+            float(std_median_ratio) / max(float(cfg.get("std_median_full_penalty_ratio", 3.0)), 1e-6),
+            1.0,
+        )
+    else:
+        std_median_penalty = 0.50
+    score = 100.0 * (
+        1.0
+        - (
+            weights.get("iqr", 0.0) * iqr_penalty
+            + weights.get("mad", 0.0) * mad_penalty
+            + weights.get("skew", 0.0) * skew_penalty
+            + weights.get("kurtosis", 0.0) * kurtosis_penalty
+            + weights.get("tail", 0.0) * tail_penalty
+            + weights.get("mean_median", 0.0) * mean_median_penalty
+            + weights.get("std_median", 0.0) * std_median_penalty
+        )
+    )
     return float(np.clip(score, 0.0, 100.0))
 
 
 def peer_distribution_status(score: float) -> str:
     if pd.isna(score):
         return "PEER_DISTRIBUTION_UNKNOWN"
-    if score >= 80:
-        return "HOMOGENEOUS_PEER"
+    if score >= 75:
+        return "ROBUST_COMPARABLE_PEER"
     if score >= 60:
-        return "USABLE_HEAVY_TAIL_PEER"
-    if score >= MIN_PEER_DISTRIBUTION_SCORE:
-        return "HEAVY_TAIL_PEER_REVIEW"
+        return "USABLE_WIDE_PEER"
+    if score >= 40:
+        return "WIDE_PEER_REVIEW"
     return "UNSTABLE_PEER_DISTRIBUTION"
 
 
-def peer_distribution_stats(frame: pd.DataFrame, key: list[str]) -> pd.DataFrame:
+def peer_distribution_stats(
+    frame: pd.DataFrame,
+    key: list[str],
+    peer_config: adaptive.PeerSelectionConfig | None = None,
+    current_frame: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     columns = key + [
         "peer_distribution_n",
         "peer_log_ratio_skew",
         "peer_log_ratio_kurtosis",
         "peer_tail_rate",
+        "peer_mean_median_ratio",
+        "peer_mean_median_gap_log",
+        "peer_std_median_ratio",
+        "peer_current_iqr_log",
+        "peer_history_monthly_iqr_log",
+        "peer_current_mad_log",
+        "peer_history_monthly_mad_log",
         "peer_distribution_quality_score",
         "peer_distribution_status",
     ]
-    valid = frame.loc[frame["valid_bill_for_model"] & frame["log_bill"].notna(), key + ["log_bill"]].copy()
+    valid = frame.loc[
+        frame["valid_bill_for_model"] & frame["log_bill"].notna(),
+        key + ["invoice_month", "log_bill", "bill_amount"],
+    ].copy()
     if len(valid) == 0:
         return pd.DataFrame(columns=columns)
+    current_valid = pd.DataFrame(columns=key + ["log_bill", "bill_amount"])
+    if current_frame is not None and len(current_frame):
+        current_valid = current_frame.loc[
+            current_frame["valid_bill_for_model"] & current_frame["log_bill"].notna(),
+            key + ["log_bill", "bill_amount"],
+        ].copy()
+    raw_source = current_valid if len(current_valid) else valid
 
     grouped = valid.groupby(key, dropna=False)["log_bill"]
     out = grouped.agg(
@@ -636,8 +901,51 @@ def peer_distribution_stats(frame: pd.DataFrame, key: list[str]) -> pd.DataFrame
         peer_log_ratio_kurtosis=lambda x: x.kurt(),
         peer_tail_rate=robust_tail_rate,
     ).reset_index()
+    current_robust = grouped_iqr_stats(raw_source, key, "log_bill", "peer_current")
+    current_robust = current_robust.rename(
+        columns={
+            "peer_current_iqr_log": "peer_current_iqr_log",
+            "peer_current_mad_log": "peer_current_mad_log",
+        }
+    )
+    monthly_robust = grouped_iqr_stats(valid, key + ["invoice_month"], "log_bill", "monthly")
+    history_robust = (
+        monthly_robust.groupby(key, dropna=False)
+        .agg(
+            peer_history_monthly_iqr_log=("monthly_iqr_log", "median"),
+            peer_history_monthly_mad_log=("monthly_mad_log", "median"),
+        )
+        .reset_index()
+    )
+    raw_stats = (
+        raw_source.groupby(key, dropna=False)["bill_amount"]
+        .agg(
+            peer_raw_mean="mean",
+            peer_raw_median="median",
+            peer_raw_std=lambda values: float(np.std(pd.to_numeric(values, errors="coerce").dropna(), ddof=0)),
+        )
+        .reset_index()
+    )
+    out = out.merge(raw_stats, on=key, how="left")
+    out = out.merge(current_robust, on=key, how="left")
+    out = out.merge(history_robust, on=key, how="left")
+    out["peer_mean_median_ratio"] = out["peer_raw_mean"].astype(float) / np.maximum(out["peer_raw_median"].astype(float), 1e-6)
+    out["peer_mean_median_gap_log"] = np.log(np.maximum(out["peer_mean_median_ratio"].astype(float), 1e-6)).abs()
+    out["peer_std_median_ratio"] = out["peer_raw_std"].astype(float) / np.maximum(out["peer_raw_median"].astype(float), 1e-6)
+    settings = distribution_quality_settings(peer_config)
     out["peer_distribution_quality_score"] = [
-        peer_distribution_quality_score(row["peer_log_ratio_skew"], row["peer_log_ratio_kurtosis"], row["peer_tail_rate"])
+        peer_distribution_quality_score(
+            row["peer_log_ratio_skew"],
+            row["peer_log_ratio_kurtosis"],
+            row["peer_tail_rate"],
+            row["peer_mean_median_ratio"],
+            row["peer_std_median_ratio"],
+            row["peer_current_iqr_log"],
+            row["peer_history_monthly_iqr_log"],
+            row["peer_current_mad_log"],
+            row["peer_history_monthly_mad_log"],
+            settings,
+        )
         for _, row in out.iterrows()
     ]
     out["peer_distribution_status"] = out["peer_distribution_quality_score"].map(peer_distribution_status)
@@ -1011,7 +1319,13 @@ def filter_frame_to_scoring_keys(frame: pd.DataFrame, scoring: pd.DataFrame, key
     return frame.merge(scoring_keys, on=key, how="inner")
 
 
-def build_level_stats(history: pd.DataFrame, scoring: pd.DataFrame, scoring_month: int, cols: list[str]) -> pd.DataFrame:
+def build_level_stats(
+    history: pd.DataFrame,
+    scoring: pd.DataFrame,
+    scoring_month: int,
+    cols: list[str],
+    peer_config: adaptive.PeerSelectionConfig | None = None,
+) -> pd.DataFrame:
     key = group_key(cols)
     scoring_moy = int(scoring["month_of_year"].iloc[0])
     scoring_ord = int(scoring["month_ord"].iloc[0])
@@ -1029,7 +1343,7 @@ def build_level_stats(history: pd.DataFrame, scoring: pd.DataFrame, scoring_mont
     current_stats = robust_group_stats(scoring_valid, key, "log_bill", "current")
     ratio_stats = robust_group_stats(ratio, key, "bill_to_turnover_log_ratio", "ratio")
     trend_stats = trend_group_stats(hist_valid, key, "peer")
-    distribution_stats = peer_distribution_stats(hist_valid, key)
+    distribution_stats = peer_distribution_stats(hist_valid, key, peer_config, scoring_valid)
     calibration_stats = peer_calibration_stats(hist_valid, key, scoring_month)
 
     stats = base.merge(recent_stats, on=key, how="left")
@@ -1041,6 +1355,13 @@ def build_level_stats(history: pd.DataFrame, scoring: pd.DataFrame, scoring_mont
     stats = stats.merge(calibration_stats, on=key, how="left")
     stats["peer_distribution_quality_score"] = stats["peer_distribution_quality_score"].fillna(50.0)
     stats["peer_distribution_status"] = stats["peer_distribution_status"].fillna("PEER_DISTRIBUTION_UNKNOWN")
+    stats["peer_mean_median_ratio"] = stats["peer_mean_median_ratio"].fillna(np.nan)
+    stats["peer_mean_median_gap_log"] = stats["peer_mean_median_gap_log"].fillna(np.nan)
+    stats["peer_std_median_ratio"] = stats["peer_std_median_ratio"].fillna(np.nan)
+    stats["peer_current_iqr_log"] = stats["peer_current_iqr_log"].fillna(np.nan)
+    stats["peer_history_monthly_iqr_log"] = stats["peer_history_monthly_iqr_log"].fillna(np.nan)
+    stats["peer_current_mad_log"] = stats["peer_current_mad_log"].fillna(np.nan)
+    stats["peer_history_monthly_mad_log"] = stats["peer_history_monthly_mad_log"].fillna(np.nan)
     stats["peer_calibration_score"] = stats["peer_calibration_score"].fillna(50.0)
     stats["peer_calibration_n"] = stats["peer_calibration_n"].fillna(0)
     stats["peer_calibration_abs_residual_median"] = stats["peer_calibration_abs_residual_median"].fillna(np.nan)
@@ -1133,19 +1454,20 @@ def support_value(row: pd.Series, col: str) -> float:
 
 def peer_level_specificity(level_name: str) -> float:
     behavior_bonus = 0.08 if "behavior" in level_name else 0.0
+    has_feature_bucket = "feature" in level_name or "turnover" in level_name
     if level_name == "global":
         return 0.25
     if "branch" in level_name and "active" in level_name:
         return min(1.00, 1.00 + behavior_bonus)
     if "branch" in level_name:
         return min(1.00, 0.92 + behavior_bonus)
-    if "active" in level_name and "sector" in level_name and "turnover" in level_name:
+    if "active" in level_name and "sector" in level_name and has_feature_bucket:
         return min(1.00, 0.90 + behavior_bonus)
-    if "sector" in level_name and "turnover" in level_name:
+    if "sector" in level_name and has_feature_bucket:
         return min(1.00, 0.84 + behavior_bonus)
     if "active" in level_name and "sector" in level_name:
         return min(1.00, 0.78 + behavior_bonus)
-    if "turnover" in level_name:
+    if has_feature_bucket:
         return min(1.00, 0.72 + behavior_bonus)
     if "sector" in level_name:
         return min(1.00, 0.64 + behavior_bonus)
@@ -1457,7 +1779,7 @@ def peer_reliability_status(row: pd.Series, config: Mapping[str, Any]) -> str:
     rules = dict(config.get("peer_reliability", {}))
     objective_ok = numeric_or_default(row, "peer_objective_score", 0.0) >= float(rules.get("min_peer_objective_score", 60.0))
     distribution_ok = numeric_or_default(row, "peer_distribution_quality_score", 0.0) >= float(
-        rules.get("min_peer_distribution_score", 35.0)
+        rules.get("min_peer_distribution_score", 40.0)
     )
     coarse = str(row.get("peer_representability_status", "")) == "COARSE_PEER_REVIEW"
     if not objective_ok or not distribution_ok:
@@ -1726,7 +2048,7 @@ def vectorized_evidence_aggregation(frame: pd.DataFrame, config: Mapping[str, An
     peer_status = np.full(n_rows, "PEER_STRONG", dtype=object)
     peer_status[
         (peer_objective < float(rules_peer.get("min_peer_objective_score", 60.0)))
-        | (peer_distribution < float(rules_peer.get("min_peer_distribution_score", 35.0)))
+        | (peer_distribution < float(rules_peer.get("min_peer_distribution_score", 40.0)))
     ] = "PEER_WEAK"
     peer_status[
         (peer_status == "PEER_STRONG")
@@ -2113,17 +2435,35 @@ def score_scoring_month(
     scoring_weights: Mapping[str, Any] | None = None,
     score_aggregation: Mapping[str, Any] | None = None,
     derived_features_config: Mapping[str, Any] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> ModelRun:
+    def emit(message: str) -> None:
+        if progress is not None:
+            progress(f"score_detail {message}")
+
     history_raw = prepared.loc[prepared["invoice_month"].lt(scoring_month)].copy()
     scoring_raw = prepared.loc[prepared["invoice_month"].eq(scoring_month)].copy()
     if len(scoring_raw) == 0:
         raise ValueError(f"No rows found for scoring month {scoring_month}")
+    emit(
+        "split_done "
+        f"scoring_month={scoring_month} history_rows={len(history_raw):,} scoring_rows={len(scoring_raw):,}"
+    )
 
-    edges = fit_turnover_edges(history_raw)
-    history = assign_turnover_bucket(history_raw, edges)
-    scoring = assign_turnover_bucket(scoring_raw, edges)
     profile = prepared.attrs.get("profile", {}) if hasattr(prepared, "attrs") else {}
     effective_derived = derived_features_config or profile.get("derived_features", {})
+    emit("bucket_assignment_start")
+    feature_bucket_edges = fit_feature_bucket_edges(history_raw, effective_derived)
+    legacy_edges = fit_turnover_edges(history_raw)
+    history = assign_feature_buckets(history_raw, feature_bucket_edges)
+    scoring = assign_feature_buckets(scoring_raw, feature_bucket_edges)
+    history = assign_turnover_bucket(history, legacy_edges)
+    scoring = assign_turnover_bucket(scoring, legacy_edges)
+    emit(
+        "bucket_assignment_done "
+        f"feature_bucket_variants={len(feature_bucket_edges)} legacy_turnover_edges={len(legacy_edges)} "
+        f"ratio_peer_rows={int(history['turnover_for_model'].notna().sum()):,}"
+    )
     ratio_settings = profile.get("feature_ratio") or feature_ratio_settings(effective_derived, None)
     ratio_signal_enabled = bool(ratio_settings.get("use_as_anomaly_signal", False))
     ratio_peer_enabled = bool(ratio_settings.get("use_as_peer_variable", False))
@@ -2132,14 +2472,21 @@ def score_scoring_month(
     min_peer_ratio_mad = float(ratio_quality_gate.get("min_peer_ratio_mad", 0.001))
     behavior_enabled = bool(profile.get("behavior_peer_enabled", behavior_peer_enabled(effective_derived)))
     if behavior_enabled:
+        emit("behavior_cluster_start")
         behavior = build_behavior_clusters(history)
         history = assign_behavior_clusters(history, behavior)
         scoring = assign_behavior_clusters(scoring, behavior)
+        emit(f"behavior_cluster_done clusters={len(behavior):,}")
     scoring["_row_id"] = np.arange(len(scoring))
 
     scoring_ord = int(scoring["month_ord"].iloc[0])
+    emit("customer_history_stats_start")
     self_stats = build_self_stats(history, scoring_ord)
     scoring = scoring.merge(self_stats, on="customer_id", how="left")
+    emit(
+        "customer_history_stats_done "
+        f"self_stats_rows={len(self_stats):,} scoring_customers={scoring['customer_id'].nunique():,}"
+    )
     peer_rules = peer_config or adaptive.PeerSelectionConfig()
     support_rules = support_thresholds or adaptive.PeerSupportThresholds(
         min_history_rows=MIN_HIST_ROWS,
@@ -2155,6 +2502,10 @@ def score_scoring_month(
         has_turnover_signal=bool(ratio_peer_enabled and history["turnover_for_model"].notna().any()),
         config=peer_rules,
     )
+    emit(
+        "peer_candidates_done "
+        f"candidate_count={len(peer_levels)} candidates={','.join(candidate.name for candidate in peer_levels[:10])}"
+    )
 
     scored_parts: list[pd.DataFrame] = []
     assigned_row_ids: set[int] = set()
@@ -2166,10 +2517,20 @@ def score_scoring_month(
         remaining = scoring.copy()
         if len(remaining) == 0:
             break
-        stats = build_level_stats(history, remaining, scoring_month, cols)
+        emit(
+            "peer_candidate_start "
+            f"order={peer_order + 1}/{len(peer_levels)} level={level_name} "
+            f"cols={'+'.join(cols) if cols else 'global'} evaluated_rows={len(remaining):,}"
+        )
+        stats = build_level_stats(history, remaining, scoring_month, cols, peer_rules)
         key = group_key(cols)
         candidate = remaining.merge(stats, on=key, how="left")
         passes = adaptive.support_mask(candidate, peer_candidate, support_rules, peer_rules.blocked_values)
+        emit(
+            "peer_candidate_support_done "
+            f"level={level_name} stats_groups={len(stats):,} passed_rows={int(passes.sum()):,} "
+            f"pass_rate={float(passes.mean() if len(passes) else 0.0):.3f}"
+        )
         failed_reason = (
             f"{level_name}: support thresholds not passed "
             f"(hist>={support_rules.min_history_rows}, season>={support_rules.min_season_rows}, "
@@ -2179,6 +2540,7 @@ def score_scoring_month(
         for row_id in candidate.loc[~passes, "_row_id"].astype(int).to_numpy():
             peer_attempts.setdefault(int(row_id), []).append(failed_reason)
         if not bool(passes.any()):
+            emit(f"peer_candidate_skipped level={level_name} reason=no_supported_rows")
             continue
 
         selected = candidate.loc[passes].copy()
@@ -2195,6 +2557,7 @@ def score_scoring_month(
             selected["peer_representability_score"],
             peer_candidate,
             peer_rules,
+            distribution_scores=selected["peer_distribution_quality_score"],
         )
         selected["peer_support_score"] = adaptive.support_strength_score_frame(selected, support_rules)
         selected["peer_stability_score"] = adaptive.stability_score_frame(selected)
@@ -2204,6 +2567,13 @@ def score_scoring_month(
             peer_candidate,
             support_rules,
             peer_rules,
+        )
+        emit(
+            "peer_candidate_quality_done "
+            f"level={level_name} selected_rows={len(selected):,} "
+            f"avg_objective={selected['peer_objective_score'].mean():.2f} "
+            f"avg_representability={selected['peer_representability_score'].mean():.2f} "
+            f"avg_distribution={selected['peer_distribution_quality_score'].mean():.2f}"
         )
         selected["expected_log_bill"] = selected["recent_median"] + (selected["moy_median"] - selected["hist_median"])
         selected["expected_bill_amount"] = np.expm1(selected["expected_log_bill"])
@@ -2432,11 +2802,19 @@ def score_scoring_month(
         selected["customer_explainability_status"] = selected["customer_explainability_score"].map(customer_explainability_status)
         selected = apply_directional_evidence_aggregation(selected, aggregation_config)
         selected["scoring_strategy"] = selected["evidence_driver"]
+        emit(
+            "peer_candidate_scoring_done "
+            f"level={level_name} rows={len(selected):,} "
+            f"score_p95={selected['final_anomaly_score'].quantile(0.95):.2f} "
+            f"customer_driver_rows={int(selected['evidence_driver'].astype(str).str.contains('customer', case=False, na=False).sum()):,}"
+        )
 
         scored_parts.append(selected)
 
     if scored_parts:
+        emit(f"peer_candidate_concat_start parts={len(scored_parts)}")
         candidate_scores = pd.concat(scored_parts, ignore_index=True)
+        emit(f"peer_candidate_concat_done candidate_rows={len(candidate_scores):,}")
         candidate_counts = (
             candidate_scores.groupby("_row_id").size().rename("peer_eligible_candidate_count").reset_index()
         )
@@ -2481,10 +2859,17 @@ def score_scoring_month(
             + " uygun aday arasindan secildi."
         )
         assigned_row_ids = set(scores["_row_id"].astype(int).tolist())
+        emit(
+            "peer_objective_selection_done "
+            f"scored_rows={len(scores):,} avg_selected_objective={scores['peer_objective_score'].mean():.2f} "
+            f"avg_selected_distribution={scores['peer_distribution_quality_score'].mean():.2f}"
+        )
     else:
         scores = pd.DataFrame()
+        emit("peer_objective_selection_done scored_rows=0")
 
     not_scored = scoring.loc[~scoring["_row_id"].isin(assigned_row_ids)].copy()
+    emit(f"not_scored_build_done not_scored_rows={len(not_scored):,}")
     if len(not_scored):
         not_scored["not_scored_reason"] = np.where(
             not_scored["valid_bill_for_model"],
@@ -2513,6 +2898,7 @@ def score_scoring_month(
         not_scored["model_fill_policy"] = "NO_MAIN_METRIC_FILLING"
 
     if len(scores):
+        emit("label_and_reason_start")
         scores = label_scores(scores, watch_top_rate, high_top_rate, aggregation_config.get("label_guardrails", {}))
         scores["peer_alignment_status"] = scores.apply(peer_alignment_status, axis=1)
         scores["peer_alignment_direction"] = scores.apply(peer_alignment_direction, axis=1)
@@ -2523,7 +2909,13 @@ def score_scoring_month(
         scores["evidence_strength"] = scores.apply(evidence_strength, axis=1)
         scores["action_label"] = scores.apply(action_label, axis=1)
         scores["reason_explanation"] = scores.apply(reason_explanation, axis=1)
+        emit(
+            "label_and_reason_done "
+            f"label_counts={scores['anomaly_label'].value_counts(dropna=False).to_dict()}"
+        )
+        emit("challenger_diagnostic_start")
         scores = add_challenger_diagnostics(scores, aggregation_config)
+        emit("challenger_diagnostic_done")
         thresholds = {
             "watchlist_threshold": float(scores["watchlist_threshold_used"].iloc[0]),
             "high_anomaly_threshold": float(scores["high_anomaly_threshold_used"].iloc[0]),
@@ -2636,6 +3028,13 @@ def score_scoring_month(
             "peer_log_ratio_skew",
             "peer_log_ratio_kurtosis",
             "peer_tail_rate",
+            "peer_mean_median_ratio",
+            "peer_mean_median_gap_log",
+            "peer_std_median_ratio",
+            "peer_current_iqr_log",
+            "peer_history_monthly_iqr_log",
+            "peer_current_mad_log",
+            "peer_history_monthly_mad_log",
             "peer_selection_reason",
             "scoring_strategy",
             "model_challenger_score",
@@ -3537,12 +3936,19 @@ def attach_prior_score_diagnostic(
     scoring_weights: Mapping[str, Any] | None = None,
     score_aggregation: Mapping[str, Any] | None = None,
     derived_features_config: Mapping[str, Any] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> ModelRun:
+    def emit(message: str) -> None:
+        if progress is not None:
+            progress(f"prior_score_detail {message}")
+
     prior_months = sorted(m for m in prepared["invoice_month"].unique().tolist() if m < run.scoring_month)
     if not prior_months or len(run.scores) == 0:
+        emit("skipped reason=no_prior_month_or_empty_scores")
         return run
 
     previous_month = int(prior_months[-1])
+    emit(f"previous_month_scoring_start previous_month={previous_month}")
     previous_run = score_scoring_month(
         prepared,
         previous_month,
@@ -3553,8 +3959,14 @@ def attach_prior_score_diagnostic(
         scoring_weights=scoring_weights,
         score_aggregation=score_aggregation,
         derived_features_config=derived_features_config,
+        progress=lambda message: progress(f"prior_{message}") if progress is not None else None,
+    )
+    emit(
+        "previous_month_scoring_done "
+        f"previous_month={previous_month} scored_rows={len(previous_run.scores):,}"
     )
     if len(previous_run.scores) == 0:
+        emit("skipped reason=empty_previous_scores")
         return run
 
     previous_scores = previous_run.scores[
@@ -3586,6 +3998,10 @@ def attach_prior_score_diagnostic(
     )
     scores["reason_explanation"] = scores.apply(reason_explanation, axis=1)
     run.scores = scores.sort_values("final_anomaly_score", ascending=False)
+    emit(
+        "merge_done "
+        f"current_rows={len(run.scores):,} matched_previous={int(run.scores['previous_final_anomaly_score'].notna().sum()):,}"
+    )
     return run
 
 

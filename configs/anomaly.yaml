@@ -43,6 +43,20 @@ model:
       denominator: TURNOVER_AMT
       use_as_peer_variable: true
       use_as_anomaly_signal: true
+      # Referans feature peer bucket'i tek sabit kirilim degil, objective-driven aday setidir.
+      # Sistem her varyanti history uzerinden fit eder; peer objective hangisini daha iyi bulursa onu secer.
+      peer_bucket_variants:
+        enabled: true
+        min_positive_rows: 100
+        variants:
+          - name: q3
+            quantiles: [0.333333, 0.666667]
+          - name: q4
+            quantiles: [0.25, 0.50, 0.75]
+          - name: q5
+            quantiles: [0.20, 0.40, 0.60, 0.80]
+          - name: q8
+            quantiles: [0.125, 0.25, 0.375, 0.50, 0.625, 0.75, 0.875]
       quality_gate:
         # true ise oran skora girmeden once kaynak ve peer kalite kontrollerinden gecmelidir.
         enabled: true
@@ -57,7 +71,7 @@ model:
     # Musteri gecmis davranisindan level/volatilite/trend cluster'i uretip peer adayi olarak kullanir.
     # Default kapali; acilirsa sadece scoring ayindan onceki gecmisle hesaplanir.
     behavior_peer:
-      enabled: false
+      enabled: true
       use_as_peer_variable: true
     # Ek numeric feature'i bucket'a cevirip peer adayi yapmak icin kullanilir.
     # internal_role: exposure_feature simdilik tek generic exposure bucket'ina map edilir.
@@ -146,8 +160,8 @@ model:
     peer_reliability:
       # Peer objective skoru bu degerin altindaysa peer kaniti karar etkisinde sinirlanir.
       min_peer_objective_score: 60.0
-      # Peer dagilim skoru bu degerin altindaysa peer guveni dusurulur.
-      min_peer_distribution_score: 35.0
+      # Peer dagilim skoru bu degerin altindaysa peer kaniti karar driver'i olarak sinirlanir.
+      min_peer_distribution_score: 40.0
       # Cok kaba peer secildiyse karar yerine review/watch davranisini tercih eder.
       coarse_peer_review_only: true
     recent_regime:
@@ -189,8 +203,20 @@ model:
       coarse_peer_cap: 65.0
 
 peer_selection:
-  # "auto" variables.segment_variables listesini ve feature'lardan turetilen bucket'lari kullanir.
-  priority_variables: auto
+  # Peer adaylarinda kullanilabilecek generic degiskenler.
+  # Behavior kolonlari sadece scoring ayindan onceki musteri gecmisinden turetilir.
+  priority_variables:
+    - customer_segment
+    - sector
+    - feature_bucket_q3
+    - feature_bucket_q4
+    - feature_bucket_q5
+    - feature_bucket_q8
+    - active_subscriber_bucket
+    - behavior_level_bucket
+    - behavior_volatility_bucket
+    - behavior_trend_bucket
+    - behavior_cluster
   # Ileri seviye override gerekirse acilabilir:
   # mandatory_variables:
   #   - segment_variables
@@ -202,21 +228,171 @@ peer_selection:
   max_variables_per_peer: 6
   # Peer adaylarini oncelik path'i uzerinden uretir.
   candidate_strategy: priority_path
+  # Denenen aday seti. Branch/sube cok parcaladigi icin destek gecmediginden
+  # karar adaylarinda tutulmaz; detail'de ham veri olarak kalir.
+  explicit_levels:
+    - name: segment_behavior_level_vol
+      columns:
+        - customer_segment
+        - behavior_level_bucket
+        - behavior_volatility_bucket
+    - name: segment_behavior_level
+      columns:
+        - customer_segment
+        - behavior_level_bucket
+    - name: sector_behavior_level
+      columns:
+        - sector
+        - behavior_level_bucket
+    - name: segment_sector_behavior_level
+      columns:
+        - customer_segment
+        - sector
+        - behavior_level_bucket
+    - name: segment_behavior
+      columns:
+        - customer_segment
+        - behavior_cluster
+    - name: sector_behavior
+      columns:
+        - sector
+        - behavior_cluster
+    - name: behavior_level
+      columns:
+        - behavior_level_bucket
+    - name: behavior
+      columns:
+        - behavior_cluster
+    - name: segment_sector_feature_q3_exposure
+      columns:
+        - customer_segment
+        - sector
+        - feature_bucket_q3
+        - active_subscriber_bucket
+    - name: segment_sector_feature_q4_exposure
+      columns:
+        - customer_segment
+        - sector
+        - feature_bucket_q4
+        - active_subscriber_bucket
+    - name: segment_sector_feature_q5_exposure
+      columns:
+        - customer_segment
+        - sector
+        - feature_bucket_q5
+        - active_subscriber_bucket
+    - name: segment_sector_feature_q8_exposure
+      columns:
+        - customer_segment
+        - sector
+        - feature_bucket_q8
+        - active_subscriber_bucket
+    - name: segment_sector
+      columns:
+        - customer_segment
+        - sector
+    - name: segment_feature_q3
+      columns:
+        - customer_segment
+        - feature_bucket_q3
+    - name: segment_feature_q4
+      columns:
+        - customer_segment
+        - feature_bucket_q4
+    - name: segment_feature_q5
+      columns:
+        - customer_segment
+        - feature_bucket_q5
+    - name: segment_feature_q8
+      columns:
+        - customer_segment
+        - feature_bucket_q8
+    - name: sector_feature_q3_exposure
+      columns:
+        - sector
+        - feature_bucket_q3
+        - active_subscriber_bucket
+    - name: sector_feature_q4_exposure
+      columns:
+        - sector
+        - feature_bucket_q4
+        - active_subscriber_bucket
+    - name: sector_feature_q5_exposure
+      columns:
+        - sector
+        - feature_bucket_q5
+        - active_subscriber_bucket
+    - name: sector_feature_q8_exposure
+      columns:
+        - sector
+        - feature_bucket_q8
+        - active_subscriber_bucket
+    - name: sector_feature_q3
+      columns:
+        - sector
+        - feature_bucket_q3
+    - name: sector_feature_q4
+      columns:
+        - sector
+        - feature_bucket_q4
+    - name: sector_feature_q5
+      columns:
+        - sector
+        - feature_bucket_q5
+    - name: sector_feature_q8
+      columns:
+        - sector
+        - feature_bucket_q8
+    - name: segment
+      columns:
+        - customer_segment
+    - name: sector
+      columns:
+        - sector
   # Destek gecen peerler arasinda objective skoru en iyi olani secer.
   selection_mode: objective
   objective_weights:
     # Peer'in destek ve dagilimla musteriyi temsil etme gucu.
-    representability: 0.25
-    # Heavy-tail/skew/kurtosis gibi dagilim kalitesi.
-    distribution: 0.20
+    representability: 0.20
+    # Heavy-tail/skew/kurtosis/mean-medyan/std-medyan gibi dagilim kalitesi.
+    distribution: 0.30
     # Peer'in onceki aylarda bir sonraki ay referansi olarak ne kadar iyi calistigi.
     calibration: 0.20
     # Peer'in tarihsel stabilitesi.
-    stability: 0.15
+    stability: 0.10
     # Daha dar ve bilgi tasiyan peerleri odullendirir.
-    specificity: 0.20
+    specificity: 0.10
     # Hist/season/recent/current adet destek gucu.
     support: 0.10
+  distribution_quality:
+    # Peer homojenligini olcerken kullanilan bilesen agirliklari.
+    # Ana karar sinyali normal dagilim degil, ayni ay log/robust kiyas yapilabilirliktir.
+    iqr_weight: 0.30
+    mad_weight: 0.25
+    tail_weight: 0.20
+    skew_weight: 0.05
+    kurtosis_weight: 0.05
+    # Raw mean/median ve std/median rapor/detay icin onemli ama kalite skorunda dusuk agirlikli diagnostic cezadir.
+    mean_median_weight: 0.05
+    std_median_weight: 0.10
+    # Skorlanan ay log IQR bu seviyeye gelirse IQR cezasi tam kabul edilir.
+    current_iqr_log_full_penalty: 1.60
+    # Gecmis aylardaki aylik log IQR medyani bu seviyeye gelirse IQR cezasi tam kabul edilir.
+    history_iqr_log_full_penalty: 1.80
+    # Skorlanan ay log MAD bu seviyeye gelirse MAD cezasi tam kabul edilir.
+    current_mad_log_full_penalty: 0.90
+    # Gecmis aylardaki aylik log MAD medyani bu seviyeye gelirse MAD cezasi tam kabul edilir.
+    history_mad_log_full_penalty: 1.00
+    # Log ana metrik skew bu seviyeye gelirse ilgili ceza tam kabul edilir.
+    skew_full_penalty: 2.0
+    # Log ana metrik kurtosis bu seviyeye gelirse ilgili ceza tam kabul edilir.
+    kurtosis_full_penalty: 6.0
+    # Robust tail-rate bu seviyeye gelirse ilgili ceza tam kabul edilir.
+    tail_full_penalty: 0.10
+    # Raw ortalama / medyan orani bu seviyeye gelirse mean/median cezasi tam kabul edilir.
+    mean_median_full_penalty_ratio: 8.0
+    # Raw standart sapma / medyan orani bu seviyeye gelirse oynaklik cezasi tam kabul edilir.
+    std_median_full_penalty_ratio: 12.0
   # Auto inferred degiskenlerde cok yuksek cardinality'li kolonlari elemek icin ust sinir.
   max_inferred_cardinality: 250
   # Peer seciminden tamamen cikarmak istedigin degiskenleri buraya yaz.
@@ -225,6 +401,13 @@ peer_selection:
     # Bu degerler peer degiskeninde varsa ilgili aday destek gecmis sayilmaz.
     behavior_cluster:
       - behavior_unknown
+      - ""
+      - nan
+      - None
+    feature_bucket:
+      - feature_missing
+      - feature_zero
+      - feature_unknown
       - ""
       - nan
       - None
@@ -244,8 +427,9 @@ peer_support:
   min_recent_rows: 25
   # Skorlanan ay peer destegi icin minimum satir destegi.
   min_current_rows: 20
-  # Peer dagilim kalite alt esigi.
-  min_distribution_score: 35.0
+  # Peer adayinin tamamen elenmesi icin minimum dagilim skoru. Dusuk tutulur;
+  # dagilim zayifsa karar guveni peer_reliability tarafinda cezalandirilir.
+  min_distribution_score: 20.0
   # Strong peer temsil skoru icin referans hist satir sayisi.
   strong_history_rows: 800
   # Strong peer temsil skoru icin referans sezon satir sayisi.

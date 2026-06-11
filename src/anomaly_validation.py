@@ -579,11 +579,29 @@ def validate_output_tables(decision: pd.DataFrame, detail: pd.DataFrame) -> pd.D
         duplicate_decision_rows,
         "Full duplicate decision rows",
     )
+    expected_conditional_missing = {
+        "PEER_AYLIK_ANA_METRIK_PAYDA_ORAN_MEDYAN",
+        "MUSTERI_SON3_REJIM_Z",
+        "MUSTERI_SON3_REJIM_SKORU",
+        "FEATURE_ORAN_Z",
+        "FEATURE_ORAN_SKORU",
+        "SECONDARY_SINYAL_P_DEGERI",
+    }
     high_missing_cols = []
+    conditional_missing_cols = []
     for col in detail.columns:
         missing_rate = float(detail[col].isna().mean()) if len(detail) else 0.0
         if missing_rate >= 0.98:
-            high_missing_cols.append(col)
+            if col in expected_conditional_missing:
+                conditional_missing_cols.append(col)
+            else:
+                high_missing_cols.append(col)
+    add_check(
+        "detail_expected_conditional_missing_columns",
+        "PASS",
+        len(conditional_missing_cols),
+        ",".join(conditional_missing_cols[:30]),
+    )
     add_check(
         "detail_extreme_missing_columns",
         "PASS" if not high_missing_cols else "WARN",

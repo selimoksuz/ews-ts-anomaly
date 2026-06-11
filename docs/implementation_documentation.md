@@ -80,6 +80,18 @@ model:
       denominator: TURNOVER_AMT
       use_as_peer_variable: true
       use_as_anomaly_signal: true
+      peer_bucket_variants:
+        enabled: true
+        min_positive_rows: 100
+        variants:
+          - name: q3
+            quantiles: [0.333333, 0.666667]
+          - name: q4
+            quantiles: [0.25, 0.50, 0.75]
+          - name: q5
+            quantiles: [0.20, 0.40, 0.60, 0.80]
+          - name: q8
+            quantiles: [0.125, 0.25, 0.375, 0.50, 0.625, 0.75, 0.875]
     behavior_peer:
       enabled: false
     bucket_features:
@@ -88,7 +100,7 @@ model:
         use_as_peer_variable: true
 ```
 
-Farkli proseslerde `denominator` ve `bucket_features.source` alanlari degistirilir; kod icinde proses-spesifik kolon adi aranmaz.
+Farkli proseslerde `denominator` ve `bucket_features.source` alanlari degistirilir; kod icinde proses-spesifik kolon adi aranmaz. Referans feature bucket'i tek sabit kirilim degildir; `peer_bucket_variants` altindaki q3/q4/q5/q8 adaylari history uzerinden fit edilir ve peer objective icinde ayri ayri yaristirilir.
 
 Skorlanacak ay `configs/anomaly.yaml` icindeki `model.scoring_month` ile secilir:
 
@@ -146,14 +158,18 @@ Bu ayar acikken son-3-ay rejim sapmasi sert olsa bile ayni ay sezon z-score'u no
 
 Peer objective agirliklari `configs/anomaly.yaml` icinde `peer_selection.objective_weights` altindadir. Varsayilan:
 
-- `representability`: 0.25
-- `distribution`: 0.20
+- `representability`: 0.20
+- `distribution`: 0.30
 - `calibration`: 0.20
-- `stability`: 0.15
-- `specificity`: 0.20
+- `stability`: 0.10
+- `specificity`: 0.10
 - `support`: 0.10
 
 `calibration`, scoring ayini kullanmadan onceki aylarda peer'in bir sonraki ay referansi olarak ne kadar iyi calistigini olcer. Detail tabloda `PEER_KALIBRASYON_SKORU`, kalibrasyon ay adedi, median absolute residual, interval coverage ve false alarm orani bulunur.
+
+`distribution`, peer'in normal dagilip dagilmadigini degil robust sekilde karsilastirilabilir olup olmadigini olcer. Bilesenleri `peer_selection.distribution_quality` altindan parametriktir: scoring ay log IQR/MAD, gecmis aylik log IQR/MAD medyani, robust tail-rate, log skew/kurtosis ve dusuk agirlikli raw ortalama/medyan ile std/medyan diagnostikleri. Temsil skoru destek/spesifiklik tabanini `0.50 + 0.50 * PEER_DAGILIM_SKORU / 100` carpanindan gecirdigi icin genis ama kalabalik peer otomatik strong temsil sayilmaz.
+
+Production config'te behavior peer aktiftir. `behavior_level_bucket`, `behavior_volatility_bucket`, `behavior_trend_bucket` ve `behavior_cluster` sadece scoring ayindan onceki musteri gecmisiyle uretilir. Denemelerde behavior adaylari secili peer ortalama dagilim skorunu yaklasik 34.6'dan 47.4'e cikardigi icin `peer_selection.explicit_levels` icine alinmistir. Son Oracle run'inda objective-driven q3/q4/q5/q8 referans feature bucket adaylari da denendi; feature bucket adaylari 2,868 scoring musterisi icin secildi, behavior adaylari 14,745 scoring musterisi icin secildi ve secili peer ortalama dagilim skoru 47.49 oldu. Branch/sube adaylari destek gecmedigi icin explicit adaylarda tutulmaz; ham kolon olarak decision/detail tablolarinda kalir.
 
 Feature ratio skora girmeden once `model.derived_features.feature_ratio.quality_gate` ile kontrol edilir. Global gate gecmezse veya secilen peer icinde `min_peer_ratio_rows` / `min_peer_ratio_mad` gecmezse oran sadece diagnostic kalir. Detail tabloda gate sonucu ve nedeni `FEATURE_ORAN_*_GATE_*` kolonlariyla izlenir.
 
@@ -268,12 +284,16 @@ Peer quality raporu instance bazinda peer temsil ve dagilim kalitesini analiz et
 
 - `peer_guncel_ana_metrik_ortalama`
 - `peer_guncel_ana_metrik_medyan`
+- `peer_guncel_ana_metrik_ortalama_medyan_oran`
 - `peer_guncel_ana_metrik_std`
+- `peer_guncel_ana_metrik_std_medyan_oran`
 - `peer_guncel_ana_metrik_min`
 - `peer_guncel_ana_metrik_max`
 - `peer_gecmis_ana_metrik_ortalama`
 - `peer_gecmis_ana_metrik_medyan`
+- `peer_gecmis_ana_metrik_ortalama_medyan_oran`
 - `peer_gecmis_ana_metrik_std`
+- `peer_gecmis_ana_metrik_std_medyan_oran`
 - `peer_gecmis_ana_metrik_min`
 - `peer_gecmis_ana_metrik_max`
 
