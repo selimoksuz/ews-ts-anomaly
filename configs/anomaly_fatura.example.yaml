@@ -1,0 +1,310 @@
+# Data source secimi ve Oracle/CSV kaynak bilgileri bu dosyada degil,
+# asagidaki data_source config dosyasinda tutulur.
+data_source_config_path: configs/data_source.yaml
+
+# Ana degisken gruplari. Normalde sadece bu alanlari doldurman yeterli.
+variables:
+  # Musteri veya entity anahtari. Birden fazla varsa ilk kolon primary id kabul edilir.
+  id_variables:
+    - MUSTERINO
+  # Aylik donem/tarih kolonu. 202603, 20260301 veya tarih formati olabilir.
+  time_variables:
+    - DONEM_AY
+  # Peer/segment adaylari. Sistem peer adaylarini bu degiskenlerden uretir.
+  segment_variables:
+    - SEGMENTAD
+    - REF_ALTFAALIYET
+    - SUBE_KD
+  # Ilk feature skorlanan ana metriktir. Diger feature'lar tek basina kullanilmaz;
+  # aktif kullanilacaksa model.derived_features altinda acikca referans verilir.
+  feature_variables:
+    - FATURA_TTR
+    - TURNOVER_AMT
+    - AKTIF_ABONE
+
+model:
+  # Skorlanacak ay. "last" kaynak datadaki en son donemi kullanir.
+  # Sabit ay icin 202603, 20260301, 2026-03 veya 2026-03-01 yazilabilir.
+  scoring_month: last
+  # Skor ayindan geriye dogru modelin kullanacagi maksimum ay penceresi.
+  rolling_window_months: 36
+  # Final skorda watchlist'e alinacak ust oran. Target olmadigi icin kapasite/risk threshold'udur.
+  watch_top_rate: 0.030
+  # High anomaly etiketi icin daha dar ust oran.
+  high_top_rate: 0.0075
+  # Onceki ay skoru sadece diagnostik olarak hesaplanir; final karara direkt target gibi girmez.
+  include_prior_score_diagnostic: true
+  derived_features:
+    # Ana metrigin baska bir referans feature'a orani. Ornek: ana_metrik / referans_feature.
+    # Baska bir proses icin sadece denominator kolonunu degistir veya enabled: false yap.
+    feature_ratio:
+      enabled: true
+      numerator: main_feature
+      denominator: TURNOVER_AMT
+      use_as_peer_variable: true
+      use_as_anomaly_signal: true
+      quality_gate:
+        # true ise oran skora girmeden once kaynak ve peer kalite kontrollerinden gecmelidir.
+        enabled: true
+        # Referans feature null/zero orani bu esigi asarsa oran skora girmez, sadece detail diagnostic kalir.
+        max_denominator_missing_or_zero_rate: 0.50
+        # Referans feature'in pozitif oldugu satir payi bu esigin altindaysa oran skora girmez.
+        min_monthly_valid_coverage: 0.50
+        # Secilen peer icinde oran sinyali icin gereken minimum ratio gozlem sayisi.
+        min_peer_ratio_rows: 20
+        # Secilen peer icinde ratio MAD cok dusukse oran sinyali kapatilir.
+        min_peer_ratio_mad: 0.001
+    # Musteri gecmis davranisindan level/volatilite/trend cluster'i uretip peer adayi olarak kullanir.
+    # Default kapali; acilirsa sadece scoring ayindan onceki gecmisle hesaplanir.
+    behavior_peer:
+      enabled: true
+      use_as_peer_variable: true
+    # Ek numeric feature'i bucket'a cevirip peer adayi yapmak icin kullanilir.
+    # internal_role: exposure_feature simdilik tek generic exposure bucket'ina map edilir.
+    bucket_features:
+      - source: AKTIF_ABONE
+        internal_role: exposure_feature
+        use_as_peer_variable: true
+  score_aggregation:
+    # Evidence-first skor konsolidasyonu. Sinyalleri agirlikli ortalama yerine p-value kanitiyle toplar.
+    method: directional_empirical_evidence
+    # Ayni ailedeki sinyallerin p-value birlesim metodu.
+    family_combination: simes
+    # Musteri veya peer ailesinde dikkate alinacak en guclu sinyal sayisi.
+    max_signals_per_family: 3
+    # Daha zayif z-score'lari karar kaniti saymamak icin alt esik.
+    min_abs_z_for_evidence: 0.50
+    # Sayisal stabilite icin p-value tabani.
+    min_p_value: 0.001
+    evidence_thresholds:
+      # Guclu tekil sinyal p-value esigi.
+      strong_signal_p: 0.01
+      # Orta guclu sinyal p-value esigi.
+      moderate_signal_p: 0.05
+      # Musteri ve peer ters yone gidiyorsa conflict tespiti icin esik.
+      conflict_signal_p: 0.05
+    label_guardrails:
+      # Top-rate tek basina etiket uretmesin diye minimum z/effect kosullari.
+      enabled: true
+      # Watchlist icin herhangi bir aktif sinyalde gereken minimum mutlak z.
+      min_watch_abs_z: 1.50
+      # High anomaly icin gereken minimum mutlak z.
+      min_high_abs_z: 2.50
+      # Watchlist icin minimum |log(actual/expected)| etkisi. 0.14 yaklasik %15 farktir.
+      min_watch_log_effect: 0.14
+      # High anomaly icin minimum |log(actual/expected)| etkisi. 0.26 yaklasik %30 farktir.
+      min_high_log_effect: 0.26
+    challenger_models:
+      # Production kararini degistirmez; residual feature matrix uzerinde ek model diagnostic uretir.
+      enabled: true
+      # Challenger modellerin kullanacagi residual kolonlar.
+      # Bunlar raw ana metrik veya segment kolonlari degil, modelin hesapladigi fonksiyonel z-score'lardir.
+      feature_columns:
+        - self_history_z
+        - customer_trend_z
+        - customer_seasonal_z
+        - customer_recent_regime_z
+        - historical_peer_z
+        - current_peer_z
+        - peer_trend_z
+        - feature_ratio_z
+      # PCA dependency-free calisir; IsolationForest ve LOF icin scikit-learn gerekir.
+      methods:
+        - pca
+        - isolation_forest
+        - lof
+      # Aggregate model_challenger_score hesaplanirken kullanilacak modeller.
+      # LOF ayri skor/flag olarak uretilir; mevcut validasyonda zayif oldugu icin aggregate'e alinmaz.
+      aggregate_methods:
+        - isolation_forest
+        - pca
+      random_state: 42
+      # Daha kucuk scoring batchlerde model diagnostic atlanir.
+      min_rows: 200
+      # Challenger input feature'i kullanmak icin gereken minimum finite coverage.
+      # Ornek: ratio gate gecmedigi icin tamamen bos kalan feature modele girmez.
+      min_feature_valid_rate: 0.01
+      # Sabit veya tek degerli residual feature'lari modele sokmamak icin minimum benzersiz deger sayisi.
+      min_feature_unique_values: 2
+      # PCA rekonstruksiyon skorunda tutulacak varyans hedefi.
+      pca_variance_to_keep: 0.80
+      # PCA icin maksimum komponent sayisi.
+      pca_max_components: 6
+      # LOF komsu sayisi; scoring row sayisindan buyukse otomatik kirpilir.
+      lof_neighbors: 35
+      # Her challenger model icin anomali flag esigi.
+      flag_threshold: 95.0
+    customer_reliability:
+      # Musteri verisini guclu kabul etmek icin minimum gecmis ay sayisi.
+      strong_min_prior_n: 6
+      # Son 12 ay kapsama orani. 0.50 = son 12 ayin en az yarisi dolu.
+      strong_min_coverage_12m: 0.50
+      # Son skor ayina kadar izin verilen maksimum gap.
+      strong_max_gap_months: 1
+      # Kismi musteri kaniti icin minimum gecmis ay sayisi.
+      partial_min_prior_n: 2
+    peer_reliability:
+      # Peer objective skoru bu degerin altindaysa peer kaniti karar etkisinde sinirlanir.
+      min_peer_objective_score: 60.0
+      # Peer dagilim skoru bu degerin altindaysa peer kaniti karar driver'i olarak sinirlanir.
+      min_peer_distribution_score: 40.0
+      # Cok kaba peer secildiyse karar yerine review/watch davranisini tercih eder.
+      coarse_peer_review_only: true
+    recent_regime:
+      # Son 3 ay rejim degisimi sinyali. Musterinin stabil son 3 ay seviyesine gore ani sapmayi yakalar.
+      enabled: true
+      # Rejim medyani icin gereken ardil ay sayisi.
+      min_recent_months: 3
+      # Son 3 ay kendi icinde cok oynaksa bu sinyal kapatilir.
+      max_recent_range_log: 0.35
+      # Ayni ay sezon beklentisi normalse, son 3 ay rejim sapmasi sezonla aciklanmis sayilir
+      # ve production karar evidence'ina girmez; detail'de z-score gorunmeye devam eder.
+      seasonal_guard_enabled: true
+      # Sezon z-score'u bu esigin altindaysa sezon normal kabul edilir.
+      seasonal_guard_max_abs_season_z: 1.50
+      # Son 3 ay rejim z-score'u bu esigi asarsa ama sezon normalse seasonal guard devreye girer.
+      seasonal_guard_min_abs_recent_z: 2.50
+    confidence:
+      # Karar musteri sinyalinden geliyorsa minimum guven tabani.
+      customer_driver_floor: 55.0
+      # Karar peer sinyalinden geliyorsa minimum guven tabani.
+      peer_driver_floor: 45.0
+      # Musteri ve peer ayni yonde destekliyorsa guven bonusu.
+      combined_driver_bonus: 8.0
+      # Ikincil sinyal ana sinyalle ayni yondeyse guven bonusu.
+      same_direction_bonus: 5.0
+      # Musteri ve peer ters yondeyse guven cezasi.
+      conflict_penalty: 20.0
+      # Kesik seri/gap kalite cezasinin guvene etkisi.
+      data_gap_penalty_weight: 0.25
+      # Data gap cezasinin ust limiti.
+      data_gap_penalty_cap: 25.0
+      # Dagilim kalitesi zayif peerlerde guven floor'u.
+      distribution_penalty_floor: 60.0
+      # Dagilim kalitesi cezasinin guvene etkisi.
+      distribution_penalty_weight: 0.35
+      # Musteri gecmisi yoksa guven tavan degeri.
+      no_self_history_cap: 75.0
+      # Kaba peer kullanildiginda guven tavan degeri.
+      coarse_peer_cap: 65.0
+
+peer_selection:
+  # Peer adaylari otomatik uretilir:
+  # - variables.segment_variables icindeki kolonlar
+  # - model.derived_features ile aktif edilen generic peer feature bucket'lari
+  # - behavior_peer aktifse scoring ayi oncesi musteri davranis bucket'lari
+  # Bu alanda proses-spesifik veya uretilmis kolon listesi yazilmaz.
+  priority_variables: auto
+  # Hicbir peer yeterli degilse global peer adayini da dene.
+  include_global: true
+  # Bir peer instance'inda kullanilabilecek maksimum degisken sayisi.
+  max_variables_per_peer: 6
+  # Segment degiskenleri, feature bucket'lari ve davranis bucket'lari arasindan
+  # objective'e girecek aday lattice'i otomatik kurar.
+  candidate_strategy: objective_lattice
+  # Destek gecen peerler arasinda objective skoru en iyi olani secer.
+  selection_mode: objective
+  objective_weights:
+    # Peer'in destek ve dagilimla musteriyi temsil etme gucu.
+    representability: 0.20
+    # Heavy-tail/skew/kurtosis/mean-medyan/std-medyan gibi dagilim kalitesi.
+    distribution: 0.30
+    # Peer'in onceki aylarda bir sonraki ay referansi olarak ne kadar iyi calistigi.
+    calibration: 0.20
+    # Peer'in tarihsel stabilitesi.
+    stability: 0.10
+    # Daha dar ve bilgi tasiyan peerleri odullendirir.
+    specificity: 0.10
+    # Hist/season/recent/current adet destek gucu.
+    support: 0.10
+  distribution_quality:
+    # Peer homojenligini olcerken kullanilan bilesen agirliklari.
+    # Ana karar sinyali normal dagilim degil, ayni ay log/robust kiyas yapilabilirliktir.
+    iqr_weight: 0.30
+    mad_weight: 0.25
+    tail_weight: 0.20
+    skew_weight: 0.05
+    kurtosis_weight: 0.05
+    # Raw mean/median ve std/median rapor/detay icin onemli ama kalite skorunda dusuk agirlikli diagnostic cezadir.
+    mean_median_weight: 0.05
+    std_median_weight: 0.10
+    # Skorlanan ay log IQR bu seviyeye gelirse IQR cezasi tam kabul edilir.
+    current_iqr_log_full_penalty: 1.60
+    # Gecmis aylardaki aylik log IQR medyani bu seviyeye gelirse IQR cezasi tam kabul edilir.
+    history_iqr_log_full_penalty: 1.80
+    # Skorlanan ay log MAD bu seviyeye gelirse MAD cezasi tam kabul edilir.
+    current_mad_log_full_penalty: 0.90
+    # Gecmis aylardaki aylik log MAD medyani bu seviyeye gelirse MAD cezasi tam kabul edilir.
+    history_mad_log_full_penalty: 1.00
+    # Log ana metrik skew bu seviyeye gelirse ilgili ceza tam kabul edilir.
+    skew_full_penalty: 2.0
+    # Log ana metrik kurtosis bu seviyeye gelirse ilgili ceza tam kabul edilir.
+    kurtosis_full_penalty: 6.0
+    # Robust tail-rate bu seviyeye gelirse ilgili ceza tam kabul edilir.
+    tail_full_penalty: 0.10
+    # Raw ortalama / medyan orani bu seviyeye gelirse mean/median cezasi tam kabul edilir.
+    mean_median_full_penalty_ratio: 8.0
+    # Raw standart sapma / medyan orani bu seviyeye gelirse oynaklik cezasi tam kabul edilir.
+    std_median_full_penalty_ratio: 12.0
+  # Yuksek cardinality'li segment kolonlari tek basina denenir; bu esigi asarsa
+  # feature/behavior bucket'lariyla derinlestirilmez.
+  max_inferred_cardinality: 250
+  # Peer seciminden tamamen cikarmak istedigin degiskenleri buraya yaz.
+  exclude_variables: []
+
+peer_support:
+  # Peer'in tum gecmiste minimum satir destegi.
+  min_history_rows: 120
+  # Ayni ay sezonsalligi icin minimum satir destegi.
+  min_season_rows: 15
+  # Son 3 ay peer destegi icin minimum satir destegi.
+  min_recent_rows: 25
+  # Skorlanan ay peer destegi icin minimum satir destegi.
+  min_current_rows: 20
+  # Peer adayinin tamamen elenmesi icin minimum dagilim skoru. Dusuk tutulur;
+  # dagilim zayifsa karar guveni peer_reliability tarafinda cezalandirilir.
+  min_distribution_score: 20.0
+  # Strong peer temsil skoru icin referans hist satir sayisi.
+  strong_history_rows: 800
+  # Strong peer temsil skoru icin referans sezon satir sayisi.
+  strong_season_rows: 100
+  # Strong peer temsil skoru icin referans recent satir sayisi.
+  strong_recent_rows: 150
+  # Strong peer temsil skoru icin referans current satir sayisi.
+  strong_current_rows: 120
+
+outputs:
+  # Local output ana dizini. Oracle-to-Oracle modunda decision/detail local yazilmaz.
+  base_dir: outputs/production
+  # Local decision CSV dizini. Oracle-to-Oracle modunda default olarak atlanir.
+  decision_dir: outputs/production/decision_table
+  # Local detail CSV dizini. Oracle-to-Oracle modunda default olarak atlanir.
+  detail_dir: outputs/analysis/decision_detail
+  # Implementation contract JSON dizini. Oracle-to-Oracle modunda default olarak atlanir.
+  contract_dir: outputs/production/contracts
+  # Staging/snapshot dizini. Oracle-to-Oracle modunda source snapshot default olarak atlanir.
+  staging_dir: outputs/staging
+  # Istersen Oracle-to-Oracle modunda bile local decision/detail yazimini acabilirsin.
+  # write_local_tables: true
+  # Istersen Oracle-to-Oracle modunda bile contract JSON yazimini acabilirsin.
+  # write_contract: true
+
+reports:
+  peer_quality:
+    # Peer kalite raporunu uretir. Oracle-to-Oracle modunda uretilen tek local analiz seti budur.
+    enabled: true
+    # Peer analiz CSV/XLSX/HTML/MD dosyalarinin yazilacagi dizin.
+    output_dir: outputs/analysis/peer_quality_report
+  validation:
+    # Rolling backtest ve output integrity monitor raporlarinin yazilacagi dizin.
+    output_dir: outputs/analysis/validation_report
+    # Her run'da son kac scoring ayi geriye donuk test edilsin.
+    backtest_months: 6
+    # Gercek scoring datasinda kontrollu spike/drop perturbation stres testinde kac musteri orneklensin.
+    stress_test_sample_size: 300
+    # Stress testinde skor ayindaki ana metrik hangi carpanla yukseltilsin.
+    stress_test_spike_factor: 2.0
+    # Stress testinde skor ayindaki ana metrik hangi carpanla dusurulsun.
+    stress_test_drop_factor: 0.25
+    # true yapilirsa perturbation stress testi atlanir. Gercek data rolling backtest her zaman calisir.
+    skip_stress_test: false

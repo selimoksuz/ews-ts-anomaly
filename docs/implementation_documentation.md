@@ -4,8 +4,9 @@
 
 - `src/`: model, config, IO ve rapor kodlari
 - `scripts/`: Windows PowerShell ve Linux/macOS shell runner'lari
-- `configs/anomaly.yaml`: model ve peer secim parametreleri
-- `configs/output_schema.yaml`: uretilen detail kolon sirasi, Oracle aliaslari ve long-text kolonlari
+- `configs/anomaly.yaml`: aktif model ve peer secim parametreleri
+- `configs/anomaly_fatura.example.yaml`: fatura run template'i
+- `configs/anomaly_pos.example.yaml`: POS ciro run template'i
 - `configs/data_source.example.yaml`: datasource template
 - `configs/data_source.yaml`: ortam bazli gercek datasource; git'e alinmaz
 - `data/`: lokal input; git'e alinmaz
@@ -31,6 +32,22 @@ chmod +x scripts/*.sh
 `configs/data_source.yaml` dosyasini kendi ortamindaki CSV veya Oracle bilgileriyle doldur.
 
 ## Config Secimleri
+
+Aktif pipeline her zaman `configs/anomaly.yaml` dosyasini okur. Farkli prosesler icin template dosyalari example olarak tutulur:
+
+```bash
+cp configs/anomaly_fatura.example.yaml configs/anomaly.yaml
+cp configs/anomaly_pos.example.yaml configs/anomaly.yaml
+```
+
+PowerShell:
+
+```powershell
+Copy-Item configs\anomaly_fatura.example.yaml configs\anomaly.yaml -Force
+Copy-Item configs\anomaly_pos.example.yaml configs\anomaly.yaml -Force
+```
+
+Bu dosyalar secret tasimaz; Oracle/CSV kaynagi `data_source_config_path` ile isaret edilen ve git'e alinmayan datasource YAML dosyasindan gelir.
 
 Input secimi `configs/data_source.yaml` icindeki `active_source` ile yapilir:
 
@@ -68,6 +85,21 @@ variables:
 
 `feature_variables` listesindeki ilk kolon skorlanan ana metriktir. Segment listesi peer adaylarini besler.
 
+Segment degiskenleri tek tek biliniyorsa liste verilir. Generic run icin `segment_variables: auto` yazilabilir; bu modda engine `id_variables`, `time_variables`, ana metrik, referans feature ve `exclude_variables` alanlarini cikarir, kalan dusuk/orta cardinality kolonlari peer adayi olarak infer eder. Yuksek cardinality veya tekil degerli kolonlar otomatik elenir.
+
+```yaml
+variables:
+  id_variables:
+    - MUSTERI_ID
+  time_variables:
+    - AY
+  segment_variables: auto
+  main_feature: AYLIK_CIRO_FIXED_20260531
+  exclude_variables:
+    - PERIOD_INDEX_VALUE
+    - TURNOVER_FINANCIAL_TERM
+```
+
 Ana metrik herhangi bir operasyonel sayisal deger olabilir. Bugun fatura tutari, baska bir proseste POS cirosu veya farkli bir tekil sayisal metrik olabilir; kod metrik adina bagli calismaz.
 
 Feature kolonlari sadece listede yer aldigi icin anomali skoruna girmez. Aktif turevler `model.derived_features` altinda tanimlanir:
@@ -91,7 +123,7 @@ model:
 
 Farkli proseslerde `denominator` ve `bucket_features.source` alanlari degistirilir; kod icinde proses-spesifik kolon adi aranmaz. Referans feature bucket'i tek sabit kirilim degildir; engine varsayilan bucket cozumlerini history uzerinden fit eder ve peer objective icinde ayri ayri yaristirir. Config'te uretilmis q-bucket kolonlari yazilmaz.
 
-Output kolon sirasi, internal metrik -> detail kolon eslemesi ve Oracle 30 karakter aliaslari `configs/output_schema.yaml` icindedir. Bu dosya product schema konfigurasyonudur; farkli bir proses icin output isimleri degisecekse Python kodu degil bu YAML degisir.
+Output kolonlari ayri bir schema dosyasindan okunmaz. Decision tablo kontrati sabittir: ham input kolonlari + `ANOMALI_FLAG`, `ANOMALI_SKORU`, `ANOMALI_NEDENI`. Detail tabloda ham input kolonlari onde gelir; sonrasinda modelin run sirasinda urettigi diagnostic kolonlar dinamik eklenir. Oracle kolon adlari da ayrica maplenmez: 30 karakteri asmayan kolonlar aynen kalir, uzun kolonlar deterministic hash suffix ile otomatik kisaltilir.
 
 Skorlanacak ay `configs/anomaly.yaml` icindeki `model.scoring_month` ile secilir:
 
@@ -164,7 +196,7 @@ Production config'te behavior peer aktiftir. `behavior_level_bucket`, `behavior_
 
 Feature ratio skora girmeden once `model.derived_features.feature_ratio.quality_gate` ile kontrol edilir. Global gate gecmezse veya secilen peer icinde `min_peer_ratio_rows` / `min_peer_ratio_mad` gecmezse oran sadece diagnostic kalir. Detail tabloda gate sonucu ve nedeni `FEATURE_ORAN_*_GATE_*` kolonlariyla izlenir.
 
-Challenger modeller `model.score_aggregation.challenger_models` altindan yonetilir. PCA, Isolation Forest ve LOF production kararini degistirmez; detail tabloda aggregate `MODEL_CHALLENGER_SKORU`, model bazli `PCA/IF/LOF_CHALLENGER_SKORU`, `MODEL_CHALLENGER_UYARI` ve `PCA/IF/LOF_CHALLENGER_ANOMALI_FLAG` alanlari uretilir. Bu alanlar scoring ay diagnostic'i oldugu icin yalniz `DONEM_AY = MODEL_DONEM_AY` satirinda doludur; gecmis seri satirlarinda bos kalir.
+Challenger modeller `model.score_aggregation.challenger_models` altindan yonetilir. PCA, Isolation Forest ve LOF production kararini degistirmez; detail tabloda aggregate `model_challenger_score`, model bazli `pca/if/lof_challenger_score`, `model_challenger_warning` ve `pca/if/lof_challenger_anomaly_flag` alanlari uretilir. Bu alanlar scoring ay diagnostic'i oldugu icin yalniz scoring ay satirinda doludur; gecmis seri satirlarinda bos kalir.
 
 Challenger feature setine rule-derived veya karar-parametrik kolonlar verilmez. Model sadece `model.score_aggregation.challenger_models.feature_columns` altinda yazan fonksiyonel residual transformasyonlariyla calisir: musteri gecmis/trend/sezon/son-3-ay z skorlari, peer gecmis/guncel/trend z skorlari ve referans feature oran z skoru. `PRIMARY_SINYAL_P_DEGERI`, `ANA_SINYAL_SKORU`, `GUVEN_SKORU`, `MUSTERI_ACIKLANABILIRLIK_SKORU`, `EVIDENCE_CONFLICT_FLAG`, `VERI_YETERLILIK_DURUMU`, data-gap skoru, peer kalite skorlari ve final beklenen/gercek orani challenger modele sokulmaz; bunlar rule/diagnostic katmaninda kalir.
 

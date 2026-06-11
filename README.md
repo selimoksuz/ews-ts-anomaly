@@ -34,6 +34,20 @@ chmod +x scripts/*.sh
 
 `configs\data_source.yaml` dosyasini kendi ortamindaki CSV veya Oracle bilgileriyle doldur. Bu dosya bilerek git'e alinmaz.
 
+## Aktif model config'i
+
+Pipeline varsayilan olarak `configs/anomaly.yaml` okur. Hazir template'ler:
+
+```powershell
+Copy-Item configs\anomaly_fatura.example.yaml configs\anomaly.yaml -Force
+Copy-Item configs\anomaly_pos.example.yaml configs\anomaly.yaml -Force
+```
+
+```bash
+cp configs/anomaly_fatura.example.yaml configs/anomaly.yaml
+cp configs/anomaly_pos.example.yaml configs/anomaly.yaml
+```
+
 ## Lokal CSV run
 
 ```powershell

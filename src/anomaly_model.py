@@ -21,6 +21,11 @@ INTERNAL_COLUMN_FALLBACKS = {
     "exposure_feature": ("exposure_feature",),
 }
 
+SEGMENT_VARIABLES_META_KEY = "__segment_variables__"
+SEGMENT_VARIABLES_AUTO_META_KEY = "__segment_variables_auto__"
+EXCLUDED_VARIABLES_META_KEY = "__excluded_variables__"
+MAX_AUTO_SEGMENT_CARDINALITY = 250
+
 MIN_HIST_ROWS = 120
 MIN_MOY_ROWS = 15
 MIN_RECENT_ROWS = 25
@@ -1073,6 +1078,50 @@ def to_numeric_series(series: pd.Series) -> pd.Series:
     return pd.to_numeric(normalized, errors="coerce")
 
 
+def to_period_month_series(series: pd.Series) -> pd.Series:
+    numeric = to_numeric_series(series)
+    period = numeric.copy()
+    long_numeric = period.abs().ge(1000000)
+    period = period.where(~long_numeric, np.floor(period / 100))
+    valid_numeric = period.notna()
+    out = pd.Series(np.nan, index=series.index, dtype=float)
+    out.loc[valid_numeric] = period.loc[valid_numeric]
+    unresolved = ~valid_numeric
+    if unresolved.any():
+        dates = pd.to_datetime(series.loc[unresolved], errors="coerce", dayfirst=True)
+        parsed = dates.dt.year.astype("float") * 100 + dates.dt.month.astype("float")
+        out.loc[unresolved] = parsed
+    return out
+
+
+def infer_auto_segment_columns(
+    raw: pd.DataFrame,
+    resolved_columns: Mapping[str, str],
+    excluded_variables: set[str],
+    max_cardinality: int = MAX_AUTO_SEGMENT_CARDINALITY,
+) -> list[str]:
+    role_columns = {str(col) for col in resolved_columns.values()}
+    excluded = set(role_columns) | set(excluded_variables)
+    out: list[str] = []
+    for column in raw.columns:
+        col = str(column)
+        if col in excluded:
+            continue
+        series = raw[column]
+        unique_count = int(series.nunique(dropna=True))
+        if unique_count <= 1 or unique_count > int(max_cardinality):
+            continue
+        is_dimension_like = (
+            pd.api.types.is_object_dtype(series)
+            or pd.api.types.is_bool_dtype(series)
+            or pd.api.types.is_categorical_dtype(series)
+            or unique_count <= int(max_cardinality)
+        )
+        if is_dimension_like:
+            out.append(col)
+    return out
+
+
 def prepare_source_frame(
     raw: pd.DataFrame,
     column_map: Mapping[str, Any] | None = None,
@@ -1082,23 +1131,21 @@ def prepare_source_frame(
     cols, missing = resolve_columns(raw, column_map)
     if missing:
         raise ValueError(f"Missing required logical columns: {missing}")
-    segment_columns = [
-        str(col)
-        for col in (column_map or {}).get("__segment_variables__", [])
-        if str(col) in raw.columns
-    ]
-    missing_segment_columns = [
-        str(col)
-        for col in (column_map or {}).get("__segment_variables__", [])
-        if str(col) not in raw.columns
-    ]
+    source_map = column_map or {}
+    excluded_variables = {str(col) for col in source_map.get(EXCLUDED_VARIABLES_META_KEY, [])}
+    configured_segment_columns = [str(col) for col in source_map.get(SEGMENT_VARIABLES_META_KEY, [])]
+    if bool(source_map.get(SEGMENT_VARIABLES_AUTO_META_KEY, False)):
+        segment_columns = infer_auto_segment_columns(raw, cols, excluded_variables)
+    else:
+        segment_columns = [col for col in configured_segment_columns if col in raw.columns]
+    missing_segment_columns = [col for col in configured_segment_columns if col not in raw.columns]
     if missing_segment_columns:
         raise ValueError(f"Missing configured segment variables: {missing_segment_columns}")
 
     normalized = pd.DataFrame(
         {
             "customer_id": raw[cols["customer_id"]].astype(str),
-            "invoice_month": to_numeric_series(raw[cols["invoice_month"]]).astype(int),
+            "invoice_month": to_period_month_series(raw[cols["invoice_month"]]).astype("Int64").astype(int),
             "main_metric": to_numeric_series(raw[cols["main_metric"]]).astype(float),
             "reference_feature": (
                 to_numeric_series(raw[cols["reference_feature"]]).astype(float)
@@ -1233,6 +1280,8 @@ def prepare_source_frame(
         "period_max": int(monthly["invoice_month"].max()),
         "period_count": int(monthly["invoice_month"].nunique()),
         "segment_columns": segment_columns,
+        "segment_columns_auto_inferred": bool(source_map.get(SEGMENT_VARIABLES_AUTO_META_KEY, False)),
+        "excluded_variables": sorted(excluded_variables),
         "segment_variable_counts": {
             col: int(monthly[col].nunique(dropna=True))
             for col in segment_columns

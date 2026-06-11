@@ -192,6 +192,7 @@ class PeerSelectionConfig:
     distribution_quality: Mapping[str, float] | None = None
     excluded_variables: tuple[str, ...] = ()
     max_inferred_cardinality: int = 250
+    max_candidate_count: int = 0
     blocked_values: Mapping[str, tuple[str, ...]] | None = None
 
     @classmethod
@@ -228,6 +229,7 @@ class PeerSelectionConfig:
             },
             excluded_variables=tuple(str(item) for item in values.get("exclude_variables", values.get("excluded_variables", ()))),
             max_inferred_cardinality=int(values.get("max_inferred_cardinality", cls.max_inferred_cardinality)),
+            max_candidate_count=int(values.get("max_candidate_count", cls.max_candidate_count)),
             blocked_values=blocked,
         )
 
@@ -271,6 +273,7 @@ def with_excluded_variables(config: PeerSelectionConfig, extra_exclusions: list[
         distribution_quality=config.distribution_quality,
         excluded_variables=dedupe([*config.excluded_variables, *[str(item) for item in extra_exclusions]]),
         max_inferred_cardinality=config.max_inferred_cardinality,
+        max_candidate_count=config.max_candidate_count,
         blocked_values=config.blocked_values,
     )
 
@@ -297,7 +300,15 @@ def available_peer_variables(frame: list[str] | pd.Index | pd.DataFrame, config:
 def infer_peer_variables(frame: list[str] | pd.Index | pd.DataFrame, config: PeerSelectionConfig) -> tuple[str, ...]:
     columns = list(frame.columns if isinstance(frame, pd.DataFrame) else frame)
     excluded = set(DEFAULT_TECHNICAL_EXCLUSIONS) | set(config.excluded_variables)
-    preferred = [col for col in DEFAULT_PREFERRED_VARIABLES if col in columns and col not in excluded]
+    preferred: list[str] = []
+    for col in DEFAULT_PREFERRED_VARIABLES:
+        if col not in columns or col in excluded:
+            continue
+        if isinstance(frame, pd.DataFrame):
+            unique_count = int(frame[col].nunique(dropna=True))
+            if unique_count <= 1 or unique_count > config.max_inferred_cardinality:
+                continue
+        preferred.append(col)
     extras: list[str] = []
     for column in columns:
         if column in excluded or column in preferred or column.startswith("_"):
@@ -313,7 +324,7 @@ def infer_peer_variables(frame: list[str] | pd.Index | pd.DataFrame, config: Pee
                 or pd.api.types.is_categorical_dtype(series)
                 or unique_count <= config.max_inferred_cardinality
             )
-            if not is_dimension or unique_count <= 1:
+            if not is_dimension or unique_count <= 1 or unique_count > config.max_inferred_cardinality:
                 continue
         extras.append(str(column))
     return dedupe([*preferred, *extras])
@@ -331,16 +342,19 @@ def build_adaptive_peer_candidates(
         variables = [var for var in variables if var != "feature_ratio_bucket" and not var.startswith("feature_bucket_")]
 
     if rules.explicit_levels:
-        return _validated_explicit_candidates(rules.explicit_levels, variables, rules.include_global)
+        return limit_candidates(_validated_explicit_candidates(rules.explicit_levels, variables, rules.include_global), rules)
 
     mandatory = [var for var in rules.mandatory_variables if var in variables]
     optional = [var for var in variables if var not in mandatory]
     if rules.candidate_strategy == "all_combinations":
-        return _build_all_combination_candidates(variables, mandatory, optional, rules)
+        return limit_candidates(_build_all_combination_candidates(variables, mandatory, optional, rules), rules)
     if rules.candidate_strategy in {"auto", "objective_lattice", "adaptive_lattice"}:
-        return _build_objective_lattice_candidates(variables, mandatory, optional, rules, high_cardinality_variables)
+        return limit_candidates(
+            _build_objective_lattice_candidates(variables, mandatory, optional, rules, high_cardinality_variables),
+            rules,
+        )
 
-    return _build_priority_path_candidates(variables, mandatory, optional, rules)
+    return limit_candidates(_build_priority_path_candidates(variables, mandatory, optional, rules), rules)
 
 
 def _build_all_combination_candidates(
@@ -563,6 +577,20 @@ def _sort_and_format_candidates(raw_candidates: list[tuple[str, ...]], priority_
         return (-len(candidate), sum(ranks), ranks)
 
     return [PeerCandidate(name=peer_level_name(candidate), columns=candidate) for candidate in sorted(unique, key=sort_key)]
+
+
+def limit_candidates(candidates: list[PeerCandidate], rules: PeerSelectionConfig) -> list[PeerCandidate]:
+    limit = int(rules.max_candidate_count or 0)
+    if limit <= 0 or len(candidates) <= limit:
+        return candidates
+    limited = candidates[:limit]
+    if rules.include_global and not any(not candidate.columns for candidate in limited):
+        global_candidate = next((candidate for candidate in candidates if not candidate.columns), PeerCandidate("global", tuple()))
+        if limited:
+            limited[-1] = global_candidate
+        else:
+            limited.append(global_candidate)
+    return limited
 
 
 def support_value(row: pd.Series, col: str) -> float:

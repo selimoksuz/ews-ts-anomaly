@@ -10,6 +10,7 @@ VARIABLE_GROUP_ALIASES = {
     "time_variables": ("time_variables", "time_vars", "date_variables", "dates"),
     "segment_variables": ("segment_variables", "segment_vars", "segments"),
     "feature_variables": ("feature_variables", "feature_vars", "features"),
+    "exclude_variables": ("exclude_variables", "excluded_variables", "ignore_variables", "ignored_variables"),
 }
 
 VARIABLE_TOKEN_ALIASES = {
@@ -22,6 +23,8 @@ VARIABLE_TOKEN_ALIASES = {
 
 DEFAULT_FEATURE_BUCKET_VARIANTS = ("q3", "q4", "q5", "q8")
 SEGMENT_VARIABLES_META_KEY = "__segment_variables__"
+SEGMENT_VARIABLES_AUTO_META_KEY = "__segment_variables_auto__"
+EXCLUDED_VARIABLES_META_KEY = "__excluded_variables__"
 
 
 def load_yaml_config(path: Path) -> dict[str, Any]:
@@ -54,6 +57,14 @@ def _as_string_list(value: Any) -> list[str]:
     if isinstance(value, (list, tuple, set)):
         return [str(item).strip() for item in value if str(item).strip()]
     return [str(value).strip()]
+
+
+def _is_auto_value(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() == "auto"
+    if isinstance(value, (list, tuple, set)) and len(value) == 1:
+        return _is_auto_value(next(iter(value)))
+    return False
 
 
 def _clean_key(value: str) -> str:
@@ -136,8 +147,16 @@ def variable_groups_from_config(config: dict[str, Any]) -> dict[str, list[str]]:
     groups: dict[str, list[str]] = {}
     for canonical, aliases in VARIABLE_GROUP_ALIASES.items():
         value = next((raw.get(alias) for alias in aliases if alias in raw), [])
-        groups[canonical] = _as_string_list(value)
+        groups[canonical] = [] if canonical == "segment_variables" and _is_auto_value(value) else _as_string_list(value)
     return groups
+
+
+def segment_variables_auto_from_config(config: dict[str, Any]) -> bool:
+    raw = config.get("variables", {})
+    if not isinstance(raw, dict):
+        return False
+    value = next((raw.get(alias) for alias in VARIABLE_GROUP_ALIASES["segment_variables"] if alias in raw), [])
+    return _is_auto_value(value)
 
 
 def role_map_from_variable_groups(config: dict[str, Any]) -> dict[str, str]:
@@ -184,8 +203,12 @@ def role_map_from_variable_groups(config: dict[str, Any]) -> dict[str, str]:
 def column_map_from_config(config: dict[str, Any]) -> dict[str, Any]:
     from_groups = role_map_from_variable_groups(config)
     groups = variable_groups_from_config(config)
-    if groups["segment_variables"]:
+    if segment_variables_auto_from_config(config):
+        from_groups[SEGMENT_VARIABLES_AUTO_META_KEY] = True
+    elif groups["segment_variables"]:
         from_groups[SEGMENT_VARIABLES_META_KEY] = groups["segment_variables"]
+    if groups.get("exclude_variables"):
+        from_groups[EXCLUDED_VARIABLES_META_KEY] = groups["exclude_variables"]
     columns = config.get("columns", {})
     if not isinstance(columns, dict):
         raise ValueError("columns must be a mapping of logical name to source column.")
@@ -201,6 +224,8 @@ def column_map_from_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def peer_variable_names_from_config(config: dict[str, Any]) -> list[str]:
+    if segment_variables_auto_from_config(config):
+        return []
     groups = variable_groups_from_config(config)
     role_map = role_map_from_variable_groups(config)
     reverse_role_map = {source: role for role, source in role_map.items()}
@@ -246,15 +271,19 @@ def _expand_peer_variable_tokens(value: Any, config: dict[str, Any]) -> tuple[st
 def peer_config_from_config(config: dict[str, Any]) -> adaptive.PeerSelectionConfig:
     raw = config.get("peer_selection", {})
     values = dict(raw) if isinstance(raw, dict) else {}
+    groups = variable_groups_from_config(config)
     peer_variables = peer_variable_names_from_config(config)
     priority = values.get("priority_variables", "auto")
-    if peer_variables and (priority is None or str(priority).lower() == "auto"):
+    if peer_variables and not segment_variables_auto_from_config(config) and (priority is None or str(priority).lower() == "auto"):
         values["priority_variables"] = peer_variables
     else:
         values["priority_variables"] = _expand_peer_variable_tokens(priority, config)
     for key in ("mandatory_variables", "fallback_variables", "exclude_variables", "excluded_variables"):
         if key in values:
             values[key] = _expand_peer_variable_tokens(values[key], config)
+    if groups.get("exclude_variables"):
+        explicit_exclusions = list(values.get("exclude_variables", values.get("excluded_variables", ())))
+        values["exclude_variables"] = list(dict.fromkeys([*explicit_exclusions, *groups["exclude_variables"]]))
     return adaptive.PeerSelectionConfig.from_mapping(values)
 
 

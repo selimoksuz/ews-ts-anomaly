@@ -41,6 +41,40 @@ PEER_COLUMN_ALIASES = {
 }
 
 
+REPORT_COLUMN_ALIASES = {
+    "PEER_TEMSIL_SKORU": ["peer_representability_score"],
+    "PEER_TEMSIL_DURUMU": ["peer_representability_status"],
+    "PEER_DAGILIM_SKORU": ["peer_distribution_quality_score"],
+    "PEER_DAGILIM_DURUMU": ["peer_distribution_status"],
+    "PEER_TAIL_RATE": ["peer_tail_rate"],
+    "PEER_KALIBRASYON_SKORU": ["peer_calibration_score"],
+    "PEER_KALIBRASYON_AY_ADET": ["peer_calibration_n"],
+    "PEER_KALIBRASYON_MEDYAN_ABS_RESIDUAL": ["peer_calibration_abs_residual_median"],
+    "PEER_KALIBRASYON_INTERVAL_KAPSAMA": ["peer_calibration_interval_coverage"],
+    "PEER_KALIBRASYON_FALSE_ALARM_ORANI": ["peer_calibration_false_alarm_rate"],
+    "PEER_SECIM_GEREKCESI": ["peer_selection_reason"],
+    "PEER_GECMIS_ADET": ["hist_n"],
+    "PEER_SEZON_AY_ADET": ["moy_n"],
+    "PEER_RECENT_ADET": ["recent_n"],
+    "PEER_GUNCEL_ADET": ["current_n", "PEER_AYLIK_MUSTERI_ADET", "peer_month_customer_count"],
+    "DAVRANIS_CLUSTER": ["behavior_cluster", "DAVRANIS_CLUSTER_REBUILT"],
+}
+
+
+def ensure_report_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    out = frame.copy()
+    for target, sources in REPORT_COLUMN_ALIASES.items():
+        matched = [source for source in sources if source in out.columns]
+        if not matched:
+            continue
+        if target not in out.columns:
+            out[target] = out[matched[0]]
+            matched = matched[1:]
+        for source in matched:
+            out[target] = out[target].combine_first(out[source])
+    return out
+
+
 def normalize_merge_key(frame: pd.DataFrame, column: str) -> pd.DataFrame:
     if column not in frame.columns:
         raise KeyError(f"Required merge key is missing: {column}")
@@ -755,8 +789,11 @@ def build_peer_quality_tables(
     history: pd.DataFrame,
     scoring: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    decisions = ensure_report_columns(decisions)
     enriched = add_peer_instance_keys(decisions, scoring_keys)
+    enriched = ensure_report_columns(enriched)
     enriched = add_support_counts_from_reason(enriched)
+    enriched = ensure_report_columns(enriched)
     peer_level_summary = summarize_frame(enriched, ["PEER_SEVIYE"])
     peer_instance_summary = summarize_frame(enriched, ["PEER_SEVIYE", "PEER_KOLONLARI", "PEER_KEY_DEGERLERI"])
     peer_instance_summary = add_peer_main_metric_stats(peer_instance_summary, history, scoring)
@@ -778,6 +815,7 @@ def write_peer_quality_outputs(
     behavior_summary: pd.DataFrame,
     weak_review: pd.DataFrame,
 ) -> dict[str, Any]:
+    decisions = ensure_report_columns(decisions)
     out_dir.mkdir(parents=True, exist_ok=True)
     tables = {
         "peer_level_summary": peer_level_summary,

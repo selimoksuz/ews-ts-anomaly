@@ -13,6 +13,8 @@ data/
 outputs/
 
 configs/data_source.yaml
+configs/data_source_pos.yaml
+pos_sample.csv
 *.ini
 *.env
 .env*

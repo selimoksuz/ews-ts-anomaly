@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -36,7 +37,6 @@ PEER_KEY_COLUMNS = [
 ]
 
 DEFAULT_ORACLE_INFO_DIR = Path(r"C:\Users\Acer\dc_all_pipe\oracle_info")
-DEFAULT_OUTPUT_SCHEMA_PATH = Path(__file__).resolve().parents[1] / "configs" / "output_schema.yaml"
 ORACLE_IDENTIFIER_MAX_LEN = 30
 INTERNAL_SOURCE_ROLES = (
     "customer_id",
@@ -45,50 +45,6 @@ INTERNAL_SOURCE_ROLES = (
     "main_metric",
     "reference_feature",
 )
-_OUTPUT_SCHEMA_CACHE: dict[str, Any] | None = None
-
-
-def output_schema() -> dict[str, Any]:
-    global _OUTPUT_SCHEMA_CACHE
-    if _OUTPUT_SCHEMA_CACHE is not None:
-        return _OUTPUT_SCHEMA_CACHE
-    try:
-        import yaml
-    except ImportError as exc:
-        raise RuntimeError("Output schema requires PyYAML. Install dependencies with: python -m pip install -r requirements.txt") from exc
-    if not DEFAULT_OUTPUT_SCHEMA_PATH.exists():
-        raise FileNotFoundError(f"Output schema file not found: {DEFAULT_OUTPUT_SCHEMA_PATH}")
-    raw = yaml.safe_load(DEFAULT_OUTPUT_SCHEMA_PATH.read_text(encoding="utf-8")) or {}
-    if not isinstance(raw, dict):
-        raise ValueError(f"Output schema root must be a mapping: {DEFAULT_OUTPUT_SCHEMA_PATH}")
-    _OUTPUT_SCHEMA_CACHE = raw
-    return _OUTPUT_SCHEMA_CACHE
-
-
-def schema_mapping(key: str) -> dict[str, str]:
-    value = output_schema().get(key, {})
-    if not isinstance(value, dict):
-        raise ValueError(f"output_schema.{key} must be a mapping")
-    return {str(k): str(v) for k, v in value.items()}
-
-
-def schema_list(key: str) -> list[str]:
-    value = output_schema().get(key, [])
-    if not isinstance(value, list):
-        raise ValueError(f"output_schema.{key} must be a list")
-    return [str(item) for item in value]
-
-
-def schema_group_list(key: str) -> list[list[str]]:
-    value = output_schema().get(key, [])
-    if not isinstance(value, list):
-        raise ValueError(f"output_schema.{key} must be a list")
-    groups: list[list[str]] = []
-    for item in value:
-        if not isinstance(item, list):
-            raise ValueError(f"output_schema.{key} must contain only lists")
-        groups.append([str(column) for column in item])
-    return groups
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Production monthly scoring entrypoint for single-variable anomalies.")
@@ -176,8 +132,6 @@ def detail_output_columns(profile: dict[str, Any], available_columns: list[str])
                 ordered.append(col)
 
     add_existing(input_output_columns(profile, available))
-    for group in schema_group_list("detail_output_column_groups"):
-        add_existing(group)
     add_existing([col for col in available if col not in ordered])
     return ordered
 
@@ -213,11 +167,13 @@ def peer_role_exclusions(profile: dict[str, Any]) -> list[str]:
     source_map = profile.get("input_column_map", {})
     if not isinstance(source_map, dict):
         return []
-    return [
+    excluded = [
         str(source_col)
         for source_col in source_map.values()
         if source_col and str(source_col) not in normalized_names
     ]
+    excluded.extend(str(col) for col in profile.get("excluded_variables", []))
+    return list(dict.fromkeys(excluded))
 
 
 def add_model_period(frame: pd.DataFrame, scoring_month: int) -> pd.DataFrame:
@@ -492,7 +448,7 @@ def build_decision_table(
         else:
             ns_out = restore_input_columns(ns, profile)
         ns_out["ANOMALI_FLAG"] = ns["ANOMALI_FLAG"].to_numpy()
-        ns_out["ANOMALI_SKORU"] = np.nan
+        ns_out["ANOMALI_SKORU"] = 0.0
         ns_out["ANOMALI_NEDENI"] = ns["human_readable_reason"].to_numpy()
         pieces.append(ns_out)
 
@@ -719,6 +675,15 @@ def build_detail_context(scores: pd.DataFrame, not_scored: pd.DataFrame) -> pd.D
         ns["anomaly_label"] = "NOT_SCORED"
         ns["action_label"] = "NOT_SCORED"
         ns["operational_decision"] = "NOT_SCORED"
+        ns["final_anomaly_score"] = 0.0
+        ns["model_challenger_score"] = 0.0
+        ns["pca_challenger_score"] = 0.0
+        ns["if_challenger_score"] = 0.0
+        ns["lof_challenger_score"] = 0.0
+        ns["pca_challenger_anomaly_flag"] = 0
+        ns["if_challenger_anomaly_flag"] = 0
+        ns["lof_challenger_anomaly_flag"] = 0
+        ns["model_challenger_warning"] = "NOT_SCORED"
         ns["evidence_strength"] = "not_scored"
         ns["signal_consistency"] = "not_scored"
         ns["human_readable_reason"] = ns.apply(build_not_scored_reason, axis=1)
@@ -1060,28 +1025,37 @@ def build_detail_table(
 
     source_names = profile_input_column_map(profile)
     out = pd.DataFrame(index=detail.index)
+    used_detail_columns: set[str] = set()
     for source_col in profile.get("source_columns", []):
         if source_col in detail.columns:
             out[source_col] = detail[source_col]
+            used_detail_columns.add(source_col)
     for logical, source_name in source_names.items():
         if logical == "customer_id":
             out[source_name] = detail["customer_id"]
+            used_detail_columns.add("customer_id")
         elif logical == "invoice_month":
             out[source_name] = detail["invoice_month"]
+            used_detail_columns.add("invoice_month")
         elif logical == "exposure_feature":
             out[source_name] = detail["customer_month_exposure_feature"]
+            used_detail_columns.add("customer_month_exposure_feature")
         elif logical == "main_metric":
             out[source_name] = detail["customer_main_metric"]
+            used_detail_columns.add("customer_main_metric")
         elif logical == "reference_feature":
             out[source_name] = detail["customer_reference_feature"]
+            used_detail_columns.add("customer_reference_feature")
 
     out["ANA_METRIK_EKSIK_MI"] = detail["customer_main_metric_missing_flag"]
+    used_detail_columns.add("customer_main_metric_missing_flag")
     ratio_settings = profile.get("feature_ratio", {})
     ratio_enabled = bool(profile.get("feature_ratio_enabled", False))
     if ratio_enabled:
         out["ORAN_PAY_KOLON"] = str(ratio_settings.get("numerator_source_col", ""))
         out["ORAN_PAYDA_KOLON"] = str(ratio_settings.get("denominator_source_col", ""))
         out["MUSTERI_ANA_METRIK_PAYDA_ORANI"] = detail["customer_main_to_reference_ratio"]
+        used_detail_columns.add("customer_main_to_reference_ratio")
     out["MUSTERI_TOPLAM_AY_ADET"] = detail["customer_obs_count_total"]
     out["ONCEKI_AYA_GAP"] = detail["month_gap_from_previous"]
     out["PEER_SEVIYE"] = detail["peer_group_level_name"]
@@ -1090,18 +1064,61 @@ def build_detail_table(
     out["PEER_AYLIK_SATIR_ADET"] = detail["peer_month_row_count"]
     out["PEER_AYLIK_ANA_METRIK_MEDYAN"] = detail["peer_month_main_metric_median"]
     out["PEER_AYLIK_ANA_METRIK_ORTALAMA"] = detail["peer_month_main_metric_mean"]
+    used_detail_columns.update(
+        [
+            "customer_obs_count_total",
+            "month_gap_from_previous",
+            "peer_group_level_name",
+            "peer_group_columns",
+            "peer_month_customer_count",
+            "peer_month_row_count",
+            "peer_month_main_metric_median",
+            "peer_month_main_metric_mean",
+        ]
+    )
     if ratio_enabled:
         out["PEER_AYLIK_ORAN_PAYDA_MEDYAN"] = detail["peer_month_reference_feature_median"]
         out["PEER_AYLIK_ANA_METRIK_PAYDA_ORAN_MEDYAN"] = detail["peer_month_main_to_reference_median"]
+        used_detail_columns.update(["peer_month_reference_feature_median", "peer_month_main_to_reference_median"])
     out["MUSTERI_PEER_ANA_METRIK_ORANI"] = detail["customer_vs_peer_month_ratio"]
     out["MUSTERI_PEER_ORAN_PCTL"] = detail["customer_vs_peer_ratio_percentile"]
     out["MUSTERI_PEER_ORAN_REF_N"] = detail["customer_vs_peer_ratio_reference_n"]
     out["AYLIK_YORUM"] = detail["month_level_comment"]
+    used_detail_columns.update(
+        [
+            "customer_vs_peer_month_ratio",
+            "customer_vs_peer_ratio_percentile",
+            "customer_vs_peer_ratio_reference_n",
+            "month_level_comment",
+        ]
+    )
 
-    scoring_metric_map = schema_mapping("detail_metric_columns")
-    for source_col, output_col in scoring_metric_map.items():
+    def add_contract_column(source_col: str, output_col: str) -> None:
         if source_col in detail.columns:
             out[output_col] = detail[source_col]
+            used_detail_columns.add(source_col)
+
+    add_contract_column("anomaly_score", "ANOMALI_SKORU")
+    add_contract_column("confidence_pct", "GUVEN_SKORU")
+    add_contract_column("anomaly_label", "ANOMALI_ETIKETI")
+    add_contract_column("anomaly_direction", "ANOMALI_YONU")
+    add_contract_column("operational_decision", "OPERASYON_KARARI")
+    add_contract_column("action_label", "AKSIYON_KARARI")
+    add_contract_column("scoreability_status", "VERI_YETERLILIK_DURUMU")
+    add_contract_column("decision_reason_sentence", "ANOMALI_NEDENI")
+
+    technical_columns = {
+        "month_ord",
+        "month_of_year",
+        "calendar_month",
+        "period_label",
+    }
+    for source_col in detail.columns:
+        if source_col in used_detail_columns or source_col in technical_columns:
+            continue
+        if source_col.startswith("_") or source_col in out.columns:
+            continue
+        out[source_col] = detail[source_col]
     out["MODEL_DONEM_AY"] = int(scoring_month)
     invoice_source_col = source_names.get("invoice_month", "invoice_month")
     anomaly_flag = pd.Series(0, index=out.index, dtype=int)
@@ -1206,11 +1223,17 @@ def validate_oracle_identifier(value: str, label: str) -> str:
 
 
 def oracle_column_name(column: str) -> str:
-    candidate = str(schema_mapping("oracle_column_aliases").get(column, column))
+    candidate = str(column)
     candidate = re.sub(r"[^A-Za-z0-9_$#]", "_", candidate).upper()
     if not re.match(r"^[A-Z]", candidate):
         candidate = f"C_{candidate}"
-    return candidate[:ORACLE_IDENTIFIER_MAX_LEN]
+    candidate = re.sub(r"_+", "_", candidate).strip("_")
+    if len(candidate) <= ORACLE_IDENTIFIER_MAX_LEN:
+        return candidate
+    digest = hashlib.sha1(candidate.encode("utf-8")).hexdigest()[:6].upper()
+    stem_len = ORACLE_IDENTIFIER_MAX_LEN - len(digest) - 1
+    stem = candidate[:stem_len].rstrip("_")
+    return f"{stem}_{digest}"
 
 
 def oracle_column_map(columns: list[str]) -> dict[str, str]:
@@ -1230,14 +1253,17 @@ def oracle_column_map(columns: list[str]) -> dict[str, str]:
 
 
 def oracle_dtype_for_series(name: str, series: pd.Series) -> str:
-    if name in set(schema_list("long_text_columns")):
-        return "CLOB"
     if pd.api.types.is_bool_dtype(series):
         return "NUMBER(1)"
     if pd.api.types.is_integer_dtype(series):
         return "NUMBER(38)"
     if pd.api.types.is_float_dtype(series):
         return "NUMBER"
+    non_null = series.dropna()
+    max_len = int(non_null.astype(str).str.len().max()) if len(non_null) else 0
+    likely_long_text = bool(re.search(r"(REASON|NEDEN|COMMENT|YORUM|WARNING|UYARI|GEREKCE)", str(name).upper()))
+    if max_len > 3900 or likely_long_text:
+        return "CLOB"
     return "VARCHAR2(4000 CHAR)"
 
 
