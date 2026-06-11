@@ -380,7 +380,7 @@ def fmt_num(value: Any, digits: int = 2) -> str:
     return f"{float(value):.{digits}f}"
 
 
-def input_column_map(profile: dict[str, Any]) -> dict[str, str]:
+def profile_input_column_map(profile: dict[str, Any]) -> dict[str, str]:
     source_map = profile.get("input_column_map")
     if isinstance(source_map, dict):
         return {str(k): str(v) for k, v in source_map.items() if not str(k).startswith("__")}
@@ -388,7 +388,7 @@ def input_column_map(profile: dict[str, Any]) -> dict[str, str]:
 
 
 def restore_input_columns(frame: pd.DataFrame, profile: dict[str, Any]) -> pd.DataFrame:
-    col_map = input_column_map(profile)
+    col_map = profile_input_column_map(profile)
     out = pd.DataFrame(index=frame.index)
     for logical, normalized in LOGICAL_TO_NORMALIZED.items():
         source_name = col_map.get(logical)
@@ -402,7 +402,7 @@ def input_output_columns(profile: dict[str, Any], available_columns: list[str]) 
     source_columns = [str(col) for col in profile.get("source_columns", [])]
     if source_columns:
         return [col for col in source_columns if col in available_columns]
-    mapped_columns = list(dict.fromkeys(input_column_map(profile).values()))
+    mapped_columns = list(dict.fromkeys(profile_input_column_map(profile).values()))
     if mapped_columns:
         return [col for col in mapped_columns if col in available_columns]
     return [col for col in ["customer_id", "invoice_month", "main_metric"] if col in available_columns]
@@ -912,7 +912,7 @@ def build_decision_table(
     out = pd.concat(pieces, ignore_index=True, sort=False)
     input_cols = input_output_columns(profile, list(out.columns))
     output_cols = input_cols + ["ANOMALI_FLAG", "ANOMALI_SKORU", "ANOMALI_NEDENI"]
-    source_names = input_column_map(profile)
+    source_names = profile_input_column_map(profile)
     sort_cols = [
         col
         for col in [source_names.get("customer_id", "customer_id"), source_names.get("invoice_month", "invoice_month")]
@@ -1471,7 +1471,7 @@ def build_detail_table(
             else:
                 detail.loc[non_scoring_mask, col] = np.nan
 
-    source_names = input_column_map(profile)
+    source_names = profile_input_column_map(profile)
     out = pd.DataFrame(index=detail.index)
     for source_col in profile.get("source_columns", []):
         if source_col in detail.columns:
@@ -2191,7 +2191,7 @@ def run_implementation_scoring(
             chunksize=oracle_chunksize,
             create_table=oracle_create_table,
             connection_config=oracle_connection_config,
-            decision_period_column=input_column_map(profile).get("invoice_month", "invoice_month"),
+            decision_period_column=profile_input_column_map(profile).get("invoice_month", "invoice_month"),
         )
         progress("oracle_write_done")
 
