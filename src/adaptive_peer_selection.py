@@ -58,28 +58,28 @@ DEFAULT_TECHNICAL_EXCLUSIONS = {
     "calendar_month",
     "month_ord",
     "month_of_year",
-    "bill_amount",
-    "log_bill",
+    "main_metric",
+    "log_main_metric",
     "reference_feature",
     "reference_feature_for_model",
     "log_reference_feature",
     "main_to_reference_log_ratio",
     "main_to_reference_ratio",
-    "valid_bill_for_model",
-    "negative_bill_flag",
-    "zero_bill_flag",
+    "valid_main_metric_for_model",
+    "negative_main_metric_flag",
+    "zero_main_metric_flag",
     "source_row_count",
     "customer_obs_count_total",
     "previous_month_ord",
     "month_gap_from_previous",
-    "active_subscriber",
-    "active_subscriber_missing_flag",
+    "exposure_feature",
+    "exposure_feature_missing_flag",
     "reference_feature_positive_flag",
     "behavior_history_n",
     "behavior_level_bucket",
     "behavior_volatility_bucket",
     "behavior_trend_bucket",
-    "behavior_median_bill",
+    "behavior_median_main_metric",
     "behavior_volatility_log",
     "behavior_trend_slope",
 }
@@ -125,24 +125,18 @@ DEFAULT_TECHNICAL_PREFIXES = (
 )
 
 DEFAULT_PREFERRED_VARIABLES = (
-    "customer_segment",
     "feature_ratio_bucket",
-    "sector",
-    "branch_id",
-    "active_subscriber_bucket",
+    "exposure_bucket",
     "behavior_cluster",
 )
 
 VARIABLE_NAME_ALIASES = {
-    "customer_segment": "segment",
     "feature_ratio_bucket": "feature_ratio_bucket",
     "feature_bucket_q3": "feature_q3",
     "feature_bucket_q4": "feature_q4",
     "feature_bucket_q5": "feature_q5",
     "feature_bucket_q8": "feature_q8",
-    "sector": "sector",
-    "active_subscriber_bucket": "exposure_bucket",
-    "branch_id": "branch",
+    "exposure_bucket": "exposure_bucket",
     "behavior_cluster": "behavior",
     "behavior_level_bucket": "behavior_level",
     "behavior_volatility_bucket": "behavior_volatility",
@@ -421,7 +415,7 @@ def _is_behavior_variable(variable: str) -> bool:
 
 
 def _is_exposure_bucket_variable(variable: str) -> bool:
-    return variable == "active_subscriber_bucket"
+    return variable == "exposure_bucket"
 
 
 def _is_engine_derived_peer_variable(variable: str) -> bool:
@@ -585,7 +579,7 @@ def support_mask(
     blocked_values: Mapping[str, tuple[str, ...]] | None = None,
 ) -> pd.Series:
     mask = (
-        candidate_frame["valid_bill_for_model"]
+        candidate_frame["valid_main_metric_for_model"]
         & candidate_frame["hist_n"].ge(thresholds.min_history_rows)
         & candidate_frame["moy_n"].ge(thresholds.min_season_rows)
         & candidate_frame["recent_n"].ge(thresholds.min_recent_rows)
@@ -629,8 +623,8 @@ def support_failure_summary(
     distribution_score = support_value(row, "peer_distribution_quality_score")
     if distribution_score < thresholds.min_distribution_score:
         failed.append(f"distribution_score={distribution_score:.1f}<{thresholds.min_distribution_score:.0f}")
-    if not bool(row.get("valid_bill_for_model", False)):
-        failed.append("invalid_bill")
+    if not bool(row.get("valid_main_metric_for_model", False)):
+        failed.append("invalid_main_metric")
     if not failed:
         failed.append("support_ok")
     return f"{candidate.name}: " + ", ".join(failed)

@@ -12,12 +12,6 @@ VARIABLE_GROUP_ALIASES = {
     "feature_variables": ("feature_variables", "feature_vars", "features"),
 }
 
-ROLE_HINTS = {
-    "customer_segment": ("segmentad", "segment", "customer_segment", "musteri_segment"),
-    "sector": ("ref_altfaaliyet", "altfaaliyet", "faaliyet", "sector", "sektor"),
-    "branch_id": ("sube_kd", "sube", "branch", "branch_id"),
-}
-
 VARIABLE_TOKEN_ALIASES = {
     "segment_variables",
     "segments",
@@ -27,6 +21,7 @@ VARIABLE_TOKEN_ALIASES = {
 }
 
 DEFAULT_FEATURE_BUCKET_VARIANTS = ("q3", "q4", "q5", "q8")
+SEGMENT_VARIABLES_META_KEY = "__segment_variables__"
 
 
 def load_yaml_config(path: Path) -> dict[str, Any]:
@@ -65,11 +60,6 @@ def _clean_key(value: str) -> str:
     return "".join(ch.lower() for ch in str(value).strip() if ch.isalnum() or ch == "_")
 
 
-def _matches_hint(column: str, hints: tuple[str, ...]) -> bool:
-    clean = _clean_key(column)
-    return any(_clean_key(hint) in clean for hint in hints)
-
-
 def _as_mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
@@ -89,8 +79,8 @@ def _resolve_variable_reference(reference: Any, role_map: dict[str, str], groups
     lowered = text.lower()
     if lowered in {"", "none", "null", "false"}:
         return None
-    if lowered in {"main_feature", "target_variable", "amount_variable", "bill_amount"}:
-        return role_map.get("bill_amount")
+    if lowered in {"main_feature", "target_variable", "amount_variable", "main_metric"}:
+        return role_map.get("main_metric")
     if text in role_map:
         return role_map[text]
     for values in groups.values():
@@ -156,7 +146,6 @@ def role_map_from_variable_groups(config: dict[str, Any]) -> dict[str, str]:
     ids = groups["id_variables"]
     times = groups["time_variables"]
     features = groups["feature_variables"]
-    segments = groups["segment_variables"]
 
     if ids:
         out["customer_id"] = ids[0]
@@ -166,16 +155,9 @@ def role_map_from_variable_groups(config: dict[str, Any]) -> dict[str, str]:
     variables = config.get("variables", {})
     main_feature = variables.get("main_feature") if isinstance(variables, dict) else None
     if main_feature:
-        out["bill_amount"] = str(main_feature)
+        out["main_metric"] = str(main_feature)
     elif features:
-        out["bill_amount"] = features[0]
-
-    for role in ("customer_segment", "sector", "branch_id"):
-        found = next((col for col in segments if _matches_hint(col, ROLE_HINTS[role])), None)
-        if found:
-            out[role] = found
-    if "customer_segment" not in out and segments:
-        out["customer_segment"] = segments[0]
+        out["main_metric"] = features[0]
 
     ratio = _ratio_feature_config(config)
     ratio_enabled = str(ratio.get("enabled", "auto")).strip().lower()
@@ -190,17 +172,20 @@ def role_map_from_variable_groups(config: dict[str, Any]) -> dict[str, str]:
                 _resolve_variable_reference(item.get("source"), out, groups)
                 for item in bucket_features
                 if isinstance(item, dict)
-                and str(item.get("internal_role", "")).strip().lower() in {"active_subscriber", "exposure_feature"}
+                and str(item.get("internal_role", "")).strip().lower() in {"exposure_feature", "exposure"}
             ),
             None,
         )
         if first_active_like:
-            out["active_subscriber"] = first_active_like
+            out["exposure_feature"] = first_active_like
     return out
 
 
-def column_map_from_config(config: dict[str, Any]) -> dict[str, str]:
+def column_map_from_config(config: dict[str, Any]) -> dict[str, Any]:
     from_groups = role_map_from_variable_groups(config)
+    groups = variable_groups_from_config(config)
+    if groups["segment_variables"]:
+        from_groups[SEGMENT_VARIABLES_META_KEY] = groups["segment_variables"]
     columns = config.get("columns", {})
     if not isinstance(columns, dict):
         raise ValueError("columns must be a mapping of logical name to source column.")
@@ -226,8 +211,8 @@ def peer_variable_names_from_config(config: dict[str, Any]) -> list[str]:
     ratio_peer_enabled = str(ratio.get("use_as_peer_variable", True)).strip().lower() not in {"false", "0", "no", "hayir"}
     if "reference_feature" in role_map and ratio_peer_enabled:
         peers.extend(_feature_bucket_names_from_config(config) or ["feature_ratio_bucket"])
-    if "active_subscriber" in role_map:
-        peers.append("active_subscriber_bucket")
+    if "exposure_feature" in role_map:
+        peers.append("exposure_bucket")
     behavior = _behavior_peer_config(config)
     if bool(behavior.get("enabled", False)) and bool(behavior.get("use_as_peer_variable", True)):
         peers.extend(

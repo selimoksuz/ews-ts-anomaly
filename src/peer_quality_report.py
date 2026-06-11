@@ -20,10 +20,7 @@ def log_step(message: str) -> None:
 
 
 NORMALIZED_TO_OUTPUT = {
-    "branch_id": "SUBE_KD",
-    "customer_segment": "SEGMENTAD",
-    "sector": "REF_ALTFAALIYET",
-    "active_subscriber_bucket": "EXPOSURE_BUCKET",
+    "customer_id": "ENTITY_ID",
     "exposure_bucket": "EXPOSURE_BUCKET",
     "feature_ratio_bucket": "FEATURE_RATIO_BUCKET",
     "feature_bucket_q3": "FEATURE_BUCKET_Q3",
@@ -40,7 +37,7 @@ NORMALIZED_TO_OUTPUT = {
 
 PEER_COLUMN_ALIASES = {
     "feature_ratio_bucket": "feature_ratio_bucket",
-    "exposure_bucket": "active_subscriber_bucket",
+    "exposure_bucket": "exposure_bucket",
 }
 
 
@@ -58,15 +55,28 @@ def report_column_mapping(prepared: pd.DataFrame | None = None) -> dict[str, str
     mapping = dict(NORMALIZED_TO_OUTPUT)
     profile = prepared.attrs.get("profile", {}) if prepared is not None and hasattr(prepared, "attrs") else {}
     source_map = dict(profile.get("input_column_map", {}))
-    for logical in ["customer_id", "branch_id", "customer_segment", "sector"]:
+    for logical in ["customer_id"]:
         if source_map.get(logical):
             mapping[logical] = str(source_map[logical])
+    for column in profile.get("segment_columns", []):
+        mapping[str(column)] = str(column)
     return mapping
+
+
+def infer_period_column(frame: pd.DataFrame, scoring_month: int, preferred: str | None = None) -> str:
+    for column in [preferred, "MODEL_DONEM_AY", "invoice_month", "period_month"]:
+        if column and column in frame.columns:
+            return str(column)
+    for column in frame.columns:
+        values = pd.to_numeric(frame[column], errors="coerce")
+        if values.notna().any() and values.eq(scoring_month).any():
+            return str(column)
+    raise KeyError("Could not infer scoring period column")
 
 
 def infer_report_id_column(decisions: pd.DataFrame, scoring_keys: pd.DataFrame) -> str:
     mapping = scoring_keys.attrs.get("normalized_to_output", {})
-    preferred = [mapping.get("customer_id"), "MUSTERINO", "CUSTOMER_ID", "CUST_ID"]
+    preferred = [mapping.get("customer_id"), "ENTITY_ID", "CUSTOMER_ID", "ENTITY_KEY", "ID"]
     for column in preferred:
         if column and column in decisions.columns and column in scoring_keys.columns:
             return str(column)
@@ -141,14 +151,13 @@ def build_scoring_context(prepared: pd.DataFrame, scoring_month: int) -> tuple[p
     scoring["_global_key"] = "ALL"
     history["_global_key"] = "ALL"
     feature_bucket_cols = [str(column) for column in feature_edges.keys()]
+    segment_cols = [str(col) for col in profile.get("segment_columns", []) if str(col) in scoring.columns]
     wanted_cols = [
         "customer_id",
-        "branch_id",
-        "customer_segment",
-        "sector",
+        *segment_cols,
         "feature_ratio_bucket",
         *feature_bucket_cols,
-        "active_subscriber_bucket",
+        "exposure_bucket",
         "behavior_cluster",
         "behavior_history_n",
         "behavior_level_bucket",
@@ -159,13 +168,11 @@ def build_scoring_context(prepared: pd.DataFrame, scoring_month: int) -> tuple[p
     out = scoring[[col for col in wanted_cols if col in scoring.columns]].copy()
     out = out.rename(
         columns={
-            "customer_id": output_mapping.get("customer_id", "MUSTERINO"),
-            "branch_id": output_mapping.get("branch_id", "SUBE_KD"),
-            "customer_segment": output_mapping.get("customer_segment", "SEGMENTAD"),
-            "sector": output_mapping.get("sector", "REF_ALTFAALIYET"),
+            "customer_id": output_mapping.get("customer_id", "ENTITY_ID"),
+            **{column: output_mapping.get(column, column) for column in segment_cols},
             "feature_ratio_bucket": "FEATURE_RATIO_BUCKET",
             **{column: column.upper() for column in feature_bucket_cols},
-            "active_subscriber_bucket": "EXPOSURE_BUCKET",
+            "exposure_bucket": "EXPOSURE_BUCKET",
             "behavior_cluster": "DAVRANIS_CLUSTER_REBUILT",
             "behavior_history_n": "DAVRANIS_GECMIS_ADET_REBUILT",
             "behavior_level_bucket": "DAVRANIS_SEVIYE_BUCKET_REBUILT",
@@ -237,9 +244,9 @@ def add_peer_instance_keys(decisions: pd.DataFrame, scoring_keys: pd.DataFrame) 
     decision_keys = normalize_merge_key(decisions, id_column)
     scoring_keys = normalize_merge_key(scoring_keys, id_column)
     out = decision_keys.merge(scoring_keys, on=id_column, how="left")
-    out["MUSTERINO"] = out[id_column]
+    out["ENTITY_ID"] = out[id_column]
     for output_col in set(report_mapping.values()).union(NORMALIZED_TO_OUTPUT.values()):
-        if not output_col or output_col in {id_column, "MUSTERINO"}:
+        if not output_col or output_col in {id_column, "ENTITY_ID"}:
             continue
         left_col = f"{output_col}_x"
         right_col = f"{output_col}_y"
@@ -313,12 +320,12 @@ def build_normalized_peer_key(row: pd.Series, columns: list[str]) -> str:
         return "global=ALL"
     labels = {
         "feature_ratio_bucket": "feature_ratio_bucket",
-        "active_subscriber_bucket": "exposure_bucket",
+        "exposure_bucket": "exposure_bucket",
     }
     return " | ".join(f"{labels.get(column, column)}={row.get(column, np.nan)}" for column in columns)
 
 
-def aggregate_bill_stats(frame: pd.DataFrame, columns: list[str], level_name: str, prefix: str) -> pd.DataFrame:
+def aggregate_main_metric_stats(frame: pd.DataFrame, columns: list[str], level_name: str, prefix: str) -> pd.DataFrame:
     key = core.group_key(columns)
     stats_columns = [
         "PEER_SEVIYE",
@@ -331,16 +338,16 @@ def aggregate_bill_stats(frame: pd.DataFrame, columns: list[str], level_name: st
         f"{prefix}_min",
         f"{prefix}_max",
     ]
-    required = set(key + ["valid_bill_for_model", "bill_amount"])
+    required = set(key + ["valid_main_metric_for_model", "main_metric"])
     if len(frame) == 0 or not required.issubset(frame.columns):
         return pd.DataFrame(columns=stats_columns)
 
-    valid = frame.loc[frame["valid_bill_for_model"] & frame["bill_amount"].notna(), key + ["bill_amount"]].copy()
+    valid = frame.loc[frame["valid_main_metric_for_model"] & frame["main_metric"].notna(), key + ["main_metric"]].copy()
     if len(valid) == 0:
         return pd.DataFrame(columns=stats_columns)
 
     stats = (
-        valid.groupby(key, dropna=False)["bill_amount"]
+        valid.groupby(key, dropna=False)["main_metric"]
         .agg(
             **{
                 f"{prefix}_ortalama": "mean",
@@ -363,7 +370,7 @@ def aggregate_bill_stats(frame: pd.DataFrame, columns: list[str], level_name: st
     return stats[stats_columns]
 
 
-def add_peer_bill_stats(
+def add_peer_main_metric_stats(
     peer_instance_summary: pd.DataFrame,
     history: pd.DataFrame,
     scoring: pd.DataFrame,
@@ -382,8 +389,8 @@ def add_peer_bill_stats(
         level_name = str(row.PEER_SEVIYE)
         columns_text = getattr(row, "PEER_KOLONLARI", level_name)
         columns = parse_peer_columns(columns_text)
-        current_stats = aggregate_bill_stats(scoring, columns, level_name, "peer_guncel_ana_metrik")
-        history_stats = aggregate_bill_stats(history, columns, level_name, "peer_gecmis_ana_metrik")
+        current_stats = aggregate_main_metric_stats(scoring, columns, level_name, "peer_guncel_ana_metrik")
+        history_stats = aggregate_main_metric_stats(history, columns, level_name, "peer_gecmis_ana_metrik")
         merged = current_stats.merge(history_stats, on=["PEER_SEVIYE", "PEER_KEY_DEGERLERI"], how="outer")
         stat_frames.append(merged)
 
@@ -421,11 +428,15 @@ def summarize_frame(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
         ["LOW_MAIN_METRIC_ANOMALY", "LOW_BILL_ANOMALY"]
     ).astype(float)
     work["IS_WATCHLIST"] = work["ANOMALI_ETIKETI"].astype(str).str.startswith("WATCHLIST").astype(float)
+    entity_col = "ENTITY_ID" if "ENTITY_ID" in work.columns else next(
+        (col for col in work.columns if col not in group_cols and str(col).upper().endswith("ID")),
+        work.columns[0],
+    )
 
     agg = (
         work.groupby(group_cols, dropna=False)
         .agg(
-            musteri_adet=("MUSTERINO", "nunique"),
+            musteri_adet=(entity_col, "nunique"),
             anomaly_watch_adet=("IS_WATCH_OR_ANOM", "sum"),
             anomaly_watch_oran=("IS_WATCH_OR_ANOM", "mean"),
             high_main_metric_adet=("IS_HIGH_MAIN_METRIC", "sum"),
@@ -748,7 +759,7 @@ def build_peer_quality_tables(
     enriched = add_support_counts_from_reason(enriched)
     peer_level_summary = summarize_frame(enriched, ["PEER_SEVIYE"])
     peer_instance_summary = summarize_frame(enriched, ["PEER_SEVIYE", "PEER_KOLONLARI", "PEER_KEY_DEGERLERI"])
-    peer_instance_summary = add_peer_bill_stats(peer_instance_summary, history, scoring)
+    peer_instance_summary = add_peer_main_metric_stats(peer_instance_summary, history, scoring)
     status_summary = summarize_frame(enriched, ["PEER_TEMSIL_DURUMU"])
     distribution_summary = summarize_frame(enriched, ["PEER_DAGILIM_DURUMU"])
     behavior_summary = summarize_frame(enriched, ["DAVRANIS_CLUSTER"])
@@ -826,7 +837,12 @@ def generate_peer_quality_report_from_frames(
             progress(f"peer_quality_detail {message}")
 
     emit("decision_filter_start")
-    decisions = evidence_frame.loc[evidence_frame["DONEM_AY"].astype(int).eq(scoring_month)].copy()
+    period_col = infer_period_column(
+        evidence_frame,
+        scoring_month,
+        (column_map or {}).get("invoice_month") if isinstance(column_map, dict) else None,
+    )
+    decisions = evidence_frame.loc[pd.to_numeric(evidence_frame[period_col], errors="coerce").astype("Int64").eq(scoring_month)].copy()
     emit(f"decision_filter_done rows={len(decisions):,}")
     emit("scoring_context_start")
     scoring_keys, history, scoring = scoring_context_from_source_frame(
@@ -861,11 +877,16 @@ def main() -> None:
 
     log_step("peer_quality_detail file_read_start")
     decisions = pd.read_csv(decision_path)
-    scoring_month = core.normalize_scoring_month(args.scoring_month, decisions["DONEM_AY"])
-    decisions = decisions.loc[decisions["DONEM_AY"].astype(int).eq(scoring_month)].copy()
-    log_step(f"peer_quality_detail file_read_done decision_rows={len(decisions):,}")
     column_map = json.loads(args.column_map_json) if args.column_map_json else None
     derived_features_config = json.loads(args.derived_features_json) if args.derived_features_json else None
+    period_col = infer_period_column(
+        decisions,
+        core.normalize_scoring_month(args.scoring_month, None) if str(args.scoring_month).lower() not in {"last", "latest", "max"} else 0,
+        (column_map or {}).get("invoice_month") if isinstance(column_map, dict) else None,
+    )
+    scoring_month = core.normalize_scoring_month(args.scoring_month, decisions[period_col])
+    decisions = decisions.loc[pd.to_numeric(decisions[period_col], errors="coerce").astype("Int64").eq(scoring_month)].copy()
+    log_step(f"peer_quality_detail file_read_done decision_rows={len(decisions):,}")
     log_step("peer_quality_detail scoring_context_start")
     scoring_keys, history, scoring = load_scoring_context(
         input_path,

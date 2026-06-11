@@ -13,15 +13,12 @@ import pandas as pd
 import adaptive_peer_selection as adaptive
 
 
-COLUMN_ALIASES = {
-    "branch_id": ["SUBE_KD"],
-    "customer_id": ["MUSTERINO", "KVKK_CUST"],
-    "customer_segment": ["SEGMENTAD"],
-    "invoice_month": ["DONEM_AY"],
-    "sector": ["REF_ALTFAALIYET"],
-    "bill_amount": ["FATURA_TTR"],
-    "reference_feature": ["TURNOVER_AMT"],
-    "active_subscriber": ["AKTIF_ABONE"],
+INTERNAL_COLUMN_FALLBACKS = {
+    "customer_id": ("customer_id", "entity_id"),
+    "invoice_month": ("invoice_month", "period_month", "month_id"),
+    "main_metric": ("main_metric", "target_metric"),
+    "reference_feature": ("reference_feature",),
+    "exposure_feature": ("exposure_feature",),
 }
 
 MIN_HIST_ROWS = 120
@@ -197,7 +194,7 @@ def signal_evidence_z_value(row: pd.Series, signal: Mapping[str, str]) -> float:
 DEFAULT_DERIVED_FEATURES: dict[str, Any] = {
     "feature_ratio": {
         "enabled": "auto",
-        "numerator": "bill_amount",
+        "numerator": "main_metric",
         "denominator": "reference_feature",
         "use_as_peer_variable": True,
         "use_as_anomaly_signal": True,
@@ -248,7 +245,7 @@ def period_ord(period_int: int) -> int:
     year = int(period_int) // 100
     month = int(period_int) % 100
     if month < 1 or month > 12:
-        raise ValueError(f"Invalid DONEM_AY value: {period_int}")
+        raise ValueError(f"Invalid monthly period value: {period_int}")
     return year * 12 + month
 
 
@@ -540,8 +537,8 @@ def feature_ratio_settings(
         if not cols:
             return reference
         lowered = str(reference).strip().lower()
-        if lowered in {"main_feature", "target_variable", "amount_variable", "bill_amount"}:
-            return str(cols.get("bill_amount", reference))
+        if lowered in {"main_feature", "target_variable", "amount_variable", "main_metric"}:
+            return str(cols.get("main_metric", reference))
         if reference in cols:
             return str(cols[reference])
         if reference in set(cols.values()):
@@ -552,7 +549,7 @@ def feature_ratio_settings(
     ratio = dict(values.get("feature_ratio", {}))
     quality_gate = dict(ratio.get("quality_gate", {}))
     denominator_role = str(ratio.get("denominator", "reference_feature"))
-    numerator_role = str(ratio.get("numerator", "bill_amount"))
+    numerator_role = str(ratio.get("numerator", "main_metric"))
     has_denominator = bool(cols and (denominator_role in cols or denominator_role in set(cols.values())))
     enabled_default = has_denominator and bool(denominator_usable)
     enabled = _auto_bool(ratio.get("enabled", "auto"), enabled_default)
@@ -564,7 +561,7 @@ def feature_ratio_settings(
         "use_as_peer_variable": bool(peer_enabled),
         "numerator_role": numerator_role,
         "denominator_role": denominator_role,
-        "numerator_source_col": source_column(numerator_role, "bill_amount"),
+        "numerator_source_col": source_column(numerator_role, "main_metric"),
         "denominator_source_col": source_column(denominator_role, "reference_feature"),
         "quality_gate": quality_gate,
         "quality_gate_enabled": bool(quality_gate.get("enabled", True)),
@@ -611,18 +608,18 @@ def trend_group_stats(frame: pd.DataFrame, key: list[str], prefix: str) -> pd.Da
     if len(frame) == 0:
         return pd.DataFrame(columns=columns)
 
-    valid = frame.loc[frame["month_ord"].notna() & frame["log_bill"].notna(), key + ["month_ord", "log_bill"]].copy()
+    valid = frame.loc[frame["month_ord"].notna() & frame["log_main_metric"].notna(), key + ["month_ord", "log_main_metric"]].copy()
     if len(valid) == 0:
         return pd.DataFrame(columns=columns)
 
     support = valid.groupby(key, dropna=False).size().reset_index(name=f"{prefix}_trend_n")
     monthly = (
-        valid.groupby(key + ["month_ord"], dropna=False)["log_bill"]
+        valid.groupby(key + ["month_ord"], dropna=False)["log_main_metric"]
         .median()
         .reset_index()
     )
     monthly["_x"] = monthly["month_ord"].astype(float)
-    monthly["_y"] = monthly["log_bill"].astype(float)
+    monthly["_y"] = monthly["log_main_metric"].astype(float)
     monthly["_xy"] = monthly["_x"] * monthly["_y"]
     monthly["_x2"] = monthly["_x"] * monthly["_x"]
     agg = (
@@ -658,15 +655,15 @@ def build_behavior_clusters(history: pd.DataFrame) -> pd.DataFrame:
         "behavior_level_bucket",
         "behavior_volatility_bucket",
         "behavior_trend_bucket",
-        "behavior_median_bill",
+        "behavior_median_main_metric",
         "behavior_volatility_log",
         "behavior_trend_slope",
     ]
-    valid = history.loc[history["valid_bill_for_model"] & history["log_bill"].notna()].copy()
+    valid = history.loc[history["valid_main_metric_for_model"] & history["log_main_metric"].notna()].copy()
     if len(valid) == 0 or valid["customer_id"].nunique(dropna=False) == len(valid):
         return pd.DataFrame(columns=columns)
 
-    base = robust_group_stats(valid, ["customer_id"], "log_bill", "behavior")
+    base = robust_group_stats(valid, ["customer_id"], "log_main_metric", "behavior")
     trend = trend_group_stats(valid, ["customer_id"], "behavior")
     out = base.merge(trend, on="customer_id", how="left")
     out = out.rename(
@@ -714,7 +711,7 @@ def build_behavior_clusters(history: pd.DataFrame) -> pd.DataFrame:
         + out["behavior_trend_bucket"].astype(str),
         "behavior_unknown",
     )
-    out["behavior_median_bill"] = np.expm1(out["behavior_median_log"])
+    out["behavior_median_main_metric"] = np.expm1(out["behavior_median_log"])
     return out[columns]
 
 
@@ -729,7 +726,7 @@ def assign_behavior_clusters(frame: pd.DataFrame, behavior: pd.DataFrame) -> pd.
             "behavior_level_bucket",
             "behavior_volatility_bucket",
             "behavior_trend_bucket",
-            "behavior_median_bill",
+            "behavior_median_main_metric",
             "behavior_volatility_log",
             "behavior_trend_slope",
         ]:
@@ -881,34 +878,34 @@ def peer_distribution_stats(
         "peer_distribution_status",
     ]
     valid = frame.loc[
-        frame["valid_bill_for_model"] & frame["log_bill"].notna(),
-        key + ["invoice_month", "log_bill", "bill_amount"],
+        frame["valid_main_metric_for_model"] & frame["log_main_metric"].notna(),
+        key + ["invoice_month", "log_main_metric", "main_metric"],
     ].copy()
     if len(valid) == 0:
         return pd.DataFrame(columns=columns)
-    current_valid = pd.DataFrame(columns=key + ["log_bill", "bill_amount"])
+    current_valid = pd.DataFrame(columns=key + ["log_main_metric", "main_metric"])
     if current_frame is not None and len(current_frame):
         current_valid = current_frame.loc[
-            current_frame["valid_bill_for_model"] & current_frame["log_bill"].notna(),
-            key + ["log_bill", "bill_amount"],
+            current_frame["valid_main_metric_for_model"] & current_frame["log_main_metric"].notna(),
+            key + ["log_main_metric", "main_metric"],
         ].copy()
     raw_source = current_valid if len(current_valid) else valid
 
-    grouped = valid.groupby(key, dropna=False)["log_bill"]
+    grouped = valid.groupby(key, dropna=False)["log_main_metric"]
     out = grouped.agg(
         peer_distribution_n="size",
         peer_log_ratio_skew="skew",
         peer_log_ratio_kurtosis=lambda x: x.kurt(),
         peer_tail_rate=robust_tail_rate,
     ).reset_index()
-    current_robust = grouped_iqr_stats(raw_source, key, "log_bill", "peer_current")
+    current_robust = grouped_iqr_stats(raw_source, key, "log_main_metric", "peer_current")
     current_robust = current_robust.rename(
         columns={
             "peer_current_iqr_log": "peer_current_iqr_log",
             "peer_current_mad_log": "peer_current_mad_log",
         }
     )
-    monthly_robust = grouped_iqr_stats(valid, key + ["invoice_month"], "log_bill", "monthly")
+    monthly_robust = grouped_iqr_stats(valid, key + ["invoice_month"], "log_main_metric", "monthly")
     history_robust = (
         monthly_robust.groupby(key, dropna=False)
         .agg(
@@ -918,7 +915,7 @@ def peer_distribution_stats(
         .reset_index()
     )
     raw_stats = (
-        raw_source.groupby(key, dropna=False)["bill_amount"]
+        raw_source.groupby(key, dropna=False)["main_metric"]
         .agg(
             peer_raw_mean="mean",
             peer_raw_median="median",
@@ -969,7 +966,7 @@ def peer_calibration_stats(
     if len(frame) == 0:
         return pd.DataFrame(columns=columns)
 
-    valid = frame.loc[frame["valid_bill_for_model"] & frame["log_bill"].notna(), key + ["month_ord", "month_of_year", "log_bill"]].copy()
+    valid = frame.loc[frame["valid_main_metric_for_model"] & frame["log_main_metric"].notna(), key + ["month_ord", "month_of_year", "log_main_metric"]].copy()
     if len(valid) == 0:
         return pd.DataFrame(columns=columns)
 
@@ -980,7 +977,7 @@ def peer_calibration_stats(
     if len(base_frame) == 0 or len(calibration_frame) == 0:
         return pd.DataFrame(columns=columns)
 
-    base_stats = robust_group_stats(base_frame, key, "log_bill", "cal_base")
+    base_stats = robust_group_stats(base_frame, key, "log_main_metric", "cal_base")
     base_months = base_frame.groupby(key, dropna=False)["month_ord"].nunique().reset_index(name="cal_base_month_n")
     base_stats = base_stats.merge(base_months, on=key, how="left")
     base_stats = base_stats.loc[base_stats["cal_base_month_n"].fillna(0).ge(int(min_prior_months))]
@@ -988,12 +985,12 @@ def peer_calibration_stats(
         return pd.DataFrame(columns=columns)
 
     seasonal = (
-        base_frame.groupby(key + ["month_of_year"], dropna=False)["log_bill"]
+        base_frame.groupby(key + ["month_of_year"], dropna=False)["log_main_metric"]
         .median()
         .reset_index(name="cal_seasonal_median")
     )
     monthly = (
-        calibration_frame.groupby(key + ["month_ord", "month_of_year"], dropna=False)["log_bill"]
+        calibration_frame.groupby(key + ["month_ord", "month_of_year"], dropna=False)["log_main_metric"]
         .median()
         .reset_index(name="peer_month_log_median")
     )
@@ -1048,18 +1045,18 @@ def detect_read_options(input_path: Path, encoding: str, sep: str) -> tuple[str,
     raise ValueError("Could not detect CSV encoding/separator.")
 
 
-def resolve_columns(raw: pd.DataFrame, column_map: dict[str, str] | None = None) -> tuple[dict[str, str], list[str]]:
+def resolve_columns(raw: pd.DataFrame, column_map: Mapping[str, Any] | None = None) -> tuple[dict[str, str], list[str]]:
     resolved: dict[str, str] = {}
     missing: list[str] = []
     source_map = column_map or {}
     use_alias_fallback = not bool(source_map)
-    for logical, candidates in COLUMN_ALIASES.items():
+    for logical, candidates in INTERNAL_COLUMN_FALLBACKS.items():
         mapped_col = source_map.get(logical)
         if mapped_col:
             found = mapped_col if mapped_col in raw.columns else None
         else:
             found = next((col for col in candidates if col in raw.columns), None) if use_alias_fallback else None
-        if found is None and logical in {"customer_id", "invoice_month", "bill_amount"}:
+        if found is None and logical in {"customer_id", "invoice_month", "main_metric"}:
             missing.append(logical)
         elif found is not None:
             resolved[logical] = found
@@ -1078,22 +1075,31 @@ def to_numeric_series(series: pd.Series) -> pd.Series:
 
 def prepare_source_frame(
     raw: pd.DataFrame,
-    column_map: dict[str, str] | None = None,
+    column_map: Mapping[str, Any] | None = None,
     source_name: str | None = None,
     derived_features_config: Mapping[str, Any] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     cols, missing = resolve_columns(raw, column_map)
     if missing:
         raise ValueError(f"Missing required logical columns: {missing}")
+    segment_columns = [
+        str(col)
+        for col in (column_map or {}).get("__segment_variables__", [])
+        if str(col) in raw.columns
+    ]
+    missing_segment_columns = [
+        str(col)
+        for col in (column_map or {}).get("__segment_variables__", [])
+        if str(col) not in raw.columns
+    ]
+    if missing_segment_columns:
+        raise ValueError(f"Missing configured segment variables: {missing_segment_columns}")
 
     normalized = pd.DataFrame(
         {
-            "branch_id": raw[cols["branch_id"]] if "branch_id" in cols else "UNKNOWN_BRANCH",
             "customer_id": raw[cols["customer_id"]].astype(str),
-            "customer_segment": raw[cols["customer_segment"]] if "customer_segment" in cols else "UNKNOWN_SEGMENT",
             "invoice_month": to_numeric_series(raw[cols["invoice_month"]]).astype(int),
-            "sector": raw[cols["sector"]] if "sector" in cols else "UNKNOWN_SECTOR",
-            "bill_amount": to_numeric_series(raw[cols["bill_amount"]]).astype(float),
+            "main_metric": to_numeric_series(raw[cols["main_metric"]]).astype(float),
             "reference_feature": (
                 to_numeric_series(raw[cols["reference_feature"]]).astype(float)
                 if "reference_feature" in cols
@@ -1101,12 +1107,12 @@ def prepare_source_frame(
             ),
         }
     )
-    if "active_subscriber" in cols:
-        normalized["active_subscriber_missing_flag"] = raw[cols["active_subscriber"]].isna()
-        normalized["active_subscriber"] = to_numeric_series(raw[cols["active_subscriber"]]).fillna(1).astype(float)
+    if "exposure_feature" in cols:
+        normalized["exposure_feature_missing_flag"] = raw[cols["exposure_feature"]].isna()
+        normalized["exposure_feature"] = to_numeric_series(raw[cols["exposure_feature"]]).fillna(1).astype(float)
     else:
-        normalized["active_subscriber"] = 1.0
-        normalized["active_subscriber_missing_flag"] = True
+        normalized["exposure_feature"] = 1.0
+        normalized["exposure_feature_missing_flag"] = True
 
     source_columns = list(raw.columns)
     for column in source_columns:
@@ -1120,19 +1126,16 @@ def prepare_source_frame(
     else:
         reverse_map = {source_col: logical for logical, source_col in cols.items()}
         aggregations: dict[str, tuple[str, Any]] = {
-            "branch_id": ("branch_id", first_nonnull),
-            "customer_segment": ("customer_segment", first_nonnull),
-            "sector": ("sector", first_nonnull),
-            "active_subscriber": ("active_subscriber", "max"),
-            "active_subscriber_missing_flag": ("active_subscriber_missing_flag", "max"),
-            "bill_amount": ("bill_amount", "sum"),
+            "exposure_feature": ("exposure_feature", "max"),
+            "exposure_feature_missing_flag": ("exposure_feature_missing_flag", "max"),
+            "main_metric": ("main_metric", "sum"),
             "reference_feature": ("reference_feature", first_nonnull),
-            "source_row_count": ("bill_amount", "size"),
+            "source_row_count": ("main_metric", "size"),
         }
         source_aggregation_by_logical = {
-            "bill_amount": "sum",
-            "active_subscriber": "max",
-            "active_subscriber_missing_flag": "max",
+            "main_metric": "sum",
+            "exposure_feature": "max",
+            "exposure_feature_missing_flag": "max",
         }
         for column in source_columns:
             if column in aggregations:
@@ -1148,13 +1151,13 @@ def prepare_source_frame(
     monthly["month_ord"] = monthly["invoice_month"].map(period_ord).astype(int)
     monthly["month_of_year"] = monthly["invoice_month"].astype(int) % 100
     monthly["calendar_month"] = monthly["invoice_month"].map(period_label)
-    monthly["bill_amount"] = monthly["bill_amount"].astype(float)
+    monthly["main_metric"] = monthly["main_metric"].astype(float)
     monthly["reference_feature"] = monthly["reference_feature"].astype(float)
-    monthly["active_subscriber_missing_flag"] = monthly["active_subscriber_missing_flag"].fillna(False).astype(bool)
-    monthly["active_subscriber"] = monthly["active_subscriber"].fillna(1).astype(float)
+    monthly["exposure_feature_missing_flag"] = monthly["exposure_feature_missing_flag"].fillna(False).astype(bool)
+    monthly["exposure_feature"] = monthly["exposure_feature"].fillna(1).astype(float)
     reference_feature_missing_rate = float(monthly["reference_feature"].isna().mean())
     reference_feature_missing_or_zero_rate = float(monthly["reference_feature"].fillna(0).le(0).mean())
-    reference_feature_diff = (monthly["bill_amount"] - monthly["reference_feature"]).abs()
+    reference_feature_diff = (monthly["main_metric"] - monthly["reference_feature"]).abs()
     reference_feature_equal_main_rate = float((reference_feature_diff <= 1e-6).mean())
     reference_feature_usable_for_model = "reference_feature" in cols and reference_feature_missing_rate < 0.98 and reference_feature_equal_main_rate < 0.98
     raw_ratio_config = dict(normalize_derived_features_config(derived_features_config).get("feature_ratio", {}))
@@ -1195,20 +1198,20 @@ def prepare_source_frame(
     ratio_settings["use_as_anomaly_signal_requested"] = bool(ratio_settings["use_as_anomaly_signal"])
     ratio_settings["use_as_anomaly_signal"] = bool(ratio_settings["use_as_anomaly_signal"] and ratio_quality_gate_passed)
     monthly["reference_feature_for_model"] = np.where(reference_feature_usable_for_model, monthly["reference_feature"], np.nan)
-    monthly["active_subscriber_bucket"] = pd.cut(
-        monthly["active_subscriber"],
+    monthly["exposure_bucket"] = pd.cut(
+        monthly["exposure_feature"],
         bins=[-np.inf, 1, 2, 4, 9, np.inf],
         labels=["active_1", "active_2", "active_3_4", "active_5_9", "active_10_plus"],
     ).astype(str)
     monthly["_global_key"] = "ALL"
 
-    monthly["valid_bill_for_model"] = monthly["bill_amount"].notna() & monthly["bill_amount"].ge(0)
-    monthly["negative_bill_flag"] = monthly["bill_amount"].lt(0).fillna(False)
-    monthly["zero_bill_flag"] = monthly["bill_amount"].eq(0).fillna(False)
-    monthly["log_bill"] = np.where(monthly["valid_bill_for_model"], np.log1p(monthly["bill_amount"]), np.nan)
+    monthly["valid_main_metric_for_model"] = monthly["main_metric"].notna() & monthly["main_metric"].ge(0)
+    monthly["negative_main_metric_flag"] = monthly["main_metric"].lt(0).fillna(False)
+    monthly["zero_main_metric_flag"] = monthly["main_metric"].eq(0).fillna(False)
+    monthly["log_main_metric"] = np.where(monthly["valid_main_metric_for_model"], np.log1p(monthly["main_metric"]), np.nan)
     monthly["reference_feature_positive_flag"] = monthly["reference_feature_for_model"].astype(float).gt(0)
     monthly["log_reference_feature"] = np.where(monthly["reference_feature_positive_flag"], np.log1p(monthly["reference_feature_for_model"]), np.nan)
-    monthly["main_to_reference_log_ratio"] = np.where(ratio_enabled, monthly["log_bill"] - monthly["log_reference_feature"], np.nan)
+    monthly["main_to_reference_log_ratio"] = np.where(ratio_enabled, monthly["log_main_metric"] - monthly["log_reference_feature"], np.nan)
 
     monthly = monthly.sort_values(["customer_id", "invoice_month"]).reset_index(drop=True)
     if monthly["customer_id"].nunique(dropna=False) == len(monthly):
@@ -1229,17 +1232,20 @@ def prepare_source_frame(
         "period_min": int(monthly["invoice_month"].min()),
         "period_max": int(monthly["invoice_month"].max()),
         "period_count": int(monthly["invoice_month"].nunique()),
-        "segment_count": int(monthly["customer_segment"].nunique()),
-        "sector_count": int(monthly["sector"].nunique()),
-        "branch_count": int(monthly["branch_id"].nunique()),
+        "segment_columns": segment_columns,
+        "segment_variable_counts": {
+            col: int(monthly[col].nunique(dropna=True))
+            for col in segment_columns
+            if col in monthly.columns
+        },
         "customer_id_column": cols["customer_id"],
         "input_column_map": {logical: source_col for logical, source_col in cols.items()},
         "source_columns": source_columns,
         "source_name": source_name,
         "detected_encoding": None,
         "detected_separator": None,
-        "active_subscriber_present": "active_subscriber" in cols,
-        "active_subscriber_missing_rate": float(monthly["active_subscriber_missing_flag"].mean()),
+        "exposure_feature_present": "exposure_feature" in cols,
+        "exposure_feature_missing_rate": float(monthly["exposure_feature_missing_flag"].mean()),
         "reference_feature_equal_main_rate": reference_feature_equal_main_rate,
         "reference_feature_usable_for_model": bool(reference_feature_usable_for_model),
         "reference_feature_missing_rate": reference_feature_missing_rate,
@@ -1266,7 +1272,7 @@ def read_source(
     input_path: Path,
     encoding: str,
     sep: str,
-    column_map: dict[str, str] | None = None,
+    column_map: Mapping[str, Any] | None = None,
     derived_features_config: Mapping[str, Any] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     detected_encoding, detected_sep = detect_read_options(input_path, encoding, sep)
@@ -1330,17 +1336,17 @@ def build_level_stats(
     scoring_moy = int(scoring["month_of_year"].iloc[0])
     scoring_ord = int(scoring["month_ord"].iloc[0])
 
-    hist_valid_all = history.loc[history["valid_bill_for_model"] & history["log_bill"].notna()].copy()
-    scoring_valid = scoring.loc[scoring["valid_bill_for_model"] & scoring["log_bill"].notna()].copy()
+    hist_valid_all = history.loc[history["valid_main_metric_for_model"] & history["log_main_metric"].notna()].copy()
+    scoring_valid = scoring.loc[scoring["valid_main_metric_for_model"] & scoring["log_main_metric"].notna()].copy()
     hist_valid = filter_frame_to_scoring_keys(hist_valid_all, scoring, key)
     recent = hist_valid.loc[hist_valid["month_ord"].between(scoring_ord - 3, scoring_ord - 1)]
     moy = hist_valid.loc[hist_valid["month_of_year"].eq(scoring_moy)]
     ratio = hist_valid.loc[hist_valid["main_to_reference_log_ratio"].notna()]
 
-    base = robust_group_stats(hist_valid, key, "log_bill", "hist")
-    recent_stats = robust_group_stats(recent, key, "log_bill", "recent")
-    moy_stats = robust_group_stats(moy, key, "log_bill", "moy")
-    current_stats = robust_group_stats(scoring_valid, key, "log_bill", "current")
+    base = robust_group_stats(hist_valid, key, "log_main_metric", "hist")
+    recent_stats = robust_group_stats(recent, key, "log_main_metric", "recent")
+    moy_stats = robust_group_stats(moy, key, "log_main_metric", "moy")
+    current_stats = robust_group_stats(scoring_valid, key, "log_main_metric", "current")
     ratio_stats = robust_group_stats(ratio, key, "main_to_reference_log_ratio", "ratio")
     trend_stats = trend_group_stats(hist_valid, key, "peer")
     distribution_stats = peer_distribution_stats(hist_valid, key, peer_config, scoring_valid)
@@ -1372,7 +1378,7 @@ def build_level_stats(
 
 
 def build_self_stats(history: pd.DataFrame, scoring_ord: int) -> pd.DataFrame:
-    valid = history.loc[history["valid_bill_for_model"] & history["log_bill"].notna()].copy()
+    valid = history.loc[history["valid_main_metric_for_model"] & history["log_main_metric"].notna()].copy()
     scoring_moy = int((scoring_ord - 1) % 12 + 1)
     empty = pd.DataFrame(
         columns=[
@@ -1382,7 +1388,7 @@ def build_self_stats(history: pd.DataFrame, scoring_ord: int) -> pd.DataFrame:
             "prior_mad",
             "prior_12_n",
             "last_month_ord",
-            "last_log_bill",
+            "last_log_main_metric",
             "customer_trend_n",
             "customer_trend_slope",
             "customer_trend_intercept",
@@ -1405,24 +1411,24 @@ def build_self_stats(history: pd.DataFrame, scoring_ord: int) -> pd.DataFrame:
     valid = valid.loc[valid["customer_id"].isin(eligible_ids)].copy()
     if len(valid) == 0:
         return empty
-    base = robust_group_stats(valid, ["customer_id"], "log_bill", "prior")
+    base = robust_group_stats(valid, ["customer_id"], "log_main_metric", "prior")
     customer_trend = trend_group_stats(valid, ["customer_id"], "customer")
     customer_seasonal = robust_group_stats(
         valid.loc[valid["month_of_year"].eq(scoring_moy)],
         ["customer_id"],
-        "log_bill",
+        "log_main_metric",
         "customer_seasonal",
     )
     customer_recent3 = robust_group_stats(
         valid.loc[valid["month_ord"].between(scoring_ord - 3, scoring_ord - 1)],
         ["customer_id"],
-        "log_bill",
+        "log_main_metric",
         "customer_recent3",
     )
     customer_recent3_range = (
         valid.loc[valid["month_ord"].between(scoring_ord - 3, scoring_ord - 1)]
         .groupby("customer_id", dropna=False)
-        .agg(customer_recent3_min=("log_bill", "min"), customer_recent3_max=("log_bill", "max"))
+        .agg(customer_recent3_min=("log_main_metric", "min"), customer_recent3_max=("log_main_metric", "max"))
         .reset_index()
     )
     recent_12 = (
@@ -1433,7 +1439,7 @@ def build_self_stats(history: pd.DataFrame, scoring_ord: int) -> pd.DataFrame:
         .reset_index()
     )
     last = valid.sort_values(["customer_id", "month_ord"]).groupby("customer_id", dropna=False).tail(1)
-    last = last[["customer_id", "month_ord", "log_bill"]].rename(columns={"month_ord": "last_month_ord", "log_bill": "last_log_bill"})
+    last = last[["customer_id", "month_ord", "log_main_metric"]].rename(columns={"month_ord": "last_month_ord", "log_main_metric": "last_log_main_metric"})
     out = base.merge(recent_12, on="customer_id", how="left")
     out = out.merge(customer_trend, on="customer_id", how="left")
     out = out.merge(customer_seasonal, on="customer_id", how="left")
@@ -1450,34 +1456,6 @@ def support_value(row: pd.Series, col: str) -> float:
     if pd.isna(value):
         return 0.0
     return float(value)
-
-
-def peer_level_specificity(level_name: str) -> float:
-    behavior_bonus = 0.08 if "behavior" in level_name else 0.0
-    has_feature_bucket = "feature" in level_name or "turnover" in level_name
-    if level_name == "global":
-        return 0.25
-    if "branch" in level_name and "active" in level_name:
-        return min(1.00, 1.00 + behavior_bonus)
-    if "branch" in level_name:
-        return min(1.00, 0.92 + behavior_bonus)
-    if "active" in level_name and "sector" in level_name and has_feature_bucket:
-        return min(1.00, 0.90 + behavior_bonus)
-    if "sector" in level_name and has_feature_bucket:
-        return min(1.00, 0.84 + behavior_bonus)
-    if "active" in level_name and "sector" in level_name:
-        return min(1.00, 0.78 + behavior_bonus)
-    if has_feature_bucket:
-        return min(1.00, 0.72 + behavior_bonus)
-    if "sector" in level_name:
-        return min(1.00, 0.64 + behavior_bonus)
-    if "active" in level_name:
-        return min(1.00, 0.56 + behavior_bonus)
-    if "segment" in level_name:
-        return min(1.00, 0.48 + behavior_bonus)
-    if "behavior" in level_name:
-        return 0.52
-    return min(1.00, 0.35 + behavior_bonus)
 
 
 def support_failure_summary(row: pd.Series, level_name: str) -> str:
@@ -1497,8 +1475,8 @@ def support_failure_summary(row: pd.Series, level_name: str) -> str:
     distribution_score = support_value(row, "peer_distribution_quality_score")
     if distribution_score < MIN_PEER_DISTRIBUTION_SCORE:
         failed.append(f"distribution_score={distribution_score:.1f}<{MIN_PEER_DISTRIBUTION_SCORE:.0f}")
-    if not bool(row.get("valid_bill_for_model", False)):
-        failed.append("invalid_bill")
+    if not bool(row.get("valid_main_metric_for_model", False)):
+        failed.append("invalid_main_metric")
     if not failed:
         failed.append("support_ok")
     return f"{level_name}: " + ", ".join(failed)
@@ -1515,38 +1493,6 @@ def peer_selection_reason(row: pd.Series, prior_attempts: list[str]) -> str:
     if not prior_attempts:
         return selected + " Daha dar peer bu seviyedir; destek esikleri gecildi."
     return selected + " Daha dar adaylar elendi: " + " | ".join(prior_attempts[:4])
-
-
-def peer_representability_score(row: pd.Series) -> float:
-    hist_support = min(support_value(row, "hist_n") / 800.0, 1.0)
-    season_support = min(support_value(row, "moy_n") / 100.0, 1.0)
-    recent_support = min(support_value(row, "recent_n") / 150.0, 1.0)
-    current_support = min(support_value(row, "current_n") / 120.0, 1.0)
-    specificity = peer_level_specificity(str(row.get("peer_group_level_name", "")))
-    distribution_quality = min(max(support_value(row, "peer_distribution_quality_score"), 0.0) / 100.0, 1.0)
-    return float(
-        100.0
-        * (
-            0.22 * hist_support
-            + 0.13 * season_support
-            + 0.18 * recent_support
-            + 0.22 * current_support
-            + 0.10 * specificity
-            + 0.15 * distribution_quality
-        )
-    )
-
-
-def peer_representability_status(score: float, level_name: str) -> str:
-    if level_name in {"global", "segment", "sector"}:
-        return "COARSE_PEER_REVIEW"
-    if score >= 80:
-        return "STRONG_PEER_REPRESENTATION"
-    if score >= 60:
-        return "GOOD_PEER_REPRESENTATION"
-    if score >= 40:
-        return "MEDIUM_PEER_REPRESENTATION"
-    return "WEAK_PEER_REPRESENTATION"
 
 
 def merged_scoring_weights(overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -2575,21 +2521,21 @@ def score_scoring_month(
             f"avg_representability={selected['peer_representability_score'].mean():.2f} "
             f"avg_distribution={selected['peer_distribution_quality_score'].mean():.2f}"
         )
-        selected["expected_log_bill"] = selected["recent_median"] + (selected["moy_median"] - selected["hist_median"])
-        selected["expected_bill_amount"] = np.expm1(selected["expected_log_bill"])
-        selected["current_peer_median_bill"] = np.expm1(selected["current_median"])
-        selected["prior_median_bill"] = np.where(
+        selected["expected_log_main_metric"] = selected["recent_median"] + (selected["moy_median"] - selected["hist_median"])
+        selected["expected_main_metric"] = np.expm1(selected["expected_log_main_metric"])
+        selected["current_peer_median_main_metric"] = np.expm1(selected["current_median"])
+        selected["prior_median_main_metric"] = np.where(
             selected["prior_median"].notna(),
             np.expm1(selected["prior_median"]),
             np.nan,
         )
-        selected["actual_to_expected_ratio"] = selected["bill_amount"] / np.maximum(
-            selected["expected_bill_amount"],
+        selected["actual_to_expected_ratio"] = selected["main_metric"] / np.maximum(
+            selected["expected_main_metric"],
             1e-6,
         )
         selected["main_to_reference_ratio"] = np.where(
             selected["reference_feature_for_model"].astype(float).gt(0),
-            selected["bill_amount"] / selected["reference_feature_for_model"].astype(float),
+            selected["main_metric"] / selected["reference_feature_for_model"].astype(float),
             np.nan,
         )
         selected["peer_seasonality_adjustment_log"] = selected["moy_median"] - selected["hist_median"]
@@ -2598,7 +2544,7 @@ def score_scoring_month(
             selected["peer_trend_intercept"] + selected["peer_trend_slope"] * selected["month_ord"].astype(float),
             np.nan,
         )
-        selected["peer_trend_expected_bill"] = np.where(
+        selected["peer_trend_expected_main_metric"] = np.where(
             pd.notna(selected["peer_trend_expected_log"]),
             np.expm1(selected["peer_trend_expected_log"]),
             np.nan,
@@ -2608,17 +2554,17 @@ def score_scoring_month(
             selected["customer_trend_intercept"] + selected["customer_trend_slope"] * selected["month_ord"].astype(float),
             np.nan,
         )
-        selected["customer_trend_expected_bill"] = np.where(
+        selected["customer_trend_expected_main_metric"] = np.where(
             pd.notna(selected["customer_trend_expected_log"]),
             np.expm1(selected["customer_trend_expected_log"]),
             np.nan,
         )
-        selected["customer_seasonal_expected_bill"] = np.where(
+        selected["customer_seasonal_expected_main_metric"] = np.where(
             selected["customer_seasonal_n"].fillna(0).ge(MIN_CUSTOMER_SEASONAL_ROWS),
             np.expm1(selected["customer_seasonal_median"]),
             np.nan,
         )
-        selected["customer_recent3_median_bill"] = np.where(
+        selected["customer_recent3_median_main_metric"] = np.where(
             selected["customer_recent3_median"].notna(),
             np.expm1(selected["customer_recent3_median"]),
             np.nan,
@@ -2638,11 +2584,11 @@ def score_scoring_month(
         )
         selected["historical_scale"] = np.maximum(selected["historical_scale"], MIN_LOG_SCALE)
         selected["current_scale"] = np.maximum(selected["current_mad"].astype(float), MIN_LOG_SCALE)
-        selected["historical_peer_z"] = (selected["log_bill"] - selected["expected_log_bill"]) / selected["historical_scale"]
-        selected["current_peer_z"] = (selected["log_bill"] - selected["current_median"]) / selected["current_scale"]
+        selected["historical_peer_z"] = (selected["log_main_metric"] - selected["expected_log_main_metric"]) / selected["historical_scale"]
+        selected["current_peer_z"] = (selected["log_main_metric"] - selected["current_median"]) / selected["current_scale"]
         selected["peer_trend_z"] = np.where(
             selected["peer_trend_expected_log"].notna(),
-            (selected["log_bill"] - selected["peer_trend_expected_log"]) / selected["historical_scale"],
+            (selected["log_main_metric"] - selected["peer_trend_expected_log"]) / selected["historical_scale"],
             np.nan,
         )
         ratio_peer_gate = (
@@ -2656,7 +2602,7 @@ def score_scoring_month(
             (selected["main_to_reference_log_ratio"] - selected["ratio_median"]) / np.maximum(selected["ratio_mad"].astype(float), MIN_LOG_SCALE),
             np.nan,
         )
-        selected["ratio_numerator_source_col"] = str(ratio_settings.get("numerator_source_col", "bill_amount"))
+        selected["ratio_numerator_source_col"] = str(ratio_settings.get("numerator_source_col", "main_metric"))
         selected["ratio_denominator_source_col"] = str(ratio_settings.get("denominator_source_col", ""))
         selected["feature_ratio_enabled"] = bool(ratio_settings.get("enabled", False))
         selected["feature_ratio_signal_enabled"] = ratio_signal_enabled
@@ -2686,17 +2632,17 @@ def score_scoring_month(
         selected["feature_ratio_peer_enabled"] = ratio_peer_enabled
         selected["self_history_z"] = np.where(
             selected["prior_n"].ge(MIN_SELF_HISTORY_ROWS),
-            (selected["log_bill"] - selected["prior_median"]) / np.maximum(selected["prior_mad"].astype(float), MIN_LOG_SCALE),
+            (selected["log_main_metric"] - selected["prior_median"]) / np.maximum(selected["prior_mad"].astype(float), MIN_LOG_SCALE),
             np.nan,
         )
         selected["customer_trend_z"] = np.where(
             selected["customer_trend_expected_log"].notna(),
-            (selected["log_bill"] - selected["customer_trend_expected_log"]) / np.maximum(selected["prior_mad"].astype(float), MIN_LOG_SCALE),
+            (selected["log_main_metric"] - selected["customer_trend_expected_log"]) / np.maximum(selected["prior_mad"].astype(float), MIN_LOG_SCALE),
             np.nan,
         )
         selected["customer_seasonal_z"] = np.where(
             selected["customer_seasonal_n"].fillna(0).ge(MIN_CUSTOMER_SEASONAL_ROWS),
-            (selected["log_bill"] - selected["customer_seasonal_median"])
+            (selected["log_main_metric"] - selected["customer_seasonal_median"])
             / np.maximum(selected["customer_seasonal_mad"].astype(float), MIN_LOG_SCALE),
             np.nan,
         )
@@ -2713,7 +2659,7 @@ def score_scoring_month(
         )
         selected["customer_recent_regime_z"] = np.where(
             recent_regime_ok,
-            (selected["log_bill"] - selected["customer_recent3_median"])
+            (selected["log_main_metric"] - selected["customer_recent3_median"])
             / np.maximum(selected["customer_recent3_mad"].astype(float), MIN_LOG_SCALE),
             np.nan,
         )
@@ -2871,7 +2817,7 @@ def score_scoring_month(
     emit(f"not_scored_build_done not_scored_rows={len(not_scored):,}")
     if len(not_scored):
         not_scored["not_scored_reason"] = np.where(
-            not_scored["valid_bill_for_model"],
+            not_scored["valid_main_metric_for_model"],
             "INSUFFICIENT_PEER_SUPPORT",
             "INVALID_MAIN_METRIC",
         )
@@ -2890,7 +2836,7 @@ def score_scoring_month(
             "prior_12_coverage"
         ].lt(0.50)
         not_scored["scoreability_status"] = np.where(
-            not_scored["valid_bill_for_model"],
+            not_scored["valid_main_metric_for_model"],
             "NOT_SCORED_INSUFFICIENT_PEER_SUPPORT",
             "NOT_SCORED_INVALID_MAIN_METRIC",
         )
@@ -2933,24 +2879,21 @@ def score_scoring_month(
         )
         keep_cols = [
             "customer_id",
-            "branch_id",
             "calendar_month",
             "invoice_month",
-            "customer_segment",
-            "sector",
             "feature_ratio_bucket",
             "behavior_cluster",
             "behavior_history_n",
             "behavior_level_bucket",
             "behavior_volatility_bucket",
             "behavior_trend_bucket",
-            "behavior_median_bill",
+            "behavior_median_main_metric",
             "behavior_volatility_log",
             "behavior_trend_slope",
-            "active_subscriber",
-            "active_subscriber_bucket",
-            "active_subscriber_missing_flag",
-            "bill_amount",
+            "exposure_feature",
+            "exposure_bucket",
+            "exposure_feature_missing_flag",
+            "main_metric",
             "reference_feature",
             "ratio_numerator_source_col",
             "ratio_denominator_source_col",
@@ -2962,16 +2905,16 @@ def score_scoring_month(
             "feature_ratio_peer_gate_passed",
             "feature_ratio_peer_gate_reasons",
             "feature_ratio_peer_enabled",
-            "log_bill",
-            "expected_log_bill",
-            "expected_bill_amount",
-            "current_peer_median_bill",
-            "prior_median_bill",
+            "log_main_metric",
+            "expected_log_main_metric",
+            "expected_main_metric",
+            "current_peer_median_main_metric",
+            "prior_median_main_metric",
             "peer_seasonality_adjustment_log",
-            "peer_trend_expected_bill",
-            "customer_trend_expected_bill",
-            "customer_seasonal_expected_bill",
-            "customer_recent3_median_bill",
+            "peer_trend_expected_main_metric",
+            "customer_trend_expected_main_metric",
+            "customer_seasonal_expected_main_metric",
+            "customer_recent3_median_main_metric",
             "customer_recent3_range_log",
             "actual_to_expected_ratio",
             "main_to_reference_ratio",
@@ -3393,8 +3336,8 @@ def reason_explanation(row: pd.Series) -> str:
     label = str(row.get("anomaly_label", "NORMAL"))
     action = str(row.get("action_label", "NORMAL"))
     ratio = row.get("actual_to_expected_ratio", np.nan)
-    expected = row.get("expected_bill_amount", np.nan)
-    actual = row.get("bill_amount", np.nan)
+    expected = row.get("expected_main_metric", np.nan)
+    actual = row.get("main_metric", np.nan)
     peer = row.get("peer_group_level_name", "unknown_peer")
     status = row.get("scoreability_status", "unknown_scoreability")
     gap = row.get("data_gap_score", np.nan)
@@ -3505,25 +3448,25 @@ def build_diagnostic_tables(prepared: pd.DataFrame, run: ModelRun, backtest_summ
             {
                 "requirement": "Customer trend",
                 "status": "YES",
-                "fields": "customer_trend_z, customer_trend_expected_bill, customer_trend_n",
+                "fields": "customer_trend_z, customer_trend_expected_main_metric, customer_trend_n",
                 "scoring_use": "weighted when customer has at least 6 prior valid bills",
             },
             {
                 "requirement": "Customer seasonality",
                 "status": "YES",
-                "fields": "customer_seasonal_z, customer_seasonal_expected_bill, customer_seasonal_n",
+                "fields": "customer_seasonal_z, customer_seasonal_expected_main_metric, customer_seasonal_n",
                 "scoring_use": "weighted when customer has same-month history",
             },
             {
                 "requirement": "Peer trend",
                 "status": "YES",
-                "fields": "peer_trend_z, peer_trend_expected_bill",
+                "fields": "peer_trend_z, peer_trend_expected_main_metric",
                 "scoring_use": "weighted when selected peer has enough historical support",
             },
             {
                 "requirement": "Peer seasonality",
                 "status": "YES",
-                "fields": "peer_seasonality_adjustment_log, expected_bill_amount",
+                "fields": "peer_seasonality_adjustment_log, expected_main_metric",
                 "scoring_use": "month-of-year peer adjustment in expected value",
             },
             {
@@ -3533,10 +3476,10 @@ def build_diagnostic_tables(prepared: pd.DataFrame, run: ModelRun, backtest_summ
                 "scoring_use": "narrow peers are tried first and broader peers are used if support fails",
             },
             {
-                "requirement": "Branch as peer signal",
+                "requirement": "Configured segment variables as peer signal",
                 "status": "YES_SUPPORT_GATED",
-                "fields": "branch_id, peer_group_level_name",
-                "scoring_use": "branch is used only when support thresholds pass",
+                "fields": "variables.segment_variables, peer_group_level_name",
+                "scoring_use": "configured segment variables are used only when support thresholds pass",
             },
             {
                 "requirement": "No main metric filling",
@@ -3601,50 +3544,39 @@ def build_diagnostic_tables(prepared: pd.DataFrame, run: ModelRun, backtest_summ
             .reset_index()
             .sort_values("rows", ascending=False)
         )
-        tables["segment_summary"] = (
-            scores.groupby("customer_segment")
-            .agg(
-                rows=("customer_id", "size"),
-                high_anomaly_count=("is_high_anomaly", "sum"),
-                watch_or_anomaly_count=("is_watchlist_or_anomaly", "sum"),
-                high_anomaly_rate=("is_high_anomaly", "mean"),
-                median_score=("final_anomaly_score", "median"),
-                median_bill=("bill_amount", "median"),
+        segment_columns = [
+            col
+            for col in prepared.attrs.get("profile", {}).get("segment_columns", [])
+            if col in scores.columns
+        ]
+        for idx, segment_col in enumerate(segment_columns, start=1):
+            tables[f"segment_variable_{idx}_summary"] = (
+                scores.groupby(segment_col)
+                .agg(
+                    rows=("customer_id", "size"),
+                    high_anomaly_count=("is_high_anomaly", "sum"),
+                    watch_or_anomaly_count=("is_watchlist_or_anomaly", "sum"),
+                    high_anomaly_rate=("is_high_anomaly", "mean"),
+                    median_score=("final_anomaly_score", "median"),
+                    median_main_metric=("main_metric", "median"),
+                )
+                .reset_index()
+                .sort_values("rows", ascending=False)
             )
-            .reset_index()
-            .sort_values("rows", ascending=False)
-        )
-        tables["sector_top_anomaly_summary"] = (
-            scores.groupby("sector")
-            .agg(
-                rows=("customer_id", "size"),
-                high_anomaly_count=("is_high_anomaly", "sum"),
-                watch_or_anomaly_count=("is_watchlist_or_anomaly", "sum"),
-                high_anomaly_rate=("is_high_anomaly", "mean"),
-                median_score=("final_anomaly_score", "median"),
-                p95_score=("final_anomaly_score", lambda s: s.quantile(0.95)),
-            )
-            .reset_index()
-            .sort_values(["high_anomaly_count", "p95_score"], ascending=False)
-            .head(50)
-        )
         tables["top_anomalies"] = scores.head(500)
         audit_cols = [
             "customer_id",
             "calendar_month",
-            "customer_segment",
-            "sector",
-            "branch_id",
             "feature_ratio_bucket",
-            "active_subscriber_bucket",
-            "bill_amount",
-            "expected_bill_amount",
-            "current_peer_median_bill",
-            "prior_median_bill",
-            "peer_trend_expected_bill",
-            "customer_trend_expected_bill",
-            "customer_seasonal_expected_bill",
-            "customer_recent3_median_bill",
+            "exposure_bucket",
+            "main_metric",
+            "expected_main_metric",
+            "current_peer_median_main_metric",
+            "prior_median_main_metric",
+            "peer_trend_expected_main_metric",
+            "customer_trend_expected_main_metric",
+            "customer_seasonal_expected_main_metric",
+            "customer_recent3_median_main_metric",
             "customer_recent3_range_log",
             "actual_to_expected_ratio",
             "reference_feature",
@@ -3687,7 +3619,7 @@ def build_diagnostic_tables(prepared: pd.DataFrame, run: ModelRun, backtest_summ
         ]
         tables["customer_logic_audit"] = scores.loc[
             scores["anomaly_label"].ne("NORMAL"),
-            [col for col in audit_cols if col in scores.columns],
+            [col for col in [*audit_cols, *segment_columns] if col in scores.columns],
         ].head(200)
         tables["logical_test_summary"] = (
             scores.groupby(
@@ -3750,15 +3682,13 @@ def build_diagnostic_tables(prepared: pd.DataFrame, run: ModelRun, backtest_summ
             "customer_id",
             "calendar_month",
             "invoice_month",
-            "branch_id",
-            "customer_segment",
-            "sector",
-            "active_subscriber",
-            "active_subscriber_missing_flag",
+            "exposure_feature",
+            "exposure_feature_missing_flag",
             "feature_ratio_bucket",
-            "bill_amount",
+            "main_metric",
             "reference_feature",
         ]
+        series_cols = list(dict.fromkeys([*series_cols, *segment_columns]))
         audited_series = prepared.loc[
             prepared["customer_id"].isin(sample_ids),
             [col for col in series_cols if col in prepared.columns],
@@ -3863,7 +3793,7 @@ Scoring month is {summary["scoring_month_label"]}. The model trained only on pri
 
 ## Method
 
-- Holdout: the latest DONEM_AY is treated as out-of-time implementation data.
+- Holdout: the latest configured period column is treated as out-of-time implementation data.
 - {peer_text}
 - Expected value: recent peer level plus historical month-of-year adjustment, fit only from months before the scoring month.
 - Customer-first layer: when enough customer history exists, customer self-history, customer trend, and customer same-month seasonality receive higher combined weight than peer signals.

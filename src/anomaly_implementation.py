@@ -29,11 +29,8 @@ SIGNAL_COLUMNS = [
 ]
 
 PEER_KEY_COLUMNS = [
-    "branch_id",
-    "sector",
-    "customer_segment",
     "feature_ratio_bucket",
-    "active_subscriber_bucket",
+    "exposure_bucket",
     "behavior_cluster",
     "_global_key",
 ]
@@ -59,13 +56,10 @@ LONG_TEXT_COLUMNS = {
 }
 
 LOGICAL_TO_NORMALIZED = {
-    "branch_id": "branch_id",
     "customer_id": "customer_id",
-    "customer_segment": "customer_segment",
     "invoice_month": "invoice_month",
-    "sector": "sector",
-    "active_subscriber": "active_subscriber",
-    "bill_amount": "bill_amount",
+    "exposure_feature": "exposure_feature",
+    "main_metric": "main_metric",
     "reference_feature": "reference_feature",
 }
 
@@ -87,15 +81,15 @@ MODEL_DECISION_RENAME = {
     "peer_alignment_customer_z": "MUSTERI_FARK_Z",
     "scoreability_status": "VERI_YETERLILIK_DURUMU",
     "human_readable_reason": "ANOMALI_NEDENI",
-    "expected_bill_amount": "BEKLENEN_ANA_METRIK",
+    "expected_main_metric": "BEKLENEN_ANA_METRIK",
     "actual_to_expected_ratio": "GERCEK_BEKLENEN_ORANI",
-    "current_peer_median_bill": "PEER_GUNCEL_MEDYAN_ANA_METRIK",
-    "prior_median_bill": "MUSTERI_GECMIS_MEDYAN_ANA_METRIK",
-    "customer_trend_expected_bill": "MUSTERI_TREND_BEKLENEN_ANA_METRIK",
-    "customer_seasonal_expected_bill": "MUSTERI_SEZON_BEKLENEN_ANA_METRIK",
-    "customer_recent3_median_bill": "MUSTERI_SON3_AY_MEDYAN_ANA_METRIK",
+    "current_peer_median_main_metric": "PEER_GUNCEL_MEDYAN_ANA_METRIK",
+    "prior_median_main_metric": "MUSTERI_GECMIS_MEDYAN_ANA_METRIK",
+    "customer_trend_expected_main_metric": "MUSTERI_TREND_BEKLENEN_ANA_METRIK",
+    "customer_seasonal_expected_main_metric": "MUSTERI_SEZON_BEKLENEN_ANA_METRIK",
+    "customer_recent3_median_main_metric": "MUSTERI_SON3_AY_MEDYAN_ANA_METRIK",
     "customer_recent3_range_log": "MUSTERI_SON3_AY_RANGE_LOG",
-    "peer_trend_expected_bill": "PEER_TREND_BEKLENEN_ANA_METRIK",
+    "peer_trend_expected_main_metric": "PEER_TREND_BEKLENEN_ANA_METRIK",
     "peer_group_level_name": "PEER_SEVIYE",
     "peer_group_columns": "PEER_KOLONLARI",
     "prior_n": "MUSTERI_GECMIS_AY_ADET",
@@ -175,7 +169,7 @@ MODEL_DECISION_RENAME = {
     "behavior_level_bucket": "DAVRANIS_SEVIYE_BUCKET",
     "behavior_volatility_bucket": "DAVRANIS_VOLATILITE_BUCKET",
     "behavior_trend_bucket": "DAVRANIS_TREND_BUCKET",
-    "behavior_median_bill": "DAVRANIS_MEDYAN_ANA_METRIK",
+    "behavior_median_main_metric": "DAVRANIS_MEDYAN_ANA_METRIK",
     "behavior_volatility_log": "DAVRANIS_VOLATILITE_LOG",
     "behavior_trend_slope": "DAVRANIS_TREND_SLOPE",
     "model_challenger_score": "MODEL_CHALLENGER_SKORU",
@@ -389,17 +383,8 @@ def fmt_num(value: Any, digits: int = 2) -> str:
 def input_column_map(profile: dict[str, Any]) -> dict[str, str]:
     source_map = profile.get("input_column_map")
     if isinstance(source_map, dict):
-        return {str(k): str(v) for k, v in source_map.items()}
-    return {
-        "branch_id": "SUBE_KD",
-        "customer_id": profile.get("customer_id_column", "MUSTERINO"),
-        "customer_segment": "SEGMENTAD",
-        "invoice_month": "DONEM_AY",
-        "sector": "REF_ALTFAALIYET",
-        "active_subscriber": "AKTIF_ABONE",
-        "bill_amount": "FATURA_TTR",
-        "reference_feature": "TURNOVER_AMT",
-    }
+        return {str(k): str(v) for k, v in source_map.items() if not str(k).startswith("__")}
+    return {}
 
 
 def restore_input_columns(frame: pd.DataFrame, profile: dict[str, Any]) -> pd.DataFrame:
@@ -417,8 +402,10 @@ def input_output_columns(profile: dict[str, Any], available_columns: list[str]) 
     source_columns = [str(col) for col in profile.get("source_columns", [])]
     if source_columns:
         return [col for col in source_columns if col in available_columns]
-    preferred = ["SUBE_KD", "MUSTERINO", "KVKK_CUST", "SEGMENTAD", "DONEM_AY", "REF_ALTFAALIYET", "AKTIF_ABONE", "FATURA_TTR", "TURNOVER_AMT"]
-    return [col for col in preferred if col in available_columns]
+    mapped_columns = list(dict.fromkeys(input_column_map(profile).values()))
+    if mapped_columns:
+        return [col for col in mapped_columns if col in available_columns]
+    return [col for col in ["customer_id", "invoice_month", "main_metric"] if col in available_columns]
 
 
 DETAIL_OUTPUT_COLUMN_GROUPS = [
@@ -723,7 +710,7 @@ def safe_ratio(numerator: Any, denominator: Any) -> float:
 def display_peer_columns(value: Any) -> str:
     replacements = {
         "feature_ratio_bucket": "feature_ratio_bucket",
-        "active_subscriber_bucket": "exposure_bucket",
+        "exposure_bucket": "exposure_bucket",
     }
     text = str(value)
     parts = [replacements.get(part, part) for part in text.split("+")]
@@ -752,35 +739,35 @@ def decision_label_text(row: pd.Series) -> str:
 
 def strongest_signal_detail(row: pd.Series) -> str:
     signal_name = str(row.get("strongest_signal_name", "none"))
-    actual = row.get("bill_amount", np.nan)
-    expected = row.get("expected_bill_amount", np.nan)
+    actual = row.get("main_metric", np.nan)
+    expected = row.get("expected_main_metric", np.nan)
 
     if signal_name == "customer_seasonal":
-        seasonal = row.get("customer_seasonal_expected_bill", np.nan)
+        seasonal = row.get("customer_seasonal_expected_main_metric", np.nan)
         return (
             f"Skorlanan ana metrik {fmt_num(actual)}; musterinin ayni sezon beklentisi "
             f"{fmt_num(seasonal)}; ana metrik/sezonsal beklenti orani {fmt_num(safe_ratio(actual, seasonal), 3)}."
         )
     if signal_name == "customer_trend":
-        trend = row.get("customer_trend_expected_bill", np.nan)
+        trend = row.get("customer_trend_expected_main_metric", np.nan)
         return (
             f"Skorlanan ana metrik {fmt_num(actual)}; musterinin trend beklentisi "
             f"{fmt_num(trend)}; ana metrik/trend beklenti orani {fmt_num(safe_ratio(actual, trend), 3)}."
         )
     if signal_name == "self_history":
-        prior = row.get("prior_median_bill", np.nan)
+        prior = row.get("prior_median_main_metric", np.nan)
         return (
             f"Skorlanan ana metrik {fmt_num(actual)}; musterinin gecmis medyani "
             f"{fmt_num(prior)}; ana metrik/kendi medyan orani {fmt_num(safe_ratio(actual, prior), 3)}."
         )
     if signal_name == "customer_recent_regime":
-        recent = row.get("customer_recent3_median_bill", np.nan)
+        recent = row.get("customer_recent3_median_main_metric", np.nan)
         return (
             f"Skorlanan ana metrik {fmt_num(actual)}; musterinin son 3 ay medyani "
             f"{fmt_num(recent)}; ana metrik/son 3 ay medyan orani {fmt_num(safe_ratio(actual, recent), 3)}."
         )
     if signal_name == "current_peer":
-        current_peer = row.get("current_peer_median_bill", np.nan)
+        current_peer = row.get("current_peer_median_main_metric", np.nan)
         return (
             f"Skorlanan ana metrik {fmt_num(actual)}; ayni ay peer medyani "
             f"{fmt_num(current_peer)}; ana metrik/current peer orani {fmt_num(safe_ratio(actual, current_peer), 3)}."
@@ -791,7 +778,7 @@ def strongest_signal_detail(row: pd.Series) -> str:
             f"{fmt_num(expected)}; ana metrik/peer beklenen orani {fmt_num(safe_ratio(actual, expected), 3)}."
         )
     if signal_name == "peer_trend":
-        peer_trend = row.get("peer_trend_expected_bill", np.nan)
+        peer_trend = row.get("peer_trend_expected_main_metric", np.nan)
         return (
             f"Skorlanan ana metrik {fmt_num(actual)}; peer trend beklentisi "
             f"{fmt_num(peer_trend)}; ana metrik/peer trend orani {fmt_num(safe_ratio(actual, peer_trend), 3)}."
@@ -928,7 +915,7 @@ def build_decision_table(
     source_names = input_column_map(profile)
     sort_cols = [
         col
-        for col in [source_names.get("customer_id", "MUSTERINO"), source_names.get("invoice_month", "DONEM_AY")]
+        for col in [source_names.get("customer_id", "customer_id"), source_names.get("invoice_month", "invoice_month")]
         if col in out.columns
     ]
     if sort_cols:
@@ -951,11 +938,11 @@ def month_range(start_period: int, end_period: int) -> list[int]:
 
 
 def build_peer_monthly_stats(prepared: pd.DataFrame, peer_group_columns: list[str]) -> dict[str, pd.DataFrame]:
-    valid = prepared.loc[prepared["valid_bill_for_model"] & prepared["bill_amount"].notna()].copy()
+    valid = prepared.loc[prepared["valid_main_metric_for_model"] & prepared["main_metric"].notna()].copy()
     ratio_enabled = bool(prepared.attrs.get("feature_ratio", {}).get("enabled", False))
     valid["main_to_reference_ratio"] = np.where(
         ratio_enabled & valid["reference_feature_for_model"].astype(float).gt(0),
-        valid["bill_amount"] / valid["reference_feature_for_model"].astype(float),
+        valid["main_metric"] / valid["reference_feature_for_model"].astype(float),
         np.nan,
     )
     out: dict[str, pd.DataFrame] = {}
@@ -967,8 +954,8 @@ def build_peer_monthly_stats(prepared: pd.DataFrame, peer_group_columns: list[st
             .agg(
                 peer_month_row_count=("customer_id", "size"),
                 peer_month_customer_count=("customer_id", "nunique"),
-                peer_month_bill_median=("bill_amount", "median"),
-                peer_month_bill_mean=("bill_amount", "mean"),
+                peer_month_main_metric_median=("main_metric", "median"),
+                peer_month_main_metric_mean=("main_metric", "mean"),
                 peer_month_reference_feature_median=("reference_feature_for_model", "median"),
                 peer_month_main_to_reference_median=("main_to_reference_ratio", "median"),
             )
@@ -993,12 +980,9 @@ def build_detail_context(scores: pd.DataFrame, not_scored: pd.DataFrame) -> pd.D
         "customer_id",
         "invoice_month",
         "calendar_month",
-        "branch_id",
-        "customer_segment",
-        "sector",
         "feature_ratio_bucket",
-        "active_subscriber_bucket",
-        "bill_amount",
+        "exposure_bucket",
+        "main_metric",
         "reference_feature",
         "ratio_numerator_source_col",
         "ratio_denominator_source_col",
@@ -1010,13 +994,13 @@ def build_detail_context(scores: pd.DataFrame, not_scored: pd.DataFrame) -> pd.D
         "feature_ratio_peer_gate_passed",
         "feature_ratio_peer_gate_reasons",
         "feature_ratio_peer_enabled",
-        "expected_bill_amount",
-        "current_peer_median_bill",
-        "prior_median_bill",
-        "peer_trend_expected_bill",
-        "customer_trend_expected_bill",
-        "customer_seasonal_expected_bill",
-        "customer_recent3_median_bill",
+        "expected_main_metric",
+        "current_peer_median_main_metric",
+        "prior_median_main_metric",
+        "peer_trend_expected_main_metric",
+        "customer_trend_expected_main_metric",
+        "customer_seasonal_expected_main_metric",
+        "customer_recent3_median_main_metric",
         "customer_recent3_range_log",
         "actual_to_expected_ratio",
         "main_to_reference_ratio",
@@ -1093,7 +1077,7 @@ def build_detail_context(scores: pd.DataFrame, not_scored: pd.DataFrame) -> pd.D
         "behavior_level_bucket",
         "behavior_volatility_bucket",
         "behavior_trend_bucket",
-        "behavior_median_bill",
+        "behavior_median_main_metric",
         "behavior_volatility_log",
         "behavior_trend_slope",
         "final_anomaly_score",
@@ -1160,15 +1144,12 @@ def build_detail_context(scores: pd.DataFrame, not_scored: pd.DataFrame) -> pd.D
     rename = {
         "invoice_month": "scoring_invoice_month",
         "calendar_month": "scoring_calendar_month",
-        "branch_id": "scoring_branch_id",
-        "customer_segment": "scoring_customer_segment",
-        "sector": "scoring_sector",
         "feature_ratio_bucket": "scoring_feature_ratio_bucket",
-        "active_subscriber_bucket": "scoring_active_subscriber_bucket",
-        "bill_amount": "scoring_bill_amount",
+        "exposure_bucket": "scoring_exposure_bucket",
+        "main_metric": "scoring_main_metric",
         "reference_feature": "scoring_reference_feature",
-        "expected_bill_amount": "scoring_peer_expected_bill_amount",
-        "prior_median_bill": "scoring_customer_prior_median_bill",
+        "expected_main_metric": "scoring_peer_expected_main_metric",
+        "prior_median_main_metric": "scoring_customer_prior_median_main_metric",
         "human_readable_reason": "decision_reason_sentence",
         "final_anomaly_score": "anomaly_score",
         "confidence": "confidence_pct",
@@ -1190,7 +1171,7 @@ def build_detail_context(scores: pd.DataFrame, not_scored: pd.DataFrame) -> pd.D
 def build_month_comment(row: pd.Series) -> str:
     if bool(row.get("is_scoring_month", False)):
         return row.get("decision_reason_sentence", "")
-    if bool(row.get("customer_bill_missing_flag", False)):
+    if bool(row.get("customer_main_metric_missing_flag", False)):
         return "Bu ay musteri ana metrigi yok; deger doldurulmadi ve gap/coverage bilgisinde takip edilir."
     ratio = row.get("customer_vs_peer_month_ratio", np.nan)
     if pd.isna(ratio):
@@ -1212,7 +1193,7 @@ def add_peer_ratio_context(detail: pd.DataFrame) -> pd.DataFrame:
     out["customer_vs_peer_ratio_reference_n"] = np.nan
 
     scoring = out["is_scoring_month"].fillna(False)
-    missing = out["customer_bill_missing_flag"].fillna(False)
+    missing = out["customer_main_metric_missing_flag"].fillna(False)
     ratio = out["customer_vs_peer_month_ratio"]
     valid_mask = ~scoring & ~missing & ratio.notna() & ratio.astype(float).gt(0)
     if not bool(valid_mask.any()):
@@ -1237,7 +1218,7 @@ def add_peer_ratio_context(detail: pd.DataFrame) -> pd.DataFrame:
 def assign_month_comments(detail: pd.DataFrame) -> pd.Series:
     comments = pd.Series("Gecmis ayda musteri ana metrigi peer medyanina yakin.", index=detail.index, dtype=object)
     scoring = detail["is_scoring_month"].fillna(False)
-    missing = detail["customer_bill_missing_flag"].fillna(False) & ~scoring
+    missing = detail["customer_main_metric_missing_flag"].fillna(False) & ~scoring
     ratio = detail["customer_vs_peer_month_ratio"]
     comments.loc[missing] = "Bu ay musteri ana metrigi yok; deger doldurulmadi ve gap/coverage bilgisinde takip edilir."
     comments.loc[ratio.isna() & ~missing & ~scoring] = (
@@ -1267,8 +1248,8 @@ def merge_peer_stats(detail: pd.DataFrame, peer_stats: dict[str, pd.DataFrame]) 
     peer_stat_cols = [
         "peer_month_row_count",
         "peer_month_customer_count",
-        "peer_month_bill_median",
-        "peer_month_bill_mean",
+        "peer_month_main_metric_median",
+        "peer_month_main_metric_mean",
         "peer_month_reference_feature_median",
         "peer_month_main_to_reference_median",
     ]
@@ -1313,7 +1294,7 @@ def build_detail_table(
     ratio_enabled = bool(profile.get("feature_ratio_enabled", False))
     history["main_to_reference_ratio"] = np.where(
         ratio_enabled & history["reference_feature_for_model"].astype(float).gt(0),
-        history["bill_amount"] / history["reference_feature_for_model"].astype(float),
+        history["main_metric"] / history["reference_feature_for_model"].astype(float),
         np.nan,
     )
 
@@ -1336,30 +1317,27 @@ def build_detail_table(
     series_cols = [
         "customer_id",
         "invoice_month",
-        "branch_id",
-        "customer_segment",
-        "sector",
-        "active_subscriber",
-        "active_subscriber_bucket",
-        "active_subscriber_missing_flag",
+        "exposure_feature",
+        "exposure_bucket",
+        "exposure_feature_missing_flag",
         "feature_ratio_bucket",
-        "bill_amount",
+        "main_metric",
         "reference_feature",
         "main_to_reference_ratio",
         "source_row_count",
         "customer_obs_count_total",
         "month_gap_from_previous",
     ]
+    for col in profile.get("source_columns", []):
+        if col not in series_cols and col in history.columns:
+            series_cols.append(col)
     customer_series = history[[col for col in series_cols if col in history.columns]].rename(
         columns={
-            "branch_id": "customer_month_branch_id",
-            "customer_segment": "customer_month_segment",
-            "sector": "customer_month_sector",
-            "active_subscriber": "customer_month_active_subscriber",
-            "active_subscriber_bucket": "customer_month_active_subscriber_bucket",
-            "active_subscriber_missing_flag": "customer_month_active_subscriber_missing_flag",
+            "exposure_feature": "customer_month_exposure_feature",
+            "exposure_bucket": "customer_month_exposure_bucket",
+            "exposure_feature_missing_flag": "customer_month_exposure_feature_missing_flag",
             "feature_ratio_bucket": "customer_month_feature_ratio_bucket",
-            "bill_amount": "customer_bill_amount",
+            "main_metric": "customer_main_metric",
             "reference_feature": "customer_reference_feature",
             "main_to_reference_ratio": "customer_main_to_reference_ratio",
         }
@@ -1367,24 +1345,24 @@ def build_detail_table(
     detail = grid.merge(customer_series, on=["customer_id", "invoice_month"], how="left")
     detail = detail.merge(context, on="customer_id", how="left")
     detail["is_scoring_month"] = detail["invoice_month"].eq(scoring_month)
-    detail["customer_bill_missing_flag"] = detail["customer_bill_amount"].isna()
+    detail["customer_main_metric_missing_flag"] = detail["customer_main_metric"].isna()
 
     peer_stats = build_peer_monthly_stats(history, context["peer_group_columns"].dropna().astype(str).tolist())
     detail = merge_peer_stats(detail, peer_stats)
-    detail["customer_vs_peer_month_ratio"] = detail["customer_bill_amount"] / detail["peer_month_bill_median"].clip(lower=1e-6)
+    detail["customer_vs_peer_month_ratio"] = detail["customer_main_metric"] / detail["peer_month_main_metric_median"].clip(lower=1e-6)
     detail = add_peer_ratio_context(detail)
     detail["month_level_comment"] = assign_month_comments(detail)
 
     scoring_only_cols = [
-        "scoring_bill_amount",
-        "scoring_peer_expected_bill_amount",
-        "current_peer_median_bill",
-        "scoring_customer_prior_median_bill",
-        "customer_trend_expected_bill",
-        "customer_seasonal_expected_bill",
-        "customer_recent3_median_bill",
+        "scoring_main_metric",
+        "scoring_peer_expected_main_metric",
+        "current_peer_median_main_metric",
+        "scoring_customer_prior_median_main_metric",
+        "customer_trend_expected_main_metric",
+        "customer_seasonal_expected_main_metric",
+        "customer_recent3_median_main_metric",
         "customer_recent3_range_log",
-        "peer_trend_expected_bill",
+        "peer_trend_expected_main_metric",
         "actual_to_expected_ratio",
         "anomaly_score",
         "confidence_pct",
@@ -1476,7 +1454,7 @@ def build_detail_table(
         "behavior_level_bucket",
         "behavior_volatility_bucket",
         "behavior_trend_bucket",
-        "behavior_median_bill",
+        "behavior_median_main_metric",
         "behavior_volatility_log",
         "behavior_trend_slope",
         "previous_score_month",
@@ -1495,25 +1473,22 @@ def build_detail_table(
 
     source_names = input_column_map(profile)
     out = pd.DataFrame(index=detail.index)
+    for source_col in profile.get("source_columns", []):
+        if source_col in detail.columns:
+            out[source_col] = detail[source_col]
     for logical, source_name in source_names.items():
         if logical == "customer_id":
             out[source_name] = detail["customer_id"]
         elif logical == "invoice_month":
             out[source_name] = detail["invoice_month"]
-        elif logical == "branch_id":
-            out[source_name] = detail["customer_month_branch_id"]
-        elif logical == "customer_segment":
-            out[source_name] = detail["customer_month_segment"]
-        elif logical == "sector":
-            out[source_name] = detail["customer_month_sector"]
-        elif logical == "active_subscriber":
-            out[source_name] = detail["customer_month_active_subscriber"]
-        elif logical == "bill_amount":
-            out[source_name] = detail["customer_bill_amount"]
+        elif logical == "exposure_feature":
+            out[source_name] = detail["customer_month_exposure_feature"]
+        elif logical == "main_metric":
+            out[source_name] = detail["customer_main_metric"]
         elif logical == "reference_feature":
             out[source_name] = detail["customer_reference_feature"]
 
-    out["ANA_METRIK_EKSIK_MI"] = detail["customer_bill_missing_flag"]
+    out["ANA_METRIK_EKSIK_MI"] = detail["customer_main_metric_missing_flag"]
     ratio_settings = profile.get("feature_ratio", {})
     ratio_enabled = bool(profile.get("feature_ratio_enabled", False))
     if ratio_enabled:
@@ -1526,8 +1501,8 @@ def build_detail_table(
     out["PEER_KOLONLARI"] = detail["peer_group_columns"].map(display_peer_columns)
     out["PEER_AYLIK_MUSTERI_ADET"] = detail["peer_month_customer_count"]
     out["PEER_AYLIK_SATIR_ADET"] = detail["peer_month_row_count"]
-    out["PEER_AYLIK_ANA_METRIK_MEDYAN"] = detail["peer_month_bill_median"]
-    out["PEER_AYLIK_ANA_METRIK_ORTALAMA"] = detail["peer_month_bill_mean"]
+    out["PEER_AYLIK_ANA_METRIK_MEDYAN"] = detail["peer_month_main_metric_median"]
+    out["PEER_AYLIK_ANA_METRIK_ORTALAMA"] = detail["peer_month_main_metric_mean"]
     if ratio_enabled:
         out["PEER_AYLIK_ORAN_PAYDA_MEDYAN"] = detail["peer_month_reference_feature_median"]
         out["PEER_AYLIK_ANA_METRIK_PAYDA_ORAN_MEDYAN"] = detail["peer_month_main_to_reference_median"]
@@ -1554,15 +1529,15 @@ def build_detail_table(
         "strongest_signal_label": "ANA_SINYAL",
         "strongest_signal_z": "ANA_SINYAL_Z",
         "strongest_signal_score_pct": "ANA_SINYAL_SKORU",
-        "scoring_bill_amount": "SKORLANAN_ANA_METRIK",
-        "scoring_peer_expected_bill_amount": "BEKLENEN_ANA_METRIK",
-        "current_peer_median_bill": "PEER_GUNCEL_MEDYAN_ANA_METRIK",
-        "scoring_customer_prior_median_bill": "MUSTERI_GECMIS_MEDYAN_ANA_METRIK",
-        "customer_trend_expected_bill": "MUSTERI_TREND_BEKLENEN_ANA_METRIK",
-        "customer_seasonal_expected_bill": "MUSTERI_SEZON_BEKLENEN_ANA_METRIK",
-        "customer_recent3_median_bill": "MUSTERI_SON3_AY_MEDYAN_ANA_METRIK",
+        "scoring_main_metric": "SKORLANAN_ANA_METRIK",
+        "scoring_peer_expected_main_metric": "BEKLENEN_ANA_METRIK",
+        "current_peer_median_main_metric": "PEER_GUNCEL_MEDYAN_ANA_METRIK",
+        "scoring_customer_prior_median_main_metric": "MUSTERI_GECMIS_MEDYAN_ANA_METRIK",
+        "customer_trend_expected_main_metric": "MUSTERI_TREND_BEKLENEN_ANA_METRIK",
+        "customer_seasonal_expected_main_metric": "MUSTERI_SEZON_BEKLENEN_ANA_METRIK",
+        "customer_recent3_median_main_metric": "MUSTERI_SON3_AY_MEDYAN_ANA_METRIK",
         "customer_recent3_range_log": "MUSTERI_SON3_AY_RANGE_LOG",
-        "peer_trend_expected_bill": "PEER_TREND_BEKLENEN_ANA_METRIK",
+        "peer_trend_expected_main_metric": "PEER_TREND_BEKLENEN_ANA_METRIK",
         "actual_to_expected_ratio": "GERCEK_BEKLENEN_ORANI",
         "historical_peer_z": "GECMIS_PEER_Z",
         "historical_peer_score": "GECMIS_PEER_SKORU",
@@ -1626,7 +1601,7 @@ def build_detail_table(
         "behavior_level_bucket": "DAVRANIS_SEVIYE_BUCKET",
         "behavior_volatility_bucket": "DAVRANIS_VOLATILITE_BUCKET",
         "behavior_trend_bucket": "DAVRANIS_TREND_BUCKET",
-        "behavior_median_bill": "DAVRANIS_MEDYAN_ANA_METRIK",
+        "behavior_median_main_metric": "DAVRANIS_MEDYAN_ANA_METRIK",
         "behavior_volatility_log": "DAVRANIS_VOLATILITE_LOG",
         "behavior_trend_slope": "DAVRANIS_TREND_SLOPE",
         "model_challenger_score": "MODEL_CHALLENGER_SKORU",
@@ -1667,7 +1642,7 @@ def build_detail_table(
         if source_col in detail.columns:
             out[output_col] = detail[source_col]
     out["MODEL_DONEM_AY"] = int(scoring_month)
-    invoice_source_col = source_names.get("invoice_month", "DONEM_AY")
+    invoice_source_col = source_names.get("invoice_month", "invoice_month")
     anomaly_flag = pd.Series(0, index=out.index, dtype=int)
     anomaly_flag.loc[
         out.get("ANOMALI_ETIKETI", pd.Series(index=out.index, dtype=object)).notna()
@@ -1676,7 +1651,14 @@ def build_detail_table(
     out["ANOMALI_FLAG"] = anomaly_flag.astype(int)
 
     ordered_cols = detail_output_columns(profile, list(out.columns))
-    return out[ordered_cols].sort_values([source_names.get("customer_id", "MUSTERINO"), source_names.get("invoice_month", "DONEM_AY")])
+    sort_cols = [
+        col
+        for col in [source_names.get("customer_id", "customer_id"), source_names.get("invoice_month", "invoice_month")]
+        if col in out.columns
+    ]
+    if sort_cols:
+        return out[ordered_cols].sort_values(sort_cols)
+    return out[ordered_cols]
 
 
 def add_run_columns(frame: pd.DataFrame, scoring_month: int) -> pd.DataFrame:
@@ -1867,6 +1849,7 @@ def prepare_oracle_table(
     create_table: bool,
     scoring_month: int,
     table_role: str,
+    period_column: str | None = None,
 ) -> None:
     exists = oracle_table_exists(connection, owner, table)
     if mode == "replace" and exists:
@@ -1903,9 +1886,9 @@ def prepare_oracle_table(
                     f"delete from {owner}.{table} where MODEL_DONEM_AY = :scoring_month",
                     {"scoring_month": scoring_month},
                 )
-            elif table_role == "decision" and "DONEM_AY" in dtype_map:
+            elif table_role == "decision" and period_column and period_column in dtype_map:
                 cursor.execute(
-                    f"delete from {owner}.{table} where DONEM_AY = :scoring_month",
+                    f"delete from {owner}.{table} where {period_column} = :scoring_month",
                     {"scoring_month": scoring_month},
                 )
             else:
@@ -1941,6 +1924,7 @@ def write_outputs_to_oracle(
     chunksize: int | None,
     create_table: bool,
     connection_config: dict[str, Any] | None = None,
+    decision_period_column: str | None = None,
 ) -> dict[str, Any]:
     try:
         import oracledb
@@ -1963,6 +1947,7 @@ def write_outputs_to_oracle(
 
     decision_oracle, decision_col_map, decision_dtypes = dataframe_for_oracle(decision_table)
     detail_oracle, detail_col_map, detail_dtypes = dataframe_for_oracle(detail_table)
+    decision_period_oracle = decision_col_map.get(decision_period_column or "", None)
     dsn = oracle_dsn(conn_cfg)
 
     with oracledb.connect(user=conn_cfg["user"], password=conn_cfg["password"], dsn=dsn) as connection:
@@ -1975,6 +1960,7 @@ def write_outputs_to_oracle(
             create_table,
             scoring_month,
             table_role="decision",
+            period_column=decision_period_oracle,
         )
         decision_rows = insert_oracle_dataframe(connection, owner_name, decision_name, decision_oracle, write_chunksize)
         prepare_oracle_table(
@@ -1986,6 +1972,7 @@ def write_outputs_to_oracle(
             create_table,
             scoring_month,
             table_role="detail",
+            period_column=None,
         )
         detail_rows = insert_oracle_dataframe(connection, owner_name, detail_name, detail_oracle, write_chunksize)
         connection.commit()
@@ -2204,6 +2191,7 @@ def run_implementation_scoring(
             chunksize=oracle_chunksize,
             create_table=oracle_create_table,
             connection_config=oracle_connection_config,
+            decision_period_column=input_column_map(profile).get("invoice_month", "invoice_month"),
         )
         progress("oracle_write_done")
 

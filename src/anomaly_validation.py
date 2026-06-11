@@ -327,13 +327,10 @@ def top_examples(month: int, run: core.ModelRun, limit: int = 200) -> pd.DataFra
     columns = [
         "customer_id",
         "invoice_month",
-        "customer_segment",
-        "sector",
-        "branch_id",
-        "bill_amount",
-        "expected_bill_amount",
-        "current_peer_median_bill",
-        "prior_median_bill",
+        "main_metric",
+        "expected_main_metric",
+        "current_peer_median_main_metric",
+        "prior_median_main_metric",
         "final_anomaly_score",
         "confidence",
         "anomaly_label",
@@ -400,9 +397,9 @@ def perturb_scoring_values(
 ) -> pd.DataFrame:
     out = prepared.copy()
     mask = out["invoice_month"].eq(scoring_month) & out["customer_id"].isin(set(customer_ids.astype(str)))
-    out.loc[mask, "bill_amount"] = pd.to_numeric(out.loc[mask, "bill_amount"], errors="coerce") * factor
-    out.loc[mask, "log_bill"] = np.log1p(out.loc[mask, "bill_amount"].clip(lower=0))
-    out.loc[mask, "valid_bill_for_model"] = out.loc[mask, "bill_amount"].notna() & out.loc[mask, "bill_amount"].ge(0)
+    out.loc[mask, "main_metric"] = pd.to_numeric(out.loc[mask, "main_metric"], errors="coerce") * factor
+    out.loc[mask, "log_main_metric"] = np.log1p(out.loc[mask, "main_metric"].clip(lower=0))
+    out.loc[mask, "valid_main_metric_for_model"] = out.loc[mask, "main_metric"].notna() & out.loc[mask, "main_metric"].ge(0)
     out.attrs = dict(prepared.attrs)
     return out
 
@@ -434,7 +431,7 @@ def median_score_delta(base_run: core.ModelRun, perturbed_run: core.ModelRun, cu
 
 def sample_stress_customers(base_scores: pd.DataFrame, sample_size: int) -> dict[str, pd.Series]:
     positive = base_scores.loc[
-        base_scores["bill_amount"].notna() & base_scores["bill_amount"].gt(0),
+        base_scores["main_metric"].notna() & base_scores["main_metric"].gt(0),
         "customer_id",
     ].drop_duplicates()
     samples: dict[str, pd.Series] = {
