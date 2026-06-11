@@ -17,8 +17,6 @@ VARIABLE_TOKEN_ALIASES = {
     "segment_variables",
     "segments",
     "segment_vars",
-    "feature_peer_variables",
-    "feature_buckets",
 }
 
 DEFAULT_FEATURE_BUCKET_VARIANTS = ("q3", "q4", "q5", "q8")
@@ -232,22 +230,6 @@ def peer_variable_names_from_config(config: dict[str, Any]) -> list[str]:
     peers: list[str] = []
     for column in groups["segment_variables"]:
         peers.append(reverse_role_map.get(column, column))
-    ratio = _ratio_feature_config(config)
-    ratio_peer_enabled = str(ratio.get("use_as_peer_variable", True)).strip().lower() not in {"false", "0", "no", "hayir"}
-    if "reference_feature" in role_map and ratio_peer_enabled:
-        peers.extend(_feature_bucket_names_from_config(config) or ["feature_ratio_bucket"])
-    if "exposure_feature" in role_map:
-        peers.append("exposure_bucket")
-    behavior = _behavior_peer_config(config)
-    if bool(behavior.get("enabled", False)) and bool(behavior.get("use_as_peer_variable", True)):
-        peers.extend(
-            [
-                "behavior_level_bucket",
-                "behavior_volatility_bucket",
-                "behavior_trend_bucket",
-                "behavior_cluster",
-            ]
-        )
     return list(dict.fromkeys(peers))
 
 

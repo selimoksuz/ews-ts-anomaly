@@ -201,7 +201,7 @@ DEFAULT_DERIVED_FEATURES: dict[str, Any] = {
         "enabled": "auto",
         "numerator": "main_metric",
         "denominator": "reference_feature",
-        "use_as_peer_variable": True,
+        "use_as_peer_variable": False,
         "use_as_anomaly_signal": True,
         "quality_gate": {
             "enabled": True,
@@ -218,7 +218,7 @@ DEFAULT_DERIVED_FEATURES: dict[str, Any] = {
     },
     "behavior_peer": {
         "enabled": False,
-        "use_as_peer_variable": True,
+        "use_as_peer_variable": False,
     },
 }
 
@@ -443,7 +443,7 @@ def feature_bucket_variant_specs(config: Mapping[str, Any] | None = None) -> lis
         enabled = bool(bucket_mapping.get("enabled", True))
         raw_variants = bucket_mapping.get("variants", DEFAULT_FEATURE_BUCKET_VARIANTS)
         min_positive_rows = int(bucket_mapping.get("min_positive_rows", 100))
-    if not enabled or not _auto_bool(ratio.get("use_as_peer_variable", True), True):
+    if not enabled or not _auto_bool(ratio.get("use_as_peer_variable", False), False):
         return []
 
     specs: list[dict[str, Any]] = []
@@ -559,7 +559,7 @@ def feature_ratio_settings(
     enabled_default = has_denominator and bool(denominator_usable)
     enabled = _auto_bool(ratio.get("enabled", "auto"), enabled_default)
     signal_enabled = enabled and _auto_bool(ratio.get("use_as_anomaly_signal", True), True)
-    peer_enabled = enabled and _auto_bool(ratio.get("use_as_peer_variable", True), True)
+    peer_enabled = enabled and _auto_bool(ratio.get("use_as_peer_variable", False), False)
     return {
         "enabled": bool(enabled),
         "use_as_anomaly_signal": bool(signal_enabled),
@@ -576,7 +576,7 @@ def feature_ratio_settings(
 def behavior_peer_enabled(config: Mapping[str, Any] | None) -> bool:
     values = normalize_derived_features_config(config)
     behavior = dict(values.get("behavior_peer", {}))
-    return bool(behavior.get("enabled", False)) and bool(behavior.get("use_as_peer_variable", True))
+    return bool(behavior.get("enabled", False)) and bool(behavior.get("use_as_peer_variable", False))
 
 
 def robust_group_stats(frame: pd.DataFrame, key: list[str], value_col: str, prefix: str) -> pd.DataFrame:
@@ -3825,7 +3825,7 @@ def write_report_note(output_dir: Path, source_stem: str, summary: dict[str, Any
         else "Feature ratio: disabled; no ratio-derived signal is used in final evidence aggregation."
     )
     peer_text = (
-        "Peer hierarchy: selected segment variables and enabled derived peer variables are tried first, "
+        "Peer hierarchy: only configured segment variables are tried first, "
         "then broader fallbacks down to global. A narrow peer is used only when support thresholds pass."
     )
     note = f"""# Generic Peer Anomaly Technical Note

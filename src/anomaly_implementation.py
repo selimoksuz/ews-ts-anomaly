@@ -1590,10 +1590,12 @@ def run_implementation_scoring(
         f"rows={len(prepared):,} period_min={profile['fit_window_period_min']} period_max={profile['fit_window_period_max']}"
     )
 
-    effective_peer_config = adaptive.with_excluded_variables(
+    segment_peer_columns = [str(col) for col in profile.get("segment_columns", []) if str(col) in prepared.columns]
+    effective_peer_config = adaptive.with_allowed_variables(
         peer_config or adaptive.PeerSelectionConfig(),
-        peer_role_exclusions(profile),
+        segment_peer_columns,
     )
+    effective_peer_config = adaptive.with_excluded_variables(effective_peer_config, peer_role_exclusions(profile))
     progress("score_scoring_month_start")
     run = core.score_scoring_month(
         prepared,

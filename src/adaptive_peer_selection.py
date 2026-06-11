@@ -278,6 +278,37 @@ def with_excluded_variables(config: PeerSelectionConfig, extra_exclusions: list[
     )
 
 
+def with_allowed_variables(config: PeerSelectionConfig, allowed_variables: list[str] | tuple[str, ...]) -> PeerSelectionConfig:
+    allowed = dedupe([str(item) for item in allowed_variables])
+    allowed_set = set(allowed)
+    priority = tuple(var for var in config.priority_variables if var in allowed_set) if config.priority_variables else allowed
+    if not priority:
+        priority = ("__no_segment_variable__",)
+    mandatory = tuple(var for var in config.mandatory_variables if var in allowed_set)
+    fallback = tuple(var for var in config.fallback_variables if var in allowed_set)
+    explicit = tuple(
+        candidate
+        for candidate in config.explicit_levels
+        if candidate.columns and all(column in allowed_set for column in candidate.columns)
+    )
+    return PeerSelectionConfig(
+        priority_variables=priority,
+        mandatory_variables=mandatory,
+        fallback_variables=fallback,
+        explicit_levels=explicit,
+        include_global=config.include_global,
+        max_variables_per_peer=config.max_variables_per_peer,
+        candidate_strategy=config.candidate_strategy,
+        selection_mode=config.selection_mode,
+        objective_weights=config.objective_weights,
+        distribution_quality=config.distribution_quality,
+        excluded_variables=config.excluded_variables,
+        max_inferred_cardinality=config.max_inferred_cardinality,
+        max_candidate_count=config.max_candidate_count,
+        blocked_values=config.blocked_values,
+    )
+
+
 def peer_level_name(columns: tuple[str, ...] | list[str]) -> str:
     if not columns:
         return "global"

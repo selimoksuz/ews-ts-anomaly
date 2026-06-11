@@ -41,7 +41,6 @@ model:
       enabled: true
       numerator: main_feature
       denominator: TURNOVER_AMT
-      use_as_peer_variable: true
       use_as_anomaly_signal: true
       quality_gate:
         # true ise oran skora girmeden once kaynak ve peer kalite kontrollerinden gecmelidir.
@@ -54,17 +53,15 @@ model:
         min_peer_ratio_rows: 20
         # Secilen peer icinde ratio MAD cok dusukse oran sinyali kapatilir.
         min_peer_ratio_mad: 0.001
-    # Musteri gecmis davranisindan level/volatilite/trend cluster'i uretip peer adayi olarak kullanir.
-    # Default kapali; acilirsa sadece scoring ayindan onceki gecmisle hesaplanir.
+    # Musteri gecmis davranisindan level/volatilite/trend cluster'i uretir.
+    # Peer segmentasyonuna otomatik girmez; sadece detail/model diagnostic olarak kalir.
     behavior_peer:
-      enabled: true
-      use_as_peer_variable: true
-    # Ek numeric feature'i bucket'a cevirip peer adayi yapmak icin kullanilir.
+      enabled: false
+    # Ek numeric feature'i bucket'a cevirir; peer adayina otomatik girmez.
     # internal_role: exposure_feature simdilik tek generic exposure bucket'ina map edilir.
     bucket_features:
       - source: AKTIF_ABONE
         internal_role: exposure_feature
-        use_as_peer_variable: true
   score_aggregation:
     # Evidence-first skor konsolidasyonu. Sinyalleri agirlikli ortalama yerine p-value kanitiyle toplar.
     method: directional_empirical_evidence
@@ -189,18 +186,14 @@ model:
       coarse_peer_cap: 65.0
 
 peer_selection:
-  # Peer adaylari otomatik uretilir:
-  # - variables.segment_variables icindeki kolonlar
-  # - model.derived_features ile aktif edilen generic peer feature bucket'lari
-  # - behavior_peer aktifse scoring ayi oncesi musteri davranis bucket'lari
-  # Bu alanda proses-spesifik veya uretilmis kolon listesi yazilmaz.
+  # Peer adaylari sadece variables.segment_variables icindeki kolonlardan uretilir.
+  # Oran, behavior veya bucket diagnostic'leri peer segmentasyonuna otomatik girmez.
   priority_variables: auto
   # Hicbir peer yeterli degilse global peer adayini da dene.
   include_global: true
   # Bir peer instance'inda kullanilabilecek maksimum degisken sayisi.
   max_variables_per_peer: 6
-  # Segment degiskenleri, feature bucket'lari ve davranis bucket'lari arasindan
-  # objective'e girecek aday lattice'i otomatik kurar.
+  # Segment degiskenleri arasindan objective'e girecek aday lattice'i otomatik kurar.
   candidate_strategy: objective_lattice
   # Destek gecen peerler arasinda objective skoru en iyi olani secer.
   selection_mode: objective
@@ -247,7 +240,7 @@ peer_selection:
     # Raw standart sapma / medyan orani bu seviyeye gelirse oynaklik cezasi tam kabul edilir.
     std_median_full_penalty_ratio: 12.0
   # Yuksek cardinality'li segment kolonlari tek basina denenir; bu esigi asarsa
-  # feature/behavior bucket'lariyla derinlestirilmez.
+  # daha derin kombinasyonlarda kisitlanir.
   max_inferred_cardinality: 250
   # Peer seciminden tamamen cikarmak istedigin degiskenleri buraya yaz.
   exclude_variables: []

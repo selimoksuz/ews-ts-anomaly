@@ -7,8 +7,13 @@ variables:
     - MUSTERI_ID
   time_variables:
     - AY
-  # auto: id/time/main/reference/exclude kolonlari cikarilir; kalan uygun kolonlar peer adayi olarak infer edilir.
-  segment_variables: auto
+  # Adaptif peer sadece bu listedeki segment kolonlarini dener.
+  segment_variables:
+    - CST_NACE_CODE
+    - CST_NACE_II_CODE
+    - CST_SEGMENT
+    - CST_LOCATION_CITY
+    - BOLGE_ADI
   # Ana skorlanacak metrik.
   main_feature: AYLIK_CIRO_FIXED_20260531
   feature_variables:
@@ -29,7 +34,6 @@ model:
       enabled: true
       numerator: main_feature
       denominator: TURNOVER_AMT_FIXED_20260531
-      use_as_peer_variable: true
       use_as_anomaly_signal: true
       quality_gate:
         enabled: true
@@ -38,8 +42,7 @@ model:
         min_peer_ratio_rows: 20
         min_peer_ratio_mad: 0.001
     behavior_peer:
-      enabled: true
-      use_as_peer_variable: true
+      enabled: false
 
 peer_selection:
   priority_variables: auto
