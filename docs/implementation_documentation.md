@@ -5,6 +5,7 @@
 - `src/`: model, config, IO ve rapor kodlari
 - `scripts/`: Windows PowerShell ve Linux/macOS shell runner'lari
 - `configs/anomaly.yaml`: model ve peer secim parametreleri
+- `configs/output_schema.yaml`: uretilen detail kolon sirasi, Oracle aliaslari ve long-text kolonlari
 - `configs/data_source.example.yaml`: datasource template
 - `configs/data_source.yaml`: ortam bazli gercek datasource; git'e alinmaz
 - `data/`: lokal input; git'e alinmaz
@@ -89,6 +90,8 @@ model:
 ```
 
 Farkli proseslerde `denominator` ve `bucket_features.source` alanlari degistirilir; kod icinde proses-spesifik kolon adi aranmaz. Referans feature bucket'i tek sabit kirilim degildir; engine varsayilan bucket cozumlerini history uzerinden fit eder ve peer objective icinde ayri ayri yaristirir. Config'te uretilmis q-bucket kolonlari yazilmaz.
+
+Output kolon sirasi, internal metrik -> detail kolon eslemesi ve Oracle 30 karakter aliaslari `configs/output_schema.yaml` icindedir. Bu dosya product schema konfigurasyonudur; farkli bir proses icin output isimleri degisecekse Python kodu degil bu YAML degisir.
 
 Skorlanacak ay `configs/anomaly.yaml` icindeki `model.scoring_month` ile secilir:
 

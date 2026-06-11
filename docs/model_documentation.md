@@ -224,7 +224,7 @@ Challenger alanlari scoring ayina ait diagnostic'tir. Detail tablo musteri seris
 
 ## Oracle Veri Sozlugu
 
-Oracle identifier limiti nedeniyle modelin urettigi uzun kolonlar kontrollu kisa aliaslarla yazilir. CSV/local output kolonlari human-readable kalabilir; Oracle yaziminda asagidaki alias sozlugu kullanilir. Raw input kolonlari mumkun oldugu surece inputtaki adiyla korunur.
+Oracle identifier limiti nedeniyle modelin urettigi uzun kolonlar kontrollu kisa aliaslarla yazilir. CSV/local output kolonlari human-readable kalabilir; Oracle yaziminda `configs/output_schema.yaml` icindeki alias sozlugu kullanilir. Raw input kolonlari mumkun oldugu surece inputtaki adiyla korunur.
 
 ### Decision Table
 
