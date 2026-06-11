@@ -123,7 +123,7 @@ model:
 
 Farkli proseslerde `denominator` ve `bucket_features.source` alanlari degistirilir; kod icinde proses-spesifik kolon adi aranmaz. Referans feature bucket'i tek sabit kirilim degildir; engine varsayilan bucket cozumlerini history uzerinden fit eder ve peer objective icinde ayri ayri yaristirir. Config'te uretilmis q-bucket kolonlari yazilmaz.
 
-Output kolonlari ayri bir schema dosyasindan okunmaz. Decision tablo kontrati sabittir: ham input kolonlari + `ANOMALI_FLAG`, `ANOMALI_SKORU`, `ANOMALI_NEDENI`. Detail tabloda ham input kolonlari onde gelir; sonrasinda modelin run sirasinda urettigi diagnostic kolonlar dinamik eklenir. Oracle kolon adlari da ayrica maplenmez: 30 karakteri asmayan kolonlar aynen kalir, uzun kolonlar deterministic hash suffix ile otomatik kisaltilir.
+Output kolonlari ayri bir schema dosyasindan okunmaz. Decision tablo kontrati sabittir: ham input kolonlari + `ANOMALI_FLAG`, `ANOMALI_SKORU`, `ANOMALI_NEDENI`. Detail tabloda ham input kolonlari onde gelir; sonrasinda modelin run sirasinda urettigi diagnostic kolonlar dinamik eklenir. Oracle kolon ve tablo adlari da ayrica maplenmez: 30 karakteri asmayan adlar aynen kalir, uzun adlar deterministic hash suffix ile otomatik kisaltilir. Tablo adini birebir Oracle'da gormek istiyorsan `decision_table` ve `detail_table` adlarini 30 karakter altinda tut.
 
 Skorlanacak ay `configs/anomaly.yaml` icindeki `model.scoring_month` ile secilir:
 

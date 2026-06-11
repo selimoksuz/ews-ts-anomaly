@@ -1222,6 +1222,10 @@ def validate_oracle_identifier(value: str, label: str) -> str:
     return normalized
 
 
+def oracle_object_name(value: str) -> str:
+    return oracle_column_name(value)
+
+
 def oracle_column_name(column: str) -> str:
     candidate = str(column)
     candidate = re.sub(r"[^A-Za-z0-9_$#]", "_", candidate).upper()
@@ -1425,8 +1429,8 @@ def write_outputs_to_oracle(
     if not owner_candidate:
         raise ValueError("Oracle owner is required. Provide --oracle-owner or set connection.owner/output.owner in data_source.yaml.")
     owner_name = validate_oracle_identifier(owner_candidate, "owner")
-    decision_name = validate_oracle_identifier(decision_table_name, "decision table")
-    detail_name = validate_oracle_identifier(detail_table_name, "detail table")
+    decision_name = oracle_object_name(decision_table_name)
+    detail_name = oracle_object_name(detail_table_name)
     mode = write_mode or job_cfg.get("if_exists") or "append"
     if mode not in {"append", "delete_insert", "truncate_insert", "replace"}:
         raise ValueError(f"Unsupported Oracle write mode: {mode}")
