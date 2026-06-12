@@ -380,6 +380,18 @@ Uretilen dosyalar `outputs/analysis/validation_report` altindadir:
 
 Varsayilan `delete_insert` operasyonel run icin uygundur.
 
+Decision tabloda `MODEL_DONEM_AY` tutulmadigi icin `delete_insert` ayni run'da insert edilecek ham donem kolonunun gercek degerlerini siler. Bu nedenle `YYYYMM`, `YYYY-MM`, `1.04.2026` gibi farkli ham donem formatlarinda duplicate insert olusmaz. Detail tabloda silme `MODEL_DONEM_AY` uzerinden yapilir.
+
+## Performans ve Loglama
+
+- Output build artik alt adim bazinda loglanir: `augment_scores_for_outputs`, `decision_table_build`, `detail_table_build`, `oracle_dataframe_prepare`, `oracle_insert`.
+- Oracle detail insert sirasinda her 100 bin satirda progress log'u basilir.
+- Peer quality postprocess'te peer key/review reason ve peer instance ana metrik std hesaplari vektorizelestirildi. Local benchmark sonucu:
+  - `add_peer_instance_keys`: 200 bin satirda 5.98 sn -> 0.25 sn.
+  - `weak_peer_review`: 100 bin satirda 1.94 sn -> 0.13 sn.
+  - `aggregate_main_metric_stats`: 300 bin satir, 6 bin grup icin 0.67 sn -> 0.07 sn.
+- Level bazli thread paralelizasyonu test edildi ama ayni benchmarkta hizlanma saglamadi (`34.27 sn` sequential, `36.54 sn` 4 thread); bu nedenle production'a alinmadi.
+
 ## Linux Notlari
 
 - Path'lerde `/` kullan. Python kodu Windows path'lerini de okuyabilir ama dokuman ve shell scriptler POSIX path varsayar.

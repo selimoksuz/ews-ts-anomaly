@@ -307,20 +307,7 @@ def add_peer_instance_keys(decisions: pd.DataFrame, scoring_keys: pd.DataFrame) 
         out["FEATURE_RATIO_BUCKET"] = out["FEATURE_RATIO_BUCKET"].fillna("feature_ratio_unknown")
     out["_GLOBAL_KEY"] = "ALL"
 
-    def build_key(row: pd.Series) -> str:
-        cols_text = str(row.get("PEER_KOLONLARI", "global"))
-        if cols_text == "global" or not cols_text or cols_text == "nan":
-            return "global=ALL"
-        parts: list[str] = []
-        for col in cols_text.split("+"):
-            output_col = report_mapping.get(col, NORMALIZED_TO_OUTPUT.get(col))
-            if output_col is None:
-                continue
-            value = row.get(output_col, np.nan)
-            parts.append(f"{col}={value}")
-        return " | ".join(parts) if parts else cols_text
-
-    out["PEER_KEY_DEGERLERI"] = out.apply(build_key, axis=1)
+    out["PEER_KEY_DEGERLERI"] = vectorized_peer_key_values(out, "PEER_KOLONLARI", report_mapping)
     return out
 
 
@@ -349,6 +336,44 @@ def parse_peer_columns(columns_text: Any) -> list[str]:
     return [PEER_COLUMN_ALIASES.get(column, column) for column in text.split("+") if column]
 
 
+def safe_string_values(values: pd.Series) -> pd.Series:
+    return values.astype("string").fillna("<NA>").astype(object)
+
+
+def vectorized_peer_key_values(
+    frame: pd.DataFrame,
+    peer_columns_col: str,
+    report_mapping: dict[str, str],
+) -> pd.Series:
+    result = pd.Series("global=ALL", index=frame.index, dtype=object)
+    if peer_columns_col not in frame.columns:
+        return result
+
+    peer_columns = frame[peer_columns_col].fillna("global").astype(str)
+    global_mask = peer_columns.isin(["", "nan", "None", "global"])
+    for columns_text in peer_columns.loc[~global_mask].drop_duplicates():
+        row_mask = peer_columns.eq(columns_text)
+        parts: list[pd.Series] = []
+        for column in [part for part in str(columns_text).split("+") if part]:
+            output_col = report_mapping.get(column, NORMALIZED_TO_OUTPUT.get(column))
+            if output_col is None:
+                continue
+            values = (
+                safe_string_values(frame.loc[row_mask, output_col])
+                if output_col in frame.columns
+                else pd.Series("<NA>", index=frame.index[row_mask], dtype=object)
+            )
+            parts.append(column + "=" + values)
+        if not parts:
+            result.loc[row_mask] = columns_text
+            continue
+        key_values = parts[0]
+        for part in parts[1:]:
+            key_values = key_values + " | " + part
+        result.loc[row_mask] = key_values
+    return result
+
+
 def build_normalized_peer_key(row: pd.Series, columns: list[str]) -> str:
     if not columns:
         return "global=ALL"
@@ -357,6 +382,27 @@ def build_normalized_peer_key(row: pd.Series, columns: list[str]) -> str:
         "exposure_bucket": "exposure_bucket",
     }
     return " | ".join(f"{labels.get(column, column)}={row.get(column, np.nan)}" for column in columns)
+
+
+def vectorized_normalized_peer_key(frame: pd.DataFrame, columns: list[str]) -> pd.Series:
+    if not columns:
+        return pd.Series("global=ALL", index=frame.index, dtype=object)
+    labels = {
+        "feature_ratio_bucket": "feature_ratio_bucket",
+        "exposure_bucket": "exposure_bucket",
+    }
+    parts: list[pd.Series] = []
+    for column in columns:
+        values = (
+            safe_string_values(frame[column])
+            if column in frame.columns
+            else pd.Series("<NA>", index=frame.index, dtype=object)
+        )
+        parts.append(f"{labels.get(column, column)}=" + values)
+    out = parts[0]
+    for part in parts[1:]:
+        out = out + " | " + part
+    return out
 
 
 def aggregate_main_metric_stats(frame: pd.DataFrame, columns: list[str], level_name: str, prefix: str) -> pd.DataFrame:
@@ -379,20 +425,33 @@ def aggregate_main_metric_stats(frame: pd.DataFrame, columns: list[str], level_n
     valid = frame.loc[frame["valid_main_metric_for_model"] & frame["main_metric"].notna(), key + ["main_metric"]].copy()
     if len(valid) == 0:
         return pd.DataFrame(columns=stats_columns)
+    valid["main_metric"] = pd.to_numeric(valid["main_metric"], errors="coerce")
+    valid = valid.loc[valid["main_metric"].notna()]
+    if len(valid) == 0:
+        return pd.DataFrame(columns=stats_columns)
+    valid["_main_metric_sq"] = valid["main_metric"].astype(float) ** 2
 
     stats = (
-        valid.groupby(key, dropna=False)["main_metric"]
+        valid.groupby(key, dropna=False)
         .agg(
             **{
-                f"{prefix}_ortalama": "mean",
-                f"{prefix}_medyan": "median",
-                f"{prefix}_std": lambda values: float(np.std(pd.to_numeric(values, errors="coerce").dropna(), ddof=0)),
-                f"{prefix}_min": "min",
-                f"{prefix}_max": "max",
+                f"{prefix}_ortalama": ("main_metric", "mean"),
+                f"{prefix}_medyan": ("main_metric", "median"),
+                "_main_metric_sum": ("main_metric", "sum"),
+                "_main_metric_sq_sum": ("_main_metric_sq", "sum"),
+                "_main_metric_count": ("main_metric", "count"),
+                f"{prefix}_min": ("main_metric", "min"),
+                f"{prefix}_max": ("main_metric", "max"),
             }
         )
         .reset_index()
     )
+    mean_values = stats[f"{prefix}_ortalama"].astype(float)
+    variance = (stats["_main_metric_sq_sum"].astype(float) / stats["_main_metric_count"].clip(lower=1).astype(float)) - (
+        mean_values**2
+    )
+    stats[f"{prefix}_std"] = np.sqrt(np.maximum(variance, 0.0))
+    stats = stats.drop(columns=["_main_metric_sum", "_main_metric_sq_sum", "_main_metric_count"])
     stats[f"{prefix}_ortalama_medyan_oran"] = (
         stats[f"{prefix}_ortalama"].astype(float) / np.maximum(stats[f"{prefix}_medyan"].astype(float), 1e-6)
     )
@@ -400,7 +459,7 @@ def aggregate_main_metric_stats(frame: pd.DataFrame, columns: list[str], level_n
         stats[f"{prefix}_std"].astype(float) / np.maximum(stats[f"{prefix}_medyan"].astype(float), 1e-6)
     )
     stats["PEER_SEVIYE"] = level_name
-    stats["PEER_KEY_DEGERLERI"] = stats.apply(lambda row: build_normalized_peer_key(row, columns), axis=1)
+    stats["PEER_KEY_DEGERLERI"] = vectorized_normalized_peer_key(stats, columns)
     return stats[stats_columns]
 
 
@@ -528,25 +587,24 @@ def weak_peer_review(peer_instance_summary: pd.DataFrame) -> pd.DataFrame:
         + np.minimum(np.maximum(mean_median_ratio - 1.0, 0.0) / 3.0, 1.0) * 15
         + np.minimum(np.maximum(std_median_ratio, 0.0) / 3.0, 1.0) * 15
     )
-    reasons = []
-    for _, row in work.iterrows():
-        row_reasons = []
-        if row.get("temsil_skor_medyan", 100) < 60:
-            row_reasons.append("temsil dusuk")
-        if row.get("dagilim_skor_medyan", 100) < 60:
-            row_reasons.append("heavy-tail/dagilim zayif")
-        if row.get("peer_guncel_ana_metrik_ortalama_medyan_oran", 1.0) >= 4.0:
-            row_reasons.append("ortalama/medyan orani yuksek")
-        if row.get("peer_guncel_ana_metrik_std_medyan_oran", 0.0) >= 3.0:
-            row_reasons.append("std/medyan orani yuksek")
-        if row.get("kalibrasyon_skor_medyan", 100) < 60:
-            row_reasons.append("gecmis kalibrasyon zayif")
-        if row.get("peer_guncel_adet_min", 999) < 25:
-            row_reasons.append("current destek sinirda")
-        if row.get("anomaly_watch_oran", 0) >= 0.08:
-            row_reasons.append("anomaly/watchlist orani yuksek")
-        reasons.append("; ".join(row_reasons) if row_reasons else "izleme")
-    work["review_nedeni"] = reasons
+    reasons = pd.Series("", index=work.index, dtype=object)
+
+    def append_reason(mask: pd.Series | np.ndarray, text: str) -> None:
+        nonlocal reasons
+        mask_series = pd.Series(mask, index=work.index).fillna(False).astype(bool)
+        if not bool(mask_series.any()):
+            return
+        current = reasons.loc[mask_series]
+        reasons.loc[mask_series] = np.where(current.eq(""), text, current + "; " + text)
+
+    append_reason(work["temsil_skor_medyan"].lt(60), "temsil dusuk")
+    append_reason(work["dagilim_skor_medyan"].lt(60), "heavy-tail/dagilim zayif")
+    append_reason(work["peer_guncel_ana_metrik_ortalama_medyan_oran"].ge(4.0), "ortalama/medyan orani yuksek")
+    append_reason(work["peer_guncel_ana_metrik_std_medyan_oran"].ge(3.0), "std/medyan orani yuksek")
+    append_reason(work["kalibrasyon_skor_medyan"].lt(60), "gecmis kalibrasyon zayif")
+    append_reason(work["peer_guncel_adet_min"].lt(25), "current destek sinirda")
+    append_reason(work["anomaly_watch_oran"].ge(0.08), "anomaly/watchlist orani yuksek")
+    work["review_nedeni"] = reasons.mask(reasons.eq(""), "izleme")
     return work.sort_values("review_skoru", ascending=False)
 
 

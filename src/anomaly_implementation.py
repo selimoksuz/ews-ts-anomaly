@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import time
 from typing import Any, Callable
 import warnings
 
@@ -1341,6 +1342,7 @@ def prepare_oracle_table(
     scoring_month: int,
     table_role: str,
     period_column: str | None = None,
+    period_values: list[Any] | None = None,
 ) -> None:
     exists = oracle_table_exists(connection, owner, table)
     if mode == "replace" and exists:
@@ -1378,25 +1380,62 @@ def prepare_oracle_table(
                     {"scoring_month": scoring_month},
                 )
             elif table_role == "decision" and period_column and period_column in dtype_map:
-                cursor.execute(
-                    f"delete from {owner}.{table} where {period_column} = :scoring_month",
-                    {"scoring_month": scoring_month},
-                )
+                values = [
+                    value.item() if isinstance(value, np.generic) else value
+                    for value in (period_values or [])
+                    if value is not None and not bool(pd.isna(value))
+                ]
+                if values:
+                    for start in range(0, len(values), 900):
+                        chunk = values[start : start + 900]
+                        binds = {f"p{idx}": value for idx, value in enumerate(chunk)}
+                        placeholders = ", ".join(f":p{idx}" for idx in range(len(chunk)))
+                        cursor.execute(f"delete from {owner}.{table} where {period_column} in ({placeholders})", binds)
+                else:
+                    cursor.execute(
+                        f"""
+                        delete from {owner}.{table}
+                        where substr(regexp_replace(to_char({period_column}), '[^0-9]', ''), 1, 6) = :scoring_month
+                        """,
+                        {"scoring_month": str(scoring_month)},
+                    )
             else:
                 cursor.execute(f"delete from {owner}.{table}")
 
 
-def insert_oracle_dataframe(connection: Any, owner: str, table: str, frame: pd.DataFrame, chunksize: int) -> int:
+def insert_oracle_dataframe(
+    connection: Any,
+    owner: str,
+    table: str,
+    frame: pd.DataFrame,
+    chunksize: int,
+    progress_callback: Callable[[str], None] | None = None,
+    table_label: str | None = None,
+) -> int:
+    def emit(message: str) -> None:
+        if progress_callback is not None:
+            progress_callback(message)
+
     columns = list(frame.columns)
     placeholders = ", ".join(f":{idx + 1}" for idx in range(len(columns)))
     sql = f"insert into {owner}.{table} ({', '.join(columns)}) values ({placeholders})"
     rows_inserted = 0
+    total_rows = len(frame)
+    label = table_label or table
+    progress_interval = max(int(chunksize) * 10, 100000)
+    last_logged = 0
+    emit(f"oracle_insert_start table={label} rows={total_rows:,} chunksize={chunksize}")
     with connection.cursor() as cursor:
         for start in range(0, len(frame), chunksize):
             chunk = frame.iloc[start : start + chunksize]
-            rows = [tuple(row) for row in chunk.itertuples(index=False, name=None)]
+            rows = chunk.to_numpy(dtype=object, copy=False).tolist()
+            cursor.bindarraysize = max(len(rows), 1)
             cursor.executemany(sql, rows)
             rows_inserted += len(rows)
+            if rows_inserted == total_rows or rows_inserted - last_logged >= progress_interval:
+                emit(f"oracle_insert_progress table={label} rows_inserted={rows_inserted:,}/{total_rows:,}")
+                last_logged = rows_inserted
+    emit(f"oracle_insert_done table={label} rows_inserted={rows_inserted:,}")
     return rows_inserted
 
 
@@ -1416,7 +1455,12 @@ def write_outputs_to_oracle(
     create_table: bool,
     connection_config: dict[str, Any] | None = None,
     decision_period_column: str | None = None,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
+    def emit(message: str) -> None:
+        if progress_callback is not None:
+            progress_callback(message)
+
     try:
         import oracledb
     except ImportError as exc:
@@ -1436,12 +1480,25 @@ def write_outputs_to_oracle(
         raise ValueError(f"Unsupported Oracle write mode: {mode}")
     write_chunksize = int(chunksize or job_cfg.get("chunksize") or 10000)
 
+    prepare_start = time.perf_counter()
+    emit("oracle_dataframe_prepare_start")
     decision_oracle, decision_col_map, decision_dtypes = dataframe_for_oracle(decision_table)
     detail_oracle, detail_col_map, detail_dtypes = dataframe_for_oracle(detail_table)
     decision_period_oracle = decision_col_map.get(decision_period_column or "", None)
+    decision_period_values = (
+        decision_oracle[decision_period_oracle].drop_duplicates().tolist()
+        if decision_period_oracle and decision_period_oracle in decision_oracle.columns
+        else []
+    )
+    emit(
+        "oracle_dataframe_prepare_done "
+        f"decision_rows={len(decision_oracle):,} detail_rows={len(detail_oracle):,} "
+        f"elapsed_sec={time.perf_counter() - prepare_start:.2f}"
+    )
     dsn = oracle_dsn(conn_cfg)
 
     with oracledb.connect(user=conn_cfg["user"], password=conn_cfg["password"], dsn=dsn) as connection:
+        emit("oracle_prepare_decision_table_start")
         prepare_oracle_table(
             connection,
             owner_name,
@@ -1452,8 +1509,19 @@ def write_outputs_to_oracle(
             scoring_month,
             table_role="decision",
             period_column=decision_period_oracle,
+            period_values=decision_period_values,
         )
-        decision_rows = insert_oracle_dataframe(connection, owner_name, decision_name, decision_oracle, write_chunksize)
+        emit("oracle_prepare_decision_table_done")
+        decision_rows = insert_oracle_dataframe(
+            connection,
+            owner_name,
+            decision_name,
+            decision_oracle,
+            write_chunksize,
+            progress_callback=progress_callback,
+            table_label="decision",
+        )
+        emit("oracle_prepare_detail_table_start")
         prepare_oracle_table(
             connection,
             owner_name,
@@ -1465,8 +1533,19 @@ def write_outputs_to_oracle(
             table_role="detail",
             period_column=None,
         )
-        detail_rows = insert_oracle_dataframe(connection, owner_name, detail_name, detail_oracle, write_chunksize)
+        emit("oracle_prepare_detail_table_done")
+        detail_rows = insert_oracle_dataframe(
+            connection,
+            owner_name,
+            detail_name,
+            detail_oracle,
+            write_chunksize,
+            progress_callback=progress_callback,
+            table_label="detail",
+        )
+        emit("oracle_commit_start")
         connection.commit()
+        emit("oracle_commit_done")
 
     return {
         "oracle_section": selected_section,
@@ -1634,8 +1713,13 @@ def run_implementation_scoring(
     progress("summary_done")
 
     progress("output_tables_start")
+    progress("augment_scores_for_outputs_start")
     scores_for_outputs = augment_scores_for_outputs(run.scores)
+    progress(f"augment_scores_for_outputs_done rows={len(scores_for_outputs):,}")
+    progress("decision_table_build_start")
     decision_table = build_decision_table(scores_for_outputs, run.not_scored, profile, scoring_month_int, prepared=prepared)
+    progress(f"decision_table_build_done rows={len(decision_table):,}")
+    progress("detail_table_build_start")
     detail_table = build_detail_table(
         prepared,
         scores_for_outputs,
@@ -1644,6 +1728,7 @@ def run_implementation_scoring(
         profile,
         derived_features_config=derived_features_config,
     )
+    progress(f"detail_table_build_done rows={len(detail_table):,}")
     progress(
         "output_tables_done "
         f"decision_rows={len(decision_table):,} detail_rows={len(detail_table):,}"
@@ -1685,6 +1770,7 @@ def run_implementation_scoring(
             create_table=oracle_create_table,
             connection_config=oracle_connection_config,
             decision_period_column=profile_input_column_map(profile).get("invoice_month", "invoice_month"),
+            progress_callback=progress,
         )
         progress("oracle_write_done")
 
