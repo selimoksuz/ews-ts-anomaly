@@ -85,6 +85,15 @@ Peer secimi `peer_selection.objective_weights` ile skorlanir. Varsayilan agirlik
 
 Bu agirliklar normalize edilir; toplam 1 olmak zorunda degildir.
 
+Objective skor sadece agirlikli ortalama olarak birakilmaz. `peer_selection.objective_quality_caps` kalite kapisi olarak calisir:
+
+- `PEER_DAGILIM_SKORU < 40` ise `PEER_OBJECTIVE_SKORU` en fazla 55 olabilir.
+- `40 <= PEER_DAGILIM_SKORU < 60` ise `PEER_OBJECTIVE_SKORU` en fazla 70 olabilir.
+- `PEER_TEMSIL_SKORU < 40` ise `PEER_OBJECTIVE_SKORU` en fazla 55 olabilir.
+- `40 <= PEER_TEMSIL_SKORU < 60` ise `PEER_OBJECTIVE_SKORU` en fazla 70 olabilir.
+
+Cap kademelidir: esigin ne kadar altina inilirse tavan `*_penalty_per_point` katsayisi kadar daha duser. Bu sayede butun zayif adaylar ayni puana sikismaz; zayif peerler arasinda da daha iyi dagilan/temsil eden segment secilmeye devam eder. Cap, kalabalik ama heterojen peer'in support/specificity/kalibrasyon puanlariyla yapay olarak iyi objective almasini engeller. Karar katmaninda da `model.score_aggregation.peer_reliability.min_peer_objective_score = 60` ve `min_peer_distribution_score = 40` esikleri uygulanir. Bu esikleri gecemeyen peer `PEER_WEAK` olur; final anomaly skorunu karar driver'i olarak etkileyemez, sadece detail diagnostic ve reason arka plani olarak kalir.
+
 `representability` peer'in musteriyi temsil etme gucudur. Once destek ve spesifiklik tabani hesaplanir, sonra bu taban dagilim kalite carpanina sokulur. Boylece yeterli satir destegi olsa bile heterojen/heavy-tail bir peer otomatik olarak strong temsil gibi gorunmez.
 
 - History support: `hist_n / strong_history_rows`, taban agirlik 0.26

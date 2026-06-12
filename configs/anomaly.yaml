@@ -29,6 +29,19 @@ model:
   watch_top_rate: 0.030
   high_top_rate: 0.0075
   include_prior_score_diagnostic: true
+  score_aggregation:
+    peer_reliability:
+      # Peer objective bu esigin altindaysa peer karar driver'i olamaz.
+      min_peer_objective_score: 60.0
+      # Peer dagilim skoru bu esigin altindaysa peer sadece diagnostic/reference kalir.
+      min_peer_distribution_score: 40.0
+      # Tek kolonlu veya kaba peer, review disinda karar driver'i olmasin.
+      coarse_peer_review_only: true
+    evidence_thresholds:
+      # Strong/moderate p-value esikleri final driver seciminde kullanilir.
+      strong_signal_p: 0.01
+      moderate_signal_p: 0.05
+      conflict_signal_p: 0.05
   derived_features:
     feature_ratio:
       enabled: true
@@ -53,6 +66,53 @@ peer_selection:
   max_inferred_cardinality: 250
   # Auto modda cok genis kolon setlerinde performansi korumak icin en iyi siradaki aday sayisi.
   max_candidate_count: 140
+  objective_weights:
+    # Peer'in destek ve dagilimla musteriyi temsil etme gucu.
+    representability: 0.20
+    # Heavy-tail/skew/kurtosis/mean-medyan/std-medyan gibi dagilim kalitesi.
+    distribution: 0.30
+    # Peer'in onceki aylarda bir sonraki ay referansi olarak ne kadar iyi calistigi.
+    calibration: 0.20
+    # Peer'in tarihsel stabilitesi.
+    stability: 0.10
+    # Daha dar ve bilgi tasiyan peerleri odullendirir.
+    specificity: 0.10
+    # Hist/season/recent/current adet destek gucu.
+    support: 0.10
+  objective_quality_caps:
+    # Dagilim skoru zayifsa objective score bu tavanlari asamaz.
+    weak_distribution_threshold: 40.0
+    weak_distribution_cap: 55.0
+    weak_distribution_penalty_per_point: 0.20
+    wide_distribution_threshold: 60.0
+    wide_distribution_cap: 70.0
+    wide_distribution_penalty_per_point: 0.10
+    # Temsil skoru zayif/orta ise objective score bu tavanlari asamaz.
+    weak_representability_threshold: 40.0
+    weak_representability_cap: 55.0
+    weak_representability_penalty_per_point: 0.15
+    medium_representability_threshold: 60.0
+    medium_representability_cap: 70.0
+    medium_representability_penalty_per_point: 0.05
+    minimum_cap: 0.0
+  distribution_quality:
+    # Peer homojenligini olcerken kullanilan bilesen agirliklari.
+    iqr_weight: 0.30
+    mad_weight: 0.25
+    tail_weight: 0.20
+    skew_weight: 0.05
+    kurtosis_weight: 0.05
+    mean_median_weight: 0.05
+    std_median_weight: 0.10
+    current_iqr_log_full_penalty: 1.60
+    history_iqr_log_full_penalty: 1.80
+    current_mad_log_full_penalty: 0.90
+    history_mad_log_full_penalty: 1.00
+    skew_full_penalty: 2.0
+    kurtosis_full_penalty: 6.0
+    tail_full_penalty: 0.10
+    mean_median_full_penalty_ratio: 8.0
+    std_median_full_penalty_ratio: 12.0
   exclude_variables: []
 
 reports:

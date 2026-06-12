@@ -1793,39 +1793,46 @@ def aggregate_evidence_row(row: pd.Series, config: Mapping[str, Any]) -> pd.Seri
     peer = best_family_evidence(row, "peer", config)
     customer_status = customer_reliability_status(row, config)
     peer_status = peer_reliability_status(row, config)
-    customer_usable = customer_status in {"CUSTOMER_STRONG", "CUSTOMER_PARTIAL"} and customer["p_value"] <= moderate_p
-    peer_usable = peer_status == "PEER_STRONG" and peer["p_value"] <= moderate_p
+    customer_family_allowed = customer_status in {"CUSTOMER_STRONG", "CUSTOMER_PARTIAL"}
+    peer_family_allowed = peer_status == "PEER_STRONG"
+    customer_effective_p = customer["p_value"] if customer_family_allowed else 1.0
+    peer_effective_p = peer["p_value"] if peer_family_allowed else 1.0
+    customer_usable = customer_effective_p <= moderate_p
+    peer_usable = peer_effective_p <= moderate_p
     same_direction = customer["direction"] == peer["direction"]
-    conflict = customer["p_value"] <= conflict_p and peer["p_value"] <= conflict_p and not same_direction
+    conflict = customer_effective_p <= conflict_p and peer_effective_p <= conflict_p and not same_direction
 
     if customer_usable and peer_usable and same_direction:
-        final_p = simes_p_value([customer["p_value"], peer["p_value"]], 2)
+        final_p = simes_p_value([customer_effective_p, peer_effective_p], 2)
         driver = "CUSTOMER_PEER_COMBINED"
         direction = customer["direction"]
     elif customer_usable and peer_usable and not same_direction:
-        final_p = min(customer["p_value"], peer["p_value"])
+        final_p = min(customer_effective_p, peer_effective_p)
         driver = "CUSTOMER_PEER_CONFLICT"
-        direction = customer["direction"] if customer["p_value"] <= peer["p_value"] else peer["direction"]
+        direction = customer["direction"] if customer_effective_p <= peer_effective_p else peer["direction"]
     elif customer_usable:
-        final_p = customer["p_value"]
+        final_p = customer_effective_p
         driver = "CUSTOMER"
         direction = customer["direction"]
     elif peer_usable:
-        final_p = peer["p_value"]
+        final_p = peer_effective_p
         driver = "PEER"
         direction = peer["direction"]
     else:
-        final_p = min(customer["p_value"], peer["p_value"])
+        final_p = min(customer_effective_p, peer_effective_p)
         driver = "INSUFFICIENT_EVIDENCE" if final_p >= 1.0 else "WEAK_EVIDENCE"
-        direction = customer["direction"] if customer["p_value"] <= peer["p_value"] else peer["direction"]
+        direction = customer["direction"] if customer_effective_p <= peer_effective_p else peer["direction"]
 
     final_score = float(np.clip(100.0 * (1.0 - final_p), 0.0, 100.0))
-    primary_family = "customer" if customer["p_value"] <= peer["p_value"] else "peer"
+    primary_family = "customer" if customer_effective_p <= peer_effective_p else "peer"
     primary = customer if primary_family == "customer" else peer
     secondary = peer if primary_family == "customer" else customer
+    primary_p = customer_effective_p if primary_family == "customer" else peer_effective_p
+    secondary_p = peer_effective_p if primary_family == "customer" else customer_effective_p
+    primary_signal_name = primary["primary_signal"] if primary_p < 1.0 else ""
     secondary_signal_name = (
         secondary["primary_signal"]
-        if secondary["p_value"] < 1.0 and (secondary["direction"] == direction or driver == "CUSTOMER_PEER_CONFLICT")
+        if secondary_p < 1.0 and (secondary["direction"] == direction or driver == "CUSTOMER_PEER_CONFLICT")
         else ""
     )
     customer_weight = 0.0
@@ -1840,9 +1847,9 @@ def aggregate_evidence_row(row: pd.Series, config: Mapping[str, Any]) -> pd.Seri
         customer_weight = 1.0
     elif driver == "PEER":
         peer_weight = 1.0
-    elif primary_family == "customer":
+    elif driver == "WEAK_EVIDENCE" and primary_family == "customer":
         customer_weight = 1.0
-    else:
+    elif driver == "WEAK_EVIDENCE":
         peer_weight = 1.0
 
     confidence_cfg = dict(config.get("confidence", {}))
@@ -1866,7 +1873,7 @@ def aggregate_evidence_row(row: pd.Series, config: Mapping[str, Any]) -> pd.Seri
             numeric_or_default(row, "customer_explainability_score", 0.0),
             numeric_or_default(row, "peer_representability_score", 0.0),
         )
-    if same_direction and customer["p_value"] <= moderate_p and peer["p_value"] <= moderate_p:
+    if same_direction and customer_effective_p <= moderate_p and peer_effective_p <= moderate_p:
         confidence += float(confidence_cfg.get("same_direction_bonus", 5.0))
     if conflict:
         confidence -= float(confidence_cfg.get("conflict_penalty", 20.0))
@@ -1890,8 +1897,8 @@ def aggregate_evidence_row(row: pd.Series, config: Mapping[str, Any]) -> pd.Seri
         confidence = min(confidence, float(confidence_cfg.get("coarse_peer_cap", 65.0)))
 
     component_weights = {f"{signal['name']}_final_weight": 0.0 for signal in SIGNAL_DEFINITIONS}
-    if primary["primary_signal"]:
-        component_weights[f"{primary['primary_signal']}_final_weight"] = customer_weight if primary_family == "customer" else peer_weight
+    if primary_signal_name:
+        component_weights[f"{primary_signal_name}_final_weight"] = customer_weight if primary_family == "customer" else peer_weight
     if secondary_signal_name:
         component_weights[f"{secondary_signal_name}_final_weight"] = peer_weight if primary_family == "customer" else customer_weight
 
@@ -1905,12 +1912,12 @@ def aggregate_evidence_row(row: pd.Series, config: Mapping[str, Any]) -> pd.Seri
             "peer_family_direction": peer["direction"],
             "customer_reliability_status": customer_status,
             "peer_reliability_status": peer_status,
-            "primary_signal_name": primary["primary_signal"],
+            "primary_signal_name": primary_signal_name,
             "primary_signal_family": primary_family,
-            "primary_signal_p_value": primary["p_value"],
-            "primary_signal_score": primary["score"],
+            "primary_signal_p_value": primary_p,
+            "primary_signal_score": primary["score"] if primary_signal_name else np.nan,
             "secondary_signal_name": secondary_signal_name,
-            "secondary_signal_p_value": secondary["p_value"] if secondary_signal_name else np.nan,
+            "secondary_signal_p_value": secondary_p if secondary_signal_name else np.nan,
             "evidence_driver": driver,
             "evidence_conflict_flag": bool(conflict),
             "final_anomaly_score": final_score,
@@ -2051,47 +2058,53 @@ def vectorized_evidence_aggregation(frame: pd.DataFrame, config: Mapping[str, An
         & bool(rules_peer.get("coarse_peer_review_only", True))
     ] = "PEER_COARSE_REVIEW"
 
-    customer_usable = np.isin(customer_status, ["CUSTOMER_STRONG", "CUSTOMER_PARTIAL"]) & (customer["p"] <= moderate_p)
-    peer_usable = (peer_status == "PEER_STRONG") & (peer["p"] <= moderate_p)
+    customer_family_allowed = np.isin(customer_status, ["CUSTOMER_STRONG", "CUSTOMER_PARTIAL"])
+    peer_family_allowed = peer_status == "PEER_STRONG"
+    customer_effective_p = np.where(customer_family_allowed, customer["p"], 1.0)
+    peer_effective_p = np.where(peer_family_allowed, peer["p"], 1.0)
+    customer_usable = customer_effective_p <= moderate_p
+    peer_usable = peer_effective_p <= moderate_p
     same_direction = customer["direction"] == peer["direction"]
-    conflict = (customer["p"] <= conflict_p) & (peer["p"] <= conflict_p) & ~same_direction
+    conflict = (customer_effective_p <= conflict_p) & (peer_effective_p <= conflict_p) & ~same_direction
 
-    final_p = np.minimum(customer["p"], peer["p"])
-    direction = np.where(customer["p"] <= peer["p"], customer["direction"], peer["direction"])
+    final_p = np.minimum(customer_effective_p, peer_effective_p)
+    direction = np.where(customer_effective_p <= peer_effective_p, customer["direction"], peer["direction"])
     driver = np.full(n_rows, "WEAK_EVIDENCE", dtype=object)
     driver[final_p >= 1.0] = "INSUFFICIENT_EVIDENCE"
     combined = customer_usable & peer_usable & same_direction
     conflict_driver = customer_usable & peer_usable & ~same_direction
     customer_driver = customer_usable & ~peer_usable
     peer_driver = peer_usable & ~customer_usable
-    combined_min_p = np.minimum(customer["p"][combined], peer["p"][combined])
-    combined_max_p = np.maximum(customer["p"][combined], peer["p"][combined])
+    combined_min_p = np.minimum(customer_effective_p[combined], peer_effective_p[combined])
+    combined_max_p = np.maximum(customer_effective_p[combined], peer_effective_p[combined])
     final_p[combined] = np.minimum(1.0, np.minimum(2.0 * combined_min_p, combined_max_p))
     direction[combined] = customer["direction"][combined]
     driver[combined] = "CUSTOMER_PEER_COMBINED"
-    final_p[conflict_driver] = np.minimum(customer["p"][conflict_driver], peer["p"][conflict_driver])
+    final_p[conflict_driver] = np.minimum(customer_effective_p[conflict_driver], peer_effective_p[conflict_driver])
     direction[conflict_driver] = np.where(
-        customer["p"][conflict_driver] <= peer["p"][conflict_driver],
+        customer_effective_p[conflict_driver] <= peer_effective_p[conflict_driver],
         customer["direction"][conflict_driver],
         peer["direction"][conflict_driver],
     )
     driver[conflict_driver] = "CUSTOMER_PEER_CONFLICT"
-    final_p[customer_driver] = customer["p"][customer_driver]
+    final_p[customer_driver] = customer_effective_p[customer_driver]
     direction[customer_driver] = customer["direction"][customer_driver]
     driver[customer_driver] = "CUSTOMER"
-    final_p[peer_driver] = peer["p"][peer_driver]
+    final_p[peer_driver] = peer_effective_p[peer_driver]
     direction[peer_driver] = peer["direction"][peer_driver]
     driver[peer_driver] = "PEER"
 
     final_score = np.clip(100.0 * (1.0 - final_p), 0.0, 100.0)
-    primary_is_customer = customer["p"] <= peer["p"]
+    primary_is_customer = customer_effective_p <= peer_effective_p
     primary_family = np.where(primary_is_customer, "customer", "peer")
     primary_signal = np.where(primary_is_customer, customer["signal"], peer["signal"])
-    primary_p = np.where(primary_is_customer, customer["p"], peer["p"])
+    primary_p = np.where(primary_is_customer, customer_effective_p, peer_effective_p)
     primary_score = np.where(primary_is_customer, customer["score"], peer["score"])
+    primary_signal = np.where(primary_p < 1.0, primary_signal, "")
+    primary_score = np.where(primary_signal != "", primary_score, np.nan)
     secondary_signal = np.where(primary_is_customer, peer["signal"], customer["signal"])
     secondary_direction = np.where(primary_is_customer, peer["direction"], customer["direction"])
-    secondary_p = np.where(primary_is_customer, peer["p"], customer["p"])
+    secondary_p = np.where(primary_is_customer, peer_effective_p, customer_effective_p)
     secondary_signal = np.where(
         (secondary_p < 1.0) & ((secondary_direction == direction) | conflict_driver),
         secondary_signal,
@@ -2108,8 +2121,9 @@ def vectorized_evidence_aggregation(frame: pd.DataFrame, config: Mapping[str, An
     customer_weight[customer_driver] = 1.0
     peer_weight[peer_driver] = 1.0
     remaining = ~(combined | conflict_driver | customer_driver | peer_driver)
-    customer_weight[remaining & primary_is_customer] = 1.0
-    peer_weight[remaining & ~primary_is_customer] = 1.0
+    weak_remaining = remaining & (driver == "WEAK_EVIDENCE")
+    customer_weight[weak_remaining & primary_is_customer] = 1.0
+    peer_weight[weak_remaining & ~primary_is_customer] = 1.0
 
     confidence_cfg = dict(config.get("confidence", {}))
     customer_explain = (
@@ -2133,7 +2147,7 @@ def vectorized_evidence_aggregation(frame: pd.DataFrame, config: Mapping[str, An
     confidence[customer_driver] = np.maximum(customer_explain[customer_driver], float(confidence_cfg.get("customer_driver_floor", 55.0)))
     confidence[peer_driver] = np.maximum(peer_represent[peer_driver], float(confidence_cfg.get("peer_driver_floor", 45.0)))
     confidence += np.where(
-        same_direction & (customer["p"] <= moderate_p) & (peer["p"] <= moderate_p),
+        same_direction & (customer_effective_p <= moderate_p) & (peer_effective_p <= moderate_p),
         float(confidence_cfg.get("same_direction_bonus", 5.0)),
         0.0,
     )

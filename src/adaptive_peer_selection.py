@@ -52,6 +52,22 @@ DEFAULT_DISTRIBUTION_QUALITY: dict[str, float] = {
     "std_median_full_penalty_ratio": 12.0,
 }
 
+DEFAULT_OBJECTIVE_QUALITY_CAPS: dict[str, float] = {
+    "weak_distribution_threshold": 40.0,
+    "weak_distribution_cap": 55.0,
+    "weak_distribution_penalty_per_point": 0.20,
+    "wide_distribution_threshold": 60.0,
+    "wide_distribution_cap": 70.0,
+    "wide_distribution_penalty_per_point": 0.10,
+    "weak_representability_threshold": 40.0,
+    "weak_representability_cap": 55.0,
+    "weak_representability_penalty_per_point": 0.15,
+    "medium_representability_threshold": 60.0,
+    "medium_representability_cap": 70.0,
+    "medium_representability_penalty_per_point": 0.05,
+    "minimum_cap": 0.0,
+}
+
 DEFAULT_TECHNICAL_EXCLUSIONS = {
     "customer_id",
     "invoice_month",
@@ -190,6 +206,7 @@ class PeerSelectionConfig:
     selection_mode: str = "objective"
     objective_weights: Mapping[str, float] | None = None
     distribution_quality: Mapping[str, float] | None = None
+    objective_quality_caps: Mapping[str, float] | None = None
     excluded_variables: tuple[str, ...] = ()
     max_inferred_cardinality: int = 250
     max_candidate_count: int = 0
@@ -226,6 +243,10 @@ class PeerSelectionConfig:
             distribution_quality={
                 str(key): float(value)
                 for key, value in dict(values.get("distribution_quality", DEFAULT_DISTRIBUTION_QUALITY)).items()
+            },
+            objective_quality_caps={
+                str(key): float(value)
+                for key, value in dict(values.get("objective_quality_caps", DEFAULT_OBJECTIVE_QUALITY_CAPS)).items()
             },
             excluded_variables=tuple(str(item) for item in values.get("exclude_variables", values.get("excluded_variables", ()))),
             max_inferred_cardinality=int(values.get("max_inferred_cardinality", cls.max_inferred_cardinality)),
@@ -271,6 +292,7 @@ def with_excluded_variables(config: PeerSelectionConfig, extra_exclusions: list[
         selection_mode=config.selection_mode,
         objective_weights=config.objective_weights,
         distribution_quality=config.distribution_quality,
+        objective_quality_caps=config.objective_quality_caps,
         excluded_variables=dedupe([*config.excluded_variables, *[str(item) for item in extra_exclusions]]),
         max_inferred_cardinality=config.max_inferred_cardinality,
         max_candidate_count=config.max_candidate_count,
@@ -302,6 +324,7 @@ def with_allowed_variables(config: PeerSelectionConfig, allowed_variables: list[
         selection_mode=config.selection_mode,
         objective_weights=config.objective_weights,
         distribution_quality=config.distribution_quality,
+        objective_quality_caps=config.objective_quality_caps,
         excluded_variables=config.excluded_variables,
         max_inferred_cardinality=config.max_inferred_cardinality,
         max_candidate_count=config.max_candidate_count,
@@ -814,6 +837,118 @@ def objective_weights(config: PeerSelectionConfig | None = None) -> dict[str, fl
     return {key: value / total for key, value in positive.items()}
 
 
+def objective_quality_caps(config: PeerSelectionConfig | None = None) -> dict[str, float]:
+    raw = dict((config.objective_quality_caps if config else None) or DEFAULT_OBJECTIVE_QUALITY_CAPS)
+    out = DEFAULT_OBJECTIVE_QUALITY_CAPS.copy()
+    for key, value in raw.items():
+        out[str(key)] = float(value)
+    return out
+
+
+def apply_objective_quality_cap(
+    score: float,
+    distribution_score: float,
+    representability_score_value: float,
+    config: PeerSelectionConfig | None = None,
+) -> float:
+    caps = objective_quality_caps(config)
+    capped = float(score)
+    distribution = float(distribution_score)
+    representability = float(representability_score_value)
+    if not np.isfinite(distribution):
+        distribution = 0.0
+    if not np.isfinite(representability):
+        representability = 0.0
+    minimum_cap = caps["minimum_cap"]
+    if distribution < caps["weak_distribution_threshold"]:
+        quality_cap = max(
+            minimum_cap,
+            caps["weak_distribution_cap"]
+            - (caps["weak_distribution_threshold"] - distribution) * caps["weak_distribution_penalty_per_point"],
+        )
+        capped = min(capped, quality_cap)
+    elif distribution < caps["wide_distribution_threshold"]:
+        quality_cap = max(
+            minimum_cap,
+            caps["wide_distribution_cap"]
+            - (caps["wide_distribution_threshold"] - distribution) * caps["wide_distribution_penalty_per_point"],
+        )
+        capped = min(capped, quality_cap)
+    if representability < caps["weak_representability_threshold"]:
+        quality_cap = max(
+            minimum_cap,
+            caps["weak_representability_cap"]
+            - (caps["weak_representability_threshold"] - representability)
+            * caps["weak_representability_penalty_per_point"],
+        )
+        capped = min(capped, quality_cap)
+    elif representability < caps["medium_representability_threshold"]:
+        quality_cap = max(
+            minimum_cap,
+            caps["medium_representability_cap"]
+            - (caps["medium_representability_threshold"] - representability)
+            * caps["medium_representability_penalty_per_point"],
+        )
+        capped = min(capped, quality_cap)
+    return float(np.clip(capped, 0.0, 100.0))
+
+
+def apply_objective_quality_cap_frame(
+    scores: np.ndarray,
+    distribution_scores: np.ndarray,
+    representability_scores: np.ndarray,
+    config: PeerSelectionConfig | None = None,
+) -> np.ndarray:
+    caps = objective_quality_caps(config)
+    capped = np.asarray(scores, dtype=float).copy()
+    distribution = np.nan_to_num(np.asarray(distribution_scores, dtype=float), nan=0.0, posinf=100.0, neginf=0.0)
+    representability = np.nan_to_num(np.asarray(representability_scores, dtype=float), nan=0.0, posinf=100.0, neginf=0.0)
+    minimum_cap = caps["minimum_cap"]
+    weak_distribution_cap = np.maximum(
+        minimum_cap,
+        caps["weak_distribution_cap"]
+        - (caps["weak_distribution_threshold"] - distribution) * caps["weak_distribution_penalty_per_point"],
+    )
+    wide_distribution_cap = np.maximum(
+        minimum_cap,
+        caps["wide_distribution_cap"]
+        - (caps["wide_distribution_threshold"] - distribution) * caps["wide_distribution_penalty_per_point"],
+    )
+    weak_representability_cap = np.maximum(
+        minimum_cap,
+        caps["weak_representability_cap"]
+        - (caps["weak_representability_threshold"] - representability) * caps["weak_representability_penalty_per_point"],
+    )
+    medium_representability_cap = np.maximum(
+        minimum_cap,
+        caps["medium_representability_cap"]
+        - (caps["medium_representability_threshold"] - representability)
+        * caps["medium_representability_penalty_per_point"],
+    )
+    capped = np.where(
+        distribution < caps["weak_distribution_threshold"],
+        np.minimum(capped, weak_distribution_cap),
+        capped,
+    )
+    capped = np.where(
+        (distribution >= caps["weak_distribution_threshold"]) & (distribution < caps["wide_distribution_threshold"]),
+        np.minimum(capped, wide_distribution_cap),
+        capped,
+    )
+    capped = np.where(
+        representability < caps["weak_representability_threshold"],
+        np.minimum(capped, weak_representability_cap),
+        capped,
+    )
+    capped = np.where(
+        (representability >= caps["weak_representability_threshold"])
+        & (representability < caps["medium_representability_threshold"]),
+        np.minimum(capped, medium_representability_cap),
+        capped,
+    )
+    return np.clip(capped, 0.0, 100.0)
+
+
 def objective_components(
     row: pd.Series,
     candidate: PeerCandidate,
@@ -840,7 +975,13 @@ def objective_score(
 ) -> float:
     components = objective_components(row, candidate, thresholds, config)
     weights = objective_weights(config)
-    return float(sum(weights.get(key, 0.0) * value for key, value in components.items()))
+    score = float(sum(weights.get(key, 0.0) * value for key, value in components.items()))
+    return apply_objective_quality_cap(
+        score,
+        components["distribution"],
+        components["representability"],
+        config,
+    )
 
 
 def objective_score_frame(
@@ -856,7 +997,7 @@ def objective_score_frame(
     stability = stability_score_frame(frame)
     specificity = np.full(len(frame), 100.0 * specificity_score(candidate, config), dtype=float)
     support = support_strength_score_frame(frame, thresholds)
-    return (
+    score = (
         weights.get("representability", 0.0) * representability
         + weights.get("distribution", 0.0) * distribution
         + weights.get("calibration", 0.0) * calibration
@@ -864,6 +1005,7 @@ def objective_score_frame(
         + weights.get("specificity", 0.0) * specificity
         + weights.get("support", 0.0) * support
     )
+    return apply_objective_quality_cap_frame(score, distribution, representability, config)
 
 
 def representability_status(score: float, candidate: PeerCandidate, config: PeerSelectionConfig | None = None) -> str:

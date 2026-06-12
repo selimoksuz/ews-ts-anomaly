@@ -210,6 +210,22 @@ peer_selection:
     specificity: 0.10
     # Hist/season/recent/current adet destek gucu.
     support: 0.10
+  objective_quality_caps:
+    # Dagilim skoru zayifsa objective score bu tavanlari asamaz.
+    weak_distribution_threshold: 40.0
+    weak_distribution_cap: 55.0
+    weak_distribution_penalty_per_point: 0.20
+    wide_distribution_threshold: 60.0
+    wide_distribution_cap: 70.0
+    wide_distribution_penalty_per_point: 0.10
+    # Temsil skoru zayif/orta ise objective score bu tavanlari asamaz.
+    weak_representability_threshold: 40.0
+    weak_representability_cap: 55.0
+    weak_representability_penalty_per_point: 0.15
+    medium_representability_threshold: 60.0
+    medium_representability_cap: 70.0
+    medium_representability_penalty_per_point: 0.05
+    minimum_cap: 0.0
   distribution_quality:
     # Peer homojenligini olcerken kullanilan bilesen agirliklari.
     # Ana karar sinyali normal dagilim degil, ayni ay log/robust kiyas yapilabilirliktir.
