@@ -74,9 +74,13 @@ variables:
   time_variables:
     - DONEM_AY
   segment_variables:
-    - SEGMENTAD
-    - REF_ALTFAALIYET
-    - SUBE_KD
+    - name: SEGMENTAD
+      type: categorical
+    - name: REF_ALTFAALIYET
+      type: categorical
+    - name: TURNOVER_AMT
+      type: numeric
+      optimize_buckets: true
   feature_variables:
     - FATURA_TTR
     - TURNOVER_AMT
@@ -85,7 +89,9 @@ variables:
 
 `feature_variables` listesindeki ilk kolon skorlanan ana metriktir. Adaptif peer adaylarini sadece `segment_variables` listesi besler.
 
-Segment degiskenleri tek tek biliniyorsa liste verilir; production icin onerilen mod budur. Kesif amacli `segment_variables: auto` yazilabilir; bu modda engine `id_variables`, `time_variables`, ana metrik, referans feature ve `exclude_variables` alanlarini cikarir, kalan dusuk/orta cardinality kolonlari gecici segment listesi olarak infer eder. Production'a tasirken bu liste YAML'a acik segment listesi olarak yazilmalidir.
+Segment degiskenleri tek tek biliniyorsa liste verilir; production icin onerilen mod budur. Kategorik degiskenler identity olarak kullanilir veya `optimize_groups: true` ise gecmis ana metrik dagilimina gore benzer kategoriler objective bazli gruplanabilir. Numarik degiskenler `type: numeric` ve `optimize_buckets: true` ile verildiginde engine q3/q4/q5/q8 gibi aday bucket'lari yalniz scoring ayindan onceki veriyle fit eder, homojenlik/support/mean-medyan/std-medyan/separation objective'ine gore en iyi bucket'i secer ve peer adayina bu uretilen bucket kolonu girer.
+
+Kesif amacli `segment_variables: auto` yazilabilir; bu modda engine `id_variables`, `time_variables`, ana metrik, referans feature ve `exclude_variables` alanlarini cikarir, kalan dusuk/orta cardinality kolonlari gecici segment listesi olarak infer eder. Production'a tasirken bu liste YAML'a acik segment listesi olarak yazilmalidir.
 
 ```yaml
 variables:
@@ -102,24 +108,29 @@ variables:
 
 Ana metrik herhangi bir operasyonel sayisal deger olabilir. Bugun fatura tutari, baska bir proseste POS cirosu veya farkli bir tekil sayisal metrik olabilir; kod metrik adina bagli calismaz.
 
-Feature kolonlari sadece listede yer aldigi icin anomali skoruna girmez. Aktif turevler `model.derived_features` altinda tanimlanir; bu turevler peer segmentasyonuna otomatik girmez:
+Feature kolonlari sadece listede yer aldigi icin anomali skoruna girmez. Aktif turev sinyaller `model.derived_signals` altinda acik tanimlanir; bu turevler peer segmentasyonuna otomatik girmez:
 
 ```yaml
 model:
+  derived_signals:
+    ratios:
+      - name: metric_to_turnover
+        enabled: true
+        numerator: main_feature
+        denominator: TURNOVER_AMT
+        use_as_anomaly_signal: true
+        quality_gate:
+          enabled: true
+          max_denominator_missing_or_zero_rate: 0.50
+          min_monthly_valid_coverage: 0.50
+          min_peer_ratio_rows: 20
+          min_peer_ratio_mad: 0.001
   derived_features:
-    feature_ratio:
-      enabled: true
-      numerator: main_feature
-      denominator: TURNOVER_AMT
-      use_as_anomaly_signal: true
     behavior_peer:
       enabled: false
-    bucket_features:
-      - source: AKTIF_ABONE
-        internal_role: exposure_feature
 ```
 
-Farkli proseslerde `denominator` ve `bucket_features.source` alanlari degistirilir; kod icinde proses-spesifik kolon adi aranmaz. Peer icin kullanilacak kolonlar ise mutlaka `variables.segment_variables` altinda bulunmalidir. Config'te uretilmis q-bucket kolonlari yazilmaz.
+Farkli proseslerde `denominator` degistirilir; kod icinde proses-spesifik kolon adi aranmaz. Peer icin kullanilacak kolonlar mutlaka `variables.segment_variables` altinda bulunmalidir. Config'te uretilmis q-bucket kolonlari yazilmaz; numarik kaynak kolon yazilir, bucket'i engine objective ile uretir.
 
 Output kolonlari ayri bir schema dosyasindan okunmaz. Decision tablo kontrati sabittir: ham input kolonlari + `ANOMALI_FLAG`, `ANOMALI_SKORU`, `ANOMALI_NEDENI`. Detail tabloda ham input kolonlari onde gelir; sonrasinda modelin run sirasinda urettigi diagnostic kolonlar dinamik eklenir. Oracle kolon ve tablo adlari da ayrica maplenmez: 30 karakteri asmayan adlar aynen kalir, uzun adlar deterministic hash suffix ile otomatik kisaltilir. Tablo adini birebir Oracle'da gormek istiyorsan `decision_table` ve `detail_table` adlarini 30 karakter altinda tut.
 
@@ -192,9 +203,9 @@ Peer objective agirliklari `configs/anomaly.yaml` icinde `peer_selection.objecti
 
 Objective skor kalite cap'i `peer_selection.objective_quality_caps` altindadir. Varsayilan olarak `PEER_DAGILIM_SKORU < 40` veya `PEER_TEMSIL_SKORU < 40` ise `PEER_OBJECTIVE_SKORU` 55'i asamaz; 40-60 bandinda ise 70'i asamaz. Cap kademelidir: esikten her puan uzaklasma `*_penalty_per_point` katsayisiyla tavani biraz daha dusurur. Boylece zayif peerler ayni puana sikismaz, yine kendi icinde daha iyi dagilim/temsil sunan segment secilir. Karar katmaninda `model.score_aggregation.peer_reliability.min_peer_objective_score = 60` ve `min_peer_distribution_score = 40` esikleri vardir. Bu esikleri gecemeyen peer `PEER_WEAK` olur; final anomaly score/flag uretiminde karar driver'i olamaz, detail tabloda sadece diagnostic olarak kalir.
 
-`behavior_level_bucket`, `behavior_volatility_bucket`, `behavior_trend_bucket` ve `behavior_cluster` sadece scoring ayindan onceki musteri gecmisiyle uretilir. Bu alanlar peer segmentasyonuna otomatik girmez; detail/model diagnostic olarak kalir. `peer_selection.candidate_strategy: objective_lattice` sadece `variables.segment_variables` kolonlari arasindan adaylari otomatik kurar. Branch/sube gibi cok parcalayan kolonlar segment listesine yaziliysa destek gecmezse objective tarafindan elenir veya daha genis peer'e dusulur.
+`behavior_level_bucket`, `behavior_volatility_bucket`, `behavior_trend_bucket` ve `behavior_cluster` sadece scoring ayindan onceki musteri gecmisiyle uretilebilir; varsayilan outputa ve peer segmentasyonuna otomatik girmez. Bu alanlar yalniz YAML'da acikca segment veya derived signal olarak tanimlanirsa ilgili run'da kullanilir. `peer_selection.candidate_strategy: objective_lattice` sadece `variables.segment_variables` kolonlarindan ve bu listedeki numarik kolonlar icin runtime'da uretilen optimize bucket'lardan adaylari kurar. Branch/sube gibi cok parcalayan kolonlar segment listesine yaziliysa destek gecmezse objective tarafindan elenir veya daha genis peer'e dusulur.
 
-Feature ratio skora girmeden once `model.derived_features.feature_ratio.quality_gate` ile kontrol edilir. Global gate gecmezse veya secilen peer icinde `min_peer_ratio_rows` / `min_peer_ratio_mad` gecmezse oran sadece diagnostic kalir. Detail tabloda gate sonucu ve nedeni `FEATURE_ORAN_*_GATE_*` kolonlariyla izlenir.
+Feature ratio skora girmeden once `model.derived_signals.ratios[].quality_gate` ile kontrol edilir. Global gate gecmezse veya secilen peer icinde `min_peer_ratio_rows` / `min_peer_ratio_mad` gecmezse oran sadece diagnostic kalir. Detail tabloda gate sonucu ve nedeni `FEATURE_ORAN_*_GATE_*` kolonlariyla izlenir.
 
 Challenger modeller `model.score_aggregation.challenger_models` altindan yonetilir. PCA, Isolation Forest ve LOF production kararini degistirmez; detail tabloda aggregate `model_challenger_score`, model bazli `pca/if/lof_challenger_score`, `model_challenger_warning` ve `pca/if/lof_challenger_anomaly_flag` alanlari uretilir. Bu alanlar scoring ay diagnostic'i oldugu icin yalniz scoring ay satirinda doludur; gecmis seri satirlarinda bos kalir.
 

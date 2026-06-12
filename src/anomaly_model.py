@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ INTERNAL_COLUMN_FALLBACKS = {
 
 SEGMENT_VARIABLES_META_KEY = "__segment_variables__"
 SEGMENT_VARIABLES_AUTO_META_KEY = "__segment_variables_auto__"
+SEGMENT_VARIABLE_SPECS_META_KEY = "__segment_variable_specs__"
 EXCLUDED_VARIABLES_META_KEY = "__excluded_variables__"
 MAX_AUTO_SEGMENT_CARDINALITY = 250
 
@@ -198,11 +200,11 @@ def signal_evidence_z_value(row: pd.Series, signal: Mapping[str, str]) -> float:
 
 DEFAULT_DERIVED_FEATURES: dict[str, Any] = {
     "feature_ratio": {
-        "enabled": "auto",
+        "enabled": False,
         "numerator": "main_metric",
         "denominator": "reference_feature",
         "use_as_peer_variable": False,
-        "use_as_anomaly_signal": True,
+        "use_as_anomaly_signal": False,
         "quality_gate": {
             "enabled": True,
             "max_denominator_missing_or_zero_rate": 0.50,
@@ -211,7 +213,7 @@ DEFAULT_DERIVED_FEATURES: dict[str, Any] = {
             "min_peer_ratio_mad": 0.001,
         },
         "peer_bucket_variants": {
-            "enabled": True,
+            "enabled": False,
             "min_positive_rows": 100,
             "variants": list(DEFAULT_FEATURE_BUCKET_VARIANTS),
         },
@@ -558,7 +560,7 @@ def feature_ratio_settings(
     has_denominator = bool(cols and (denominator_role in cols or denominator_role in set(cols.values())))
     enabled_default = has_denominator and bool(denominator_usable)
     enabled = _auto_bool(ratio.get("enabled", "auto"), enabled_default)
-    signal_enabled = enabled and _auto_bool(ratio.get("use_as_anomaly_signal", True), True)
+    signal_enabled = enabled and _auto_bool(ratio.get("use_as_anomaly_signal", False), False)
     peer_enabled = enabled and _auto_bool(ratio.get("use_as_peer_variable", False), False)
     return {
         "enabled": bool(enabled),
@@ -741,6 +743,402 @@ def assign_behavior_clusters(frame: pd.DataFrame, behavior: pd.DataFrame) -> pd.
     out["behavior_volatility_bucket"] = out["behavior_volatility_bucket"].fillna("vol_unknown")
     out["behavior_trend_bucket"] = out["behavior_trend_bucket"].fillna("trend_unknown")
     return out
+
+
+SEGMENT_BUCKET_QUANTILES: dict[str, list[float]] = {
+    "q3": [0.333333, 0.666667],
+    "q4": [0.25, 0.50, 0.75],
+    "q5": [0.20, 0.40, 0.60, 0.80],
+    "q8": [0.125, 0.25, 0.375, 0.50, 0.625, 0.75, 0.875],
+}
+
+
+def _segment_internal_name(source: str, suffix: str) -> str:
+    clean = re.sub(r"[^0-9a-zA-Z]+", "_", str(source).strip().lower()).strip("_")
+    digest = hashlib.md5(str(source).encode("utf-8")).hexdigest()[:6]
+    stem = clean[:16].strip("_") or "var"
+    return f"seg_{stem}_{digest}_{suffix}"[:30]
+
+
+def _segment_specs_from_profile(profile: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw_specs = profile.get("segment_variable_specs", [])
+    if isinstance(raw_specs, list) and raw_specs:
+        specs = []
+        for item in raw_specs:
+            if not isinstance(item, Mapping) or not item.get("source"):
+                continue
+            spec = dict(item)
+            spec["source"] = str(spec["source"])
+            raw_type = str(spec.get("type", "categorical")).strip().lower()
+            spec["type"] = "numeric" if raw_type in {"num", "number", "numeric", "continuous", "float", "int"} else "categorical"
+            specs.append(spec)
+        return specs
+    return [{"source": str(col), "name": str(col), "type": "categorical"} for col in profile.get("segment_columns", [])]
+
+
+def _truthy(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "evet", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "hayir", "off"}:
+            return False
+        if lowered == "auto":
+            return default
+    return bool(value)
+
+
+def _segment_partition_objective(
+    frame: pd.DataFrame,
+    column: str,
+    min_group_rows: int,
+    *,
+    base_objective: float | None = None,
+) -> dict[str, float]:
+    empty = {
+        "objective": 0.0,
+        "support_score": 0.0,
+        "homogeneity_score": 0.0,
+        "mean_median_score": 0.0,
+        "std_score": 0.0,
+        "separation_score": 0.0,
+        "valid_rows": 0.0,
+        "group_count": 0.0,
+        "supported_group_count": 0.0,
+        "gain": 0.0,
+    }
+    if column not in frame.columns:
+        return empty
+    valid = frame.loc[
+        frame["valid_main_metric_for_model"] & frame["log_main_metric"].notna() & frame[column].notna(),
+        [column, "log_main_metric", "main_metric"],
+    ].copy()
+    if len(valid) < max(int(min_group_rows), 10):
+        return empty
+    full_iqr = robust_iqr(valid["log_main_metric"])
+    full_scale = max(full_iqr if pd.notna(full_iqr) else 0.0, MIN_LOG_SCALE)
+    grouped = valid.groupby(column, dropna=False)
+    stats = grouped.agg(
+        group_n=("log_main_metric", "size"),
+        log_q25=("log_main_metric", lambda x: float(np.quantile(pd.to_numeric(x, errors="coerce").dropna(), 0.25))),
+        log_q75=("log_main_metric", lambda x: float(np.quantile(pd.to_numeric(x, errors="coerce").dropna(), 0.75))),
+        log_median=("log_main_metric", "median"),
+        metric_mean=("main_metric", "mean"),
+        metric_median=("main_metric", "median"),
+        metric_std=("main_metric", lambda x: float(np.std(pd.to_numeric(x, errors="coerce").dropna(), ddof=0))),
+    ).reset_index()
+    supported = stats.loc[stats["group_n"].ge(int(min_group_rows))].copy()
+    if len(supported) == 0:
+        return empty
+    weights = supported["group_n"].astype(float) / max(float(supported["group_n"].sum()), 1.0)
+    group_iqr = (supported["log_q75"].astype(float) - supported["log_q25"].astype(float)).clip(lower=0.0)
+    weighted_iqr = float(np.sum(group_iqr * weights))
+    homogeneity_score = 100.0 * (1.0 - min(weighted_iqr / max(full_scale, 1e-6), 1.0))
+    mean_median_gap = np.log(
+        np.maximum(supported["metric_mean"].astype(float), 1e-6)
+        / np.maximum(supported["metric_median"].astype(float), 1e-6)
+    ).abs()
+    mean_median_score = 100.0 * (1.0 - min(float(np.sum(mean_median_gap * weights)) / np.log(8.0), 1.0))
+    std_ratio = supported["metric_std"].astype(float) / np.maximum(supported["metric_median"].astype(float), 1e-6)
+    std_score = 100.0 * (1.0 - min(float(np.sum(std_ratio * weights)) / 12.0, 1.0))
+    medians = supported["log_median"].astype(float)
+    separation_score = 100.0 * min(float(np.std(medians, ddof=0)) / max(full_scale, 1e-6), 1.0)
+    supported_rows = float(supported["group_n"].sum())
+    support_score = 100.0 * min(supported_rows / max(float(len(valid)), 1.0), 1.0)
+    fragmentation_penalty = max(0.0, (float(len(stats)) - 12.0) * 1.5)
+    objective = (
+        0.35 * homogeneity_score
+        + 0.25 * support_score
+        + 0.15 * mean_median_score
+        + 0.15 * std_score
+        + 0.10 * separation_score
+        - fragmentation_penalty
+    )
+    objective = float(np.clip(objective, 0.0, 100.0))
+    base = float(base_objective) if base_objective is not None and np.isfinite(base_objective) else objective
+    return {
+        "objective": objective,
+        "support_score": float(np.clip(support_score, 0.0, 100.0)),
+        "homogeneity_score": float(np.clip(homogeneity_score, 0.0, 100.0)),
+        "mean_median_score": float(np.clip(mean_median_score, 0.0, 100.0)),
+        "std_score": float(np.clip(std_score, 0.0, 100.0)),
+        "separation_score": float(np.clip(separation_score, 0.0, 100.0)),
+        "valid_rows": float(len(valid)),
+        "group_count": float(len(stats)),
+        "supported_group_count": float(len(supported)),
+        "gain": float(objective - base),
+    }
+
+
+def _segment_bucket_candidates(spec: Mapping[str, Any]) -> list[tuple[str, list[float]]]:
+    raw_binning = spec.get("binning", {})
+    binning = dict(raw_binning) if isinstance(raw_binning, Mapping) else {}
+    raw_candidates = binning.get("candidates", binning.get("variants", ["q3", "q4", "q5", "q8"]))
+    if not isinstance(raw_candidates, list):
+        raw_candidates = [raw_candidates]
+    out: list[tuple[str, list[float]]] = []
+    for item in raw_candidates:
+        if isinstance(item, Mapping):
+            name = sanitize_bucket_variant_name(item.get("name", f"q{len(out) + 1}"))
+            quantiles = _quantile_list(item.get("quantiles", []))
+        else:
+            name = sanitize_bucket_variant_name(item)
+            quantiles = SEGMENT_BUCKET_QUANTILES.get(str(item).lower(), [])
+        if quantiles:
+            out.append((name, quantiles))
+    return out
+
+
+def _fit_numeric_segment_bucket(
+    history: pd.DataFrame,
+    source: str,
+    spec: Mapping[str, Any],
+) -> tuple[str | None, pd.Series | None, dict[str, Any]]:
+    raw_binning = spec.get("binning", {})
+    binning = dict(raw_binning) if isinstance(raw_binning, Mapping) else {}
+    min_group_rows = int(binning.get("min_bucket_rows", binning.get("min_group_rows", 120)))
+    min_gain = float(binning.get("min_objective_gain", 0.0))
+    transform_candidates = binning.get("transform_candidates", ["raw", "log1p"])
+    if not isinstance(transform_candidates, list):
+        transform_candidates = [transform_candidates]
+    source_values = to_numeric_series(history[source]) if source in history.columns else pd.Series(np.nan, index=history.index)
+    base_col = _segment_internal_name(source, "base")
+    base_frame = history[["valid_main_metric_for_model", "log_main_metric", "main_metric"]].copy()
+    base_frame[base_col] = "ALL"
+    base_metrics = _segment_partition_objective(base_frame, base_col, min_group_rows)
+    base_objective = float(base_metrics.get("objective", 0.0))
+    best: dict[str, Any] = {
+        "source": source,
+        "type": "numeric",
+        "selected": False,
+        "selected_column": None,
+        "selected_variant": None,
+        "base_objective": base_objective,
+        "selected_objective": 0.0,
+        "objective_gain": 0.0,
+        "reason": "no_valid_bucket_candidate",
+    }
+    best_edges: list[float] = []
+    best_transform = "raw"
+    best_column: str | None = None
+    best_score = -np.inf
+    for transform in [str(item).lower() for item in transform_candidates]:
+        values = source_values.astype(float)
+        if transform == "log1p":
+            values = values.where(values.ge(0))
+            transformed = np.log1p(values)
+        else:
+            transform = "raw"
+            transformed = values
+        for variant_name, quantiles in _segment_bucket_candidates(spec):
+            edges = unique_quantile_edges(transformed, quantiles, min_group_rows)
+            if len(edges) == 0:
+                continue
+            column = _segment_internal_name(source, f"{variant_name[:4]}b")
+            candidate_frame = history[["valid_main_metric_for_model", "log_main_metric", "main_metric"]].copy()
+            labels = [f"{column}_{idx + 1}" for idx in range(len(edges) + 1)]
+            candidate_frame[column] = quantile_bucket(transformed, edges, labels, "segment_missing")
+            metrics = _segment_partition_objective(candidate_frame, column, min_group_rows, base_objective=base_objective)
+            score = float(metrics.get("objective", 0.0))
+            if score > best_score:
+                best_score = score
+                best_edges = edges
+                best_transform = transform
+                best_column = column
+                best = {
+                    "source": source,
+                    "type": "numeric",
+                    "selected": bool(score >= base_objective + min_gain),
+                    "selected_column": column,
+                    "selected_variant": f"{transform}_{variant_name}",
+                    "base_objective": base_objective,
+                    "selected_objective": score,
+                    "objective_gain": float(score - base_objective),
+                    "reason": "selected_by_objective" if score >= base_objective + min_gain else "objective_gain_below_threshold",
+                    **{key: value for key, value in metrics.items() if key not in {"objective", "gain"}},
+                }
+    if best_column is None or not bool(best.get("selected")):
+        return None, None, best
+    values = source_values.astype(float)
+    if best_transform == "log1p":
+        values = np.log1p(values.where(values.ge(0)))
+    labels = [f"{best_column}_{idx + 1}" for idx in range(len(best_edges) + 1)]
+    fitted = quantile_bucket(values, best_edges, labels, "segment_missing")
+    best["edges"] = [float(edge) for edge in best_edges]
+    best["transform"] = best_transform
+    return best_column, fitted, best
+
+
+def _apply_numeric_segment_bucket(frame: pd.DataFrame, source: str, fit: Mapping[str, Any]) -> pd.Series:
+    column = str(fit.get("selected_column"))
+    edges = [float(edge) for edge in fit.get("edges", [])]
+    transform = str(fit.get("transform", "raw"))
+    values = to_numeric_series(frame[source]) if source in frame.columns else pd.Series(np.nan, index=frame.index)
+    if transform == "log1p":
+        values = np.log1p(values.astype(float).where(values.astype(float).ge(0)))
+    labels = [f"{column}_{idx + 1}" for idx in range(len(edges) + 1)]
+    return quantile_bucket(values.astype(float), edges, labels, "segment_missing")
+
+
+def _fit_categorical_segment_group(
+    history: pd.DataFrame,
+    source: str,
+    spec: Mapping[str, Any],
+) -> tuple[str, pd.Series, dict[str, Any]]:
+    raw_grouping = spec.get("grouping", {})
+    grouping = dict(raw_grouping) if isinstance(raw_grouping, Mapping) else {}
+    min_group_rows = int(grouping.get("min_group_rows", 120))
+    min_gain = float(grouping.get("min_objective_gain", 0.0))
+    max_groups = int(grouping.get("max_groups", 6))
+    raw_values = history[source].astype("string").fillna("segment_missing")
+    base_frame = history[["valid_main_metric_for_model", "log_main_metric", "main_metric"]].copy()
+    base_frame[source] = raw_values
+    base_metrics = _segment_partition_objective(base_frame, source, min_group_rows)
+    base_objective = float(base_metrics.get("objective", 0.0))
+    if not _truthy(spec.get("optimize_groups", False), False):
+        report = {
+            "source": source,
+            "type": "categorical",
+            "selected": True,
+            "selected_column": source,
+            "selected_variant": "identity",
+            "base_objective": base_objective,
+            "selected_objective": base_objective,
+            "objective_gain": 0.0,
+            "reason": "identity_categorical_segment",
+            **{key: value for key, value in base_metrics.items() if key not in {"objective", "gain"}},
+        }
+        return source, raw_values, report
+    valid = history.loc[
+        history["valid_main_metric_for_model"] & history["log_main_metric"].notna(),
+        [source, "log_main_metric"],
+    ].copy()
+    valid[source] = valid[source].astype("string").fillna("segment_missing")
+    category_stats = (
+        valid.groupby(source, dropna=False)
+        .agg(category_n=("log_main_metric", "size"), category_median=("log_main_metric", "median"))
+        .reset_index()
+    )
+    supported = category_stats.loc[category_stats["category_n"].ge(min_group_rows)].copy()
+    if len(supported) < 2:
+        report = {
+            "source": source,
+            "type": "categorical",
+            "selected": True,
+            "selected_column": source,
+            "selected_variant": "identity",
+            "base_objective": base_objective,
+            "selected_objective": base_objective,
+            "objective_gain": 0.0,
+            "reason": "not_enough_categories_to_group",
+        }
+        return source, raw_values, report
+    ranks = supported["category_median"].rank(method="first")
+    bins = min(max_groups, max(2, int(len(supported))))
+    supported["_group_no"] = pd.qcut(ranks, q=bins, labels=False, duplicates="drop")
+    mapping = {
+        str(row[source]): f"{_segment_internal_name(source, 'grp')}_{int(row['_group_no']) + 1}"
+        for _, row in supported.iterrows()
+        if pd.notna(row["_group_no"])
+    }
+    column = _segment_internal_name(source, "grp")
+    grouped_values = raw_values.map(mapping).fillna(f"{column}_low_support")
+    candidate_frame = history[["valid_main_metric_for_model", "log_main_metric", "main_metric"]].copy()
+    candidate_frame[column] = grouped_values
+    metrics = _segment_partition_objective(candidate_frame, column, min_group_rows, base_objective=base_objective)
+    selected = float(metrics.get("objective", 0.0)) >= base_objective + min_gain
+    if not selected:
+        report = {
+            "source": source,
+            "type": "categorical",
+            "selected": True,
+            "selected_column": source,
+            "selected_variant": "identity",
+            "base_objective": base_objective,
+            "selected_objective": base_objective,
+            "objective_gain": 0.0,
+            "reason": "grouping_objective_gain_below_threshold",
+        }
+        return source, raw_values, report
+    report = {
+        "source": source,
+        "type": "categorical",
+        "selected": True,
+        "selected_column": column,
+        "selected_variant": "optimized_category_group",
+        "base_objective": base_objective,
+        "selected_objective": float(metrics.get("objective", 0.0)),
+        "objective_gain": float(metrics.get("objective", 0.0) - base_objective),
+        "reason": "selected_by_objective",
+        "mapping_size": len(mapping),
+        "mapping": mapping,
+        **{key: value for key, value in metrics.items() if key not in {"objective", "gain"}},
+    }
+    return column, grouped_values, report
+
+
+def _apply_categorical_segment_group(frame: pd.DataFrame, source: str, fit: Mapping[str, Any]) -> pd.Series:
+    selected_column = str(fit.get("selected_column", source))
+    values = frame[source].astype("string").fillna("segment_missing") if source in frame.columns else pd.Series("segment_missing", index=frame.index, dtype="string")
+    if selected_column == source:
+        return values
+    mapping = {str(key): str(value) for key, value in dict(fit.get("mapping", {})).items()}
+    return values.map(mapping).fillna(f"{selected_column}_low_support")
+
+
+def apply_segment_optimizations(
+    history: pd.DataFrame,
+    scoring: pd.DataFrame,
+    profile: Mapping[str, Any],
+    progress: Callable[[str], None] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str], list[dict[str, Any]]]:
+    def emit(message: str) -> None:
+        if progress is not None:
+            progress(f"segment_optimizer {message}")
+
+    specs = _segment_specs_from_profile(profile)
+    if not specs:
+        return history, scoring, [], []
+    history_out = history.copy()
+    scoring_out = scoring.copy()
+    effective_columns: list[str] = []
+    reports: list[dict[str, Any]] = []
+    emit(f"start segment_count={len(specs)}")
+    for spec in specs:
+        source = str(spec.get("source", "")).strip()
+        if not source or source not in history_out.columns or source not in scoring_out.columns:
+            reports.append({"source": source, "selected": False, "reason": "source_column_missing"})
+            continue
+        if str(spec.get("type", "categorical")).lower() == "numeric" or _truthy(spec.get("optimize_buckets", False), False):
+            column, fitted_history, report = _fit_numeric_segment_bucket(history_out, source, spec)
+            reports.append(report)
+            if column is None or fitted_history is None:
+                emit(f"numeric_skip source={source} reason={report.get('reason')}")
+                continue
+            history_out[column] = fitted_history
+            scoring_out[column] = _apply_numeric_segment_bucket(scoring_out, source, report)
+            effective_columns.append(column)
+            emit(
+                "numeric_selected "
+                f"source={source} column={column} objective={float(report.get('selected_objective', 0.0)):.2f} "
+                f"gain={float(report.get('objective_gain', 0.0)):.2f}"
+            )
+            continue
+        column, fitted_history, report = _fit_categorical_segment_group(history_out, source, spec)
+        reports.append(report)
+        history_out[column] = fitted_history
+        scoring_out[column] = _apply_categorical_segment_group(scoring_out, source, report)
+        effective_columns.append(column)
+        emit(
+            "categorical_selected "
+            f"source={source} column={column} objective={float(report.get('selected_objective', 0.0)):.2f} "
+            f"reason={report.get('reason')}"
+        )
+    effective_columns = list(dict.fromkeys(col for col in effective_columns if col in scoring_out.columns))
+    emit(f"done effective_columns={'+'.join(effective_columns) if effective_columns else 'none'}")
+    return history_out, scoring_out, effective_columns, reports
 
 
 def distribution_quality_settings(peer_config: adaptive.PeerSelectionConfig | None) -> dict[str, float]:
@@ -1134,10 +1532,19 @@ def prepare_source_frame(
     source_map = column_map or {}
     excluded_variables = {str(col) for col in source_map.get(EXCLUDED_VARIABLES_META_KEY, [])}
     configured_segment_columns = [str(col) for col in source_map.get(SEGMENT_VARIABLES_META_KEY, [])]
+    configured_segment_specs = [
+        dict(spec)
+        for spec in source_map.get(SEGMENT_VARIABLE_SPECS_META_KEY, [])
+        if isinstance(spec, Mapping) and spec.get("source")
+    ]
     if bool(source_map.get(SEGMENT_VARIABLES_AUTO_META_KEY, False)):
         segment_columns = infer_auto_segment_columns(raw, cols, excluded_variables)
+        segment_specs = [{"source": col, "name": col, "type": "categorical"} for col in segment_columns]
     else:
         segment_columns = [col for col in configured_segment_columns if col in raw.columns]
+        segment_specs = configured_segment_specs or [
+            {"source": col, "name": col, "type": "categorical"} for col in configured_segment_columns
+        ]
     missing_segment_columns = [col for col in configured_segment_columns if col not in raw.columns]
     if missing_segment_columns:
         raise ValueError(f"Missing configured segment variables: {missing_segment_columns}")
@@ -1211,11 +1618,11 @@ def prepare_source_frame(
     ratio_explicitly_enabled = str(raw_ratio_config.get("enabled", "auto")).strip().lower() in {"true", "1", "yes", "evet"}
     if ratio_explicitly_enabled and "reference_feature" not in cols:
         raise ValueError(
-            "model.derived_features.feature_ratio is enabled, but its denominator column could not be resolved."
+            "model.derived_signals.ratios is enabled, but its denominator column could not be resolved."
         )
     if ratio_explicitly_enabled and not reference_feature_usable_for_model:
         raise ValueError(
-            "model.derived_features.feature_ratio is enabled, but the denominator is missing, zero, "
+            "model.derived_signals.ratios is enabled, but the denominator is missing, zero, "
             "or effectively identical to the main metric feature."
         )
     ratio_settings = feature_ratio_settings(
@@ -1255,9 +1662,15 @@ def prepare_source_frame(
     monthly["valid_main_metric_for_model"] = monthly["main_metric"].notna() & monthly["main_metric"].ge(0)
     monthly["negative_main_metric_flag"] = monthly["main_metric"].lt(0).fillna(False)
     monthly["zero_main_metric_flag"] = monthly["main_metric"].eq(0).fillna(False)
-    monthly["log_main_metric"] = np.where(monthly["valid_main_metric_for_model"], np.log1p(monthly["main_metric"]), np.nan)
+    monthly["log_main_metric"] = np.nan
+    valid_main_mask = monthly["valid_main_metric_for_model"].fillna(False)
+    monthly.loc[valid_main_mask, "log_main_metric"] = np.log1p(monthly.loc[valid_main_mask, "main_metric"].astype(float))
     monthly["reference_feature_positive_flag"] = monthly["reference_feature_for_model"].astype(float).gt(0)
-    monthly["log_reference_feature"] = np.where(monthly["reference_feature_positive_flag"], np.log1p(monthly["reference_feature_for_model"]), np.nan)
+    monthly["log_reference_feature"] = np.nan
+    reference_positive_mask = monthly["reference_feature_positive_flag"].fillna(False)
+    monthly.loc[reference_positive_mask, "log_reference_feature"] = np.log1p(
+        monthly.loc[reference_positive_mask, "reference_feature_for_model"].astype(float)
+    )
     monthly["main_to_reference_log_ratio"] = np.where(ratio_enabled, monthly["log_main_metric"] - monthly["log_reference_feature"], np.nan)
 
     monthly = monthly.sort_values(["customer_id", "invoice_month"]).reset_index(drop=True)
@@ -1280,6 +1693,7 @@ def prepare_source_frame(
         "period_max": int(monthly["invoice_month"].max()),
         "period_count": int(monthly["invoice_month"].nunique()),
         "segment_columns": segment_columns,
+        "segment_variable_specs": segment_specs,
         "segment_columns_auto_inferred": bool(source_map.get(SEGMENT_VARIABLES_AUTO_META_KEY, False)),
         "excluded_variables": sorted(excluded_variables),
         "segment_variable_counts": {
@@ -2461,6 +2875,12 @@ def score_scoring_month(
 
     profile = prepared.attrs.get("profile", {}) if hasattr(prepared, "attrs") else {}
     effective_derived = derived_features_config or profile.get("derived_features", {})
+    history_raw, scoring_raw, effective_segment_columns, segment_optimization_report = apply_segment_optimizations(
+        history_raw,
+        scoring_raw,
+        profile,
+        emit,
+    )
     emit("bucket_assignment_start")
     feature_bucket_edges = fit_feature_bucket_edges(history_raw, effective_derived)
     legacy_edges = fit_reference_feature_edges(history_raw)
@@ -2497,6 +2917,10 @@ def score_scoring_month(
         f"self_stats_rows={len(self_stats):,} scoring_customers={scoring['customer_id'].nunique():,}"
     )
     peer_rules = peer_config or adaptive.PeerSelectionConfig()
+    segment_peer_columns = effective_segment_columns or [
+        str(col) for col in profile.get("segment_columns", []) if str(col) in scoring.columns
+    ]
+    peer_rules = adaptive.with_allowed_variables(peer_rules, segment_peer_columns)
     support_rules = support_thresholds or adaptive.PeerSupportThresholds(
         min_history_rows=MIN_HIST_ROWS,
         min_season_rows=MIN_MOY_ROWS,
@@ -3093,6 +3517,10 @@ def score_scoring_month(
         )
     else:
         thresholds = {"watchlist_threshold": float("nan"), "high_anomaly_threshold": float("nan")}
+
+    for frame in (scores, not_scored):
+        frame.attrs["effective_segment_columns"] = segment_peer_columns
+        frame.attrs["segment_optimization_report"] = segment_optimization_report
 
     return ModelRun(
         scoring_month=scoring_month,

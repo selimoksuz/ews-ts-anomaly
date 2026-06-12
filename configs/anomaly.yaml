@@ -8,12 +8,47 @@ variables:
   time_variables:
     - AY
   # Adaptif peer sadece bu listedeki segment kolonlarini dener.
+  # String/dict fark etmez; numeric verilenler gecmis veriyle objective bazli bucket edilir.
   segment_variables:
-    - CST_NACE_CODE
-    - CST_NACE_II_CODE
-    - CST_SEGMENT
-    - CST_LOCATION_CITY
-    - BOLGE_ADI
+    - name: CST_NACE_CODE
+      type: categorical
+    - name: CST_NACE_II_CODE
+      type: categorical
+    - name: CST_SEGMENT
+      type: categorical
+      optimize_groups: true
+      grouping:
+        max_groups: 5
+        min_group_rows: 120
+        min_objective_gain: 1.0
+    - name: CST_LOCATION_CITY
+      type: categorical
+    - name: BOLGE_ADI
+      type: categorical
+    - name: TURNOVER_AMT_FIXED_20260531
+      type: numeric
+      optimize_buckets: true
+      binning:
+        candidates: [q3, q4, q5, q8]
+        transform_candidates: [raw, log1p]
+        min_bucket_rows: 120
+        min_objective_gain: 0.0
+    - name: TOT_RISK_MEMZUC_T0_FIXE_E83E18
+      type: numeric
+      optimize_buckets: true
+      binning:
+        candidates: [q3, q4, q5, q8]
+        transform_candidates: [raw, log1p]
+        min_bucket_rows: 120
+        min_objective_gain: 0.0
+    - name: TOT_CASH_RISK_MEMZUC_T0_F3C435
+      type: numeric
+      optimize_buckets: true
+      binning:
+        candidates: [q3, q4, q5, q8]
+        transform_candidates: [raw, log1p]
+        min_bucket_rows: 120
+        min_objective_gain: 0.0
   # Ana skorlanacak metrik.
   main_feature: AYLIK_CIRO_FIXED_20260531
   feature_variables:
@@ -42,18 +77,22 @@ model:
       strong_signal_p: 0.01
       moderate_signal_p: 0.05
       conflict_signal_p: 0.05
-  derived_features:
-    feature_ratio:
-      enabled: true
-      numerator: main_feature
-      denominator: TURNOVER_AMT_FIXED_20260531
-      use_as_anomaly_signal: true
-      quality_gate:
+  # Ratio gibi turetilmis sinyaller peer degiskeni degildir.
+  # Skora/challenger'a sadece burada acik tanimlanirsa girer.
+  derived_signals:
+    ratios:
+      - name: pos_to_turnover
         enabled: true
-        max_denominator_missing_or_zero_rate: 0.50
-        min_monthly_valid_coverage: 0.50
-        min_peer_ratio_rows: 20
-        min_peer_ratio_mad: 0.001
+        numerator: main_feature
+        denominator: TURNOVER_AMT_FIXED_20260531
+        use_as_anomaly_signal: true
+        quality_gate:
+          enabled: true
+          max_denominator_missing_or_zero_rate: 0.50
+          min_monthly_valid_coverage: 0.50
+          min_peer_ratio_rows: 20
+          min_peer_ratio_mad: 0.001
+  derived_features:
     behavior_peer:
       enabled: false
 

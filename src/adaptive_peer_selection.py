@@ -22,6 +22,7 @@ DEFAULT_BLOCKED_VALUES: dict[str, tuple[str, ...]] = {
         "None",
     ),
     "feature_bucket": ("feature_missing", "feature_zero", "feature_unknown", "", "nan", "None"),
+    "segment_optimized": ("segment_missing", "segment_unknown", "", "nan", "None"),
 }
 
 DEFAULT_OBJECTIVE_WEIGHTS: dict[str, float] = {
@@ -303,7 +304,14 @@ def with_excluded_variables(config: PeerSelectionConfig, extra_exclusions: list[
 def with_allowed_variables(config: PeerSelectionConfig, allowed_variables: list[str] | tuple[str, ...]) -> PeerSelectionConfig:
     allowed = dedupe([str(item) for item in allowed_variables])
     allowed_set = set(allowed)
-    priority = tuple(var for var in config.priority_variables if var in allowed_set) if config.priority_variables else allowed
+    if config.priority_variables:
+        priority_list = [var for var in config.priority_variables if var in allowed_set]
+        priority_list.extend(var for var in allowed if var not in priority_list)
+        priority = tuple(priority_list)
+    else:
+        priority = allowed
+    if not priority and allowed:
+        priority = allowed
     if not priority:
         priority = ("__no_segment_variable__",)
     mandatory = tuple(var for var in config.mandatory_variables if var in allowed_set)
@@ -675,6 +683,10 @@ def support_mask(
     for column in candidate.columns:
         if column.startswith("feature_bucket_") and column in candidate_frame.columns and generic_blocked:
             mask = mask & ~candidate_frame[column].astype(str).isin(generic_blocked)
+    segment_blocked = tuple(dict(blocked_values or DEFAULT_BLOCKED_VALUES).get("segment_optimized", ()))
+    for column in candidate.columns:
+        if column.startswith("seg_") and column in candidate_frame.columns and segment_blocked:
+            mask = mask & ~candidate_frame[column].astype(str).isin(segment_blocked)
     return mask
 
 
@@ -701,6 +713,10 @@ def support_failure_summary(
     generic_blocked = tuple(dict(blocked_values or DEFAULT_BLOCKED_VALUES).get("feature_bucket", ()))
     for column in candidate.columns:
         if column.startswith("feature_bucket_") and str(row.get(column, "")) in generic_blocked:
+            failed.append(f"{column}_missing")
+    segment_blocked = tuple(dict(blocked_values or DEFAULT_BLOCKED_VALUES).get("segment_optimized", ()))
+    for column in candidate.columns:
+        if column.startswith("seg_") and str(row.get(column, "")) in segment_blocked:
             failed.append(f"{column}_missing")
     distribution_score = support_value(row, "peer_distribution_quality_score")
     if distribution_score < thresholds.min_distribution_score:

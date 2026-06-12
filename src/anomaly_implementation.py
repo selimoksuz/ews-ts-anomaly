@@ -30,12 +30,7 @@ SIGNAL_COLUMNS = [
     ("customer_recent_regime", "customer_recent_regime_z", "customer_recent_regime_score", "musterinin son 3 ay rejimi"),
 ]
 
-PEER_KEY_COLUMNS = [
-    "feature_ratio_bucket",
-    "exposure_bucket",
-    "behavior_cluster",
-    "_global_key",
-]
+PEER_KEY_COLUMNS = ["_global_key"]
 
 DEFAULT_ORACLE_INFO_DIR = Path(r"C:\Users\Acer\dc_all_pipe\oracle_info")
 ORACLE_IDENTIFIER_MAX_LEN = 30
@@ -251,14 +246,63 @@ def safe_ratio(numerator: Any, denominator: Any) -> float:
     return float(numerator) / denom
 
 
-def display_peer_columns(value: Any) -> str:
+def peer_column_display_mapping(profile: dict[str, Any]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for raw in profile.get("segment_optimization_report", []):
+        if not isinstance(raw, dict):
+            continue
+        selected = raw.get("selected_column")
+        source = raw.get("source")
+        if not selected or not source:
+            continue
+        if str(selected) == str(source):
+            mapping[str(selected)] = str(source)
+        else:
+            mapping[str(selected)] = f"{source}_OPT_BUCKET"
+    return mapping
+
+
+def display_peer_columns(value: Any, replacements: dict[str, str] | None = None) -> str:
     replacements = {
-        "feature_ratio_bucket": "feature_ratio_bucket",
-        "exposure_bucket": "exposure_bucket",
+        **(replacements or {}),
     }
     text = str(value)
     parts = [replacements.get(part, part) for part in text.split("+")]
     return "+".join(parts)
+
+
+def display_peer_key_values(
+    frame: pd.DataFrame,
+    peer_columns_col: str,
+    replacements: dict[str, str] | None = None,
+) -> pd.Series:
+    result = pd.Series("global=ALL", index=frame.index, dtype=object)
+    if peer_columns_col not in frame.columns:
+        return result
+
+    replacements = replacements or {}
+    peer_columns = frame[peer_columns_col].fillna("global").astype(str)
+    global_mask = peer_columns.isin(["", "nan", "None", "global"])
+    for columns_text in peer_columns.loc[~global_mask].drop_duplicates():
+        row_mask = peer_columns.eq(columns_text)
+        parts: list[pd.Series] = []
+        for column in [part for part in str(columns_text).split("+") if part]:
+            key_col = f"peer_key_{column}"
+            label = replacements.get(column, column)
+            values = (
+                frame.loc[row_mask, key_col].astype("string").fillna("<NA>").astype(object)
+                if key_col in frame.columns
+                else pd.Series("<NA>", index=frame.index[row_mask], dtype=object)
+            )
+            parts.append(label + "=" + values)
+        if not parts:
+            result.loc[row_mask] = columns_text
+            continue
+        value_text = parts[0]
+        for part in parts[1:]:
+            value_text = value_text + " | " + part
+        result.loc[row_mask] = value_text
+    return result
 
 
 def decision_label_text(row: pd.Series) -> str:
@@ -697,8 +741,6 @@ def build_detail_context(scores: pd.DataFrame, not_scored: pd.DataFrame) -> pd.D
     rename = {
         "invoice_month": "scoring_invoice_month",
         "calendar_month": "scoring_calendar_month",
-        "feature_ratio_bucket": "scoring_feature_ratio_bucket",
-        "exposure_bucket": "scoring_exposure_bucket",
         "main_metric": "scoring_main_metric",
         "reference_feature": "scoring_reference_feature",
         "expected_main_metric": "scoring_peer_expected_main_metric",
@@ -835,6 +877,16 @@ def build_detail_table(
 ) -> pd.DataFrame:
     history = prepared.copy()
     history_before_scoring = history.loc[history["invoice_month"].lt(scoring_month)]
+    fit_history, history, effective_segment_columns, segment_report = core.apply_segment_optimizations(
+        history_before_scoring,
+        history,
+        profile,
+    )
+    if effective_segment_columns:
+        profile = dict(profile)
+        profile["effective_segment_columns"] = effective_segment_columns
+        profile["segment_optimization_report"] = segment_report
+    history_before_scoring = fit_history
     effective_derived = derived_features_config or profile.get("derived_features", {})
     feature_edges = core.fit_feature_bucket_edges(history_before_scoring, effective_derived)
     legacy_edges = core.fit_reference_feature_edges(history_before_scoring)
@@ -870,10 +922,6 @@ def build_detail_table(
     series_cols = [
         "customer_id",
         "invoice_month",
-        "exposure_feature",
-        "exposure_bucket",
-        "exposure_feature_missing_flag",
-        "feature_ratio_bucket",
         "main_metric",
         "reference_feature",
         "main_to_reference_ratio",
@@ -886,10 +934,6 @@ def build_detail_table(
             series_cols.append(col)
     customer_series = history[[col for col in series_cols if col in history.columns]].rename(
         columns={
-            "exposure_feature": "customer_month_exposure_feature",
-            "exposure_bucket": "customer_month_exposure_bucket",
-            "exposure_feature_missing_flag": "customer_month_exposure_feature_missing_flag",
-            "feature_ratio_bucket": "customer_month_feature_ratio_bucket",
             "main_metric": "customer_main_metric",
             "reference_feature": "customer_reference_feature",
             "main_to_reference_ratio": "customer_main_to_reference_ratio",
@@ -1038,9 +1082,6 @@ def build_detail_table(
         elif logical == "invoice_month":
             out[source_name] = detail["invoice_month"]
             used_detail_columns.add("invoice_month")
-        elif logical == "exposure_feature":
-            out[source_name] = detail["customer_month_exposure_feature"]
-            used_detail_columns.add("customer_month_exposure_feature")
         elif logical == "main_metric":
             out[source_name] = detail["customer_main_metric"]
             used_detail_columns.add("customer_main_metric")
@@ -1060,7 +1101,12 @@ def build_detail_table(
     out["MUSTERI_TOPLAM_AY_ADET"] = detail["customer_obs_count_total"]
     out["ONCEKI_AYA_GAP"] = detail["month_gap_from_previous"]
     out["PEER_SEVIYE"] = detail["peer_group_level_name"]
+    peer_display_mapping = peer_column_display_mapping(profile)
     out["PEER_KOLONLARI"] = detail["peer_group_columns"].map(display_peer_columns)
+    out["PEER_KOLONLARI_ACIKLAMA"] = detail["peer_group_columns"].map(
+        lambda value: display_peer_columns(value, peer_display_mapping)
+    )
+    out["PEER_DEGERLERI"] = display_peer_key_values(detail, "peer_group_columns", peer_display_mapping)
     out["PEER_AYLIK_MUSTERI_ADET"] = detail["peer_month_customer_count"]
     out["PEER_AYLIK_SATIR_ADET"] = detail["peer_month_row_count"]
     out["PEER_AYLIK_ANA_METRIK_MEDYAN"] = detail["peer_month_main_metric_median"]
@@ -1113,9 +1159,31 @@ def build_detail_table(
         "month_of_year",
         "calendar_month",
         "period_label",
+        "scoring_invoice_month",
+        "scoring_calendar_month",
+        "scoring_feature_ratio_bucket",
+        "scoring_exposure_bucket",
+        "customer_month_feature_ratio_bucket",
+        "customer_month_exposure_feature",
+        "customer_month_exposure_bucket",
+        "customer_month_exposure_feature_missing_flag",
+        "feature_ratio_bucket",
+        "exposure_bucket",
+        "exposure_feature",
+        "exposure_feature_missing_flag",
+        "behavior_cluster",
+        "behavior_history_n",
+        "behavior_level_bucket",
+        "behavior_volatility_bucket",
+        "behavior_trend_bucket",
+        "behavior_median_main_metric",
+        "behavior_volatility_log",
+        "behavior_trend_slope",
     }
     for source_col in detail.columns:
         if source_col in used_detail_columns or source_col in technical_columns:
+            continue
+        if source_col.startswith("peer_key_"):
             continue
         if source_col.startswith("_") or source_col in out.columns:
             continue
@@ -1692,6 +1760,10 @@ def run_implementation_scoring(
         "score_scoring_month_done "
         f"scored_rows={len(run.scores):,} not_scored_rows={len(run.not_scored):,}"
     )
+    segment_attrs = run.scores.attrs if len(run.scores) else run.not_scored.attrs
+    if segment_attrs.get("effective_segment_columns") is not None:
+        profile["effective_segment_columns"] = list(segment_attrs.get("effective_segment_columns", []))
+        profile["segment_optimization_report"] = list(segment_attrs.get("segment_optimization_report", []))
     if include_prior_score_diagnostic:
         progress("prior_score_diagnostic_start")
         run = core.attach_prior_score_diagnostic(

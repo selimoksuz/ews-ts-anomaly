@@ -22,6 +22,7 @@ VARIABLE_TOKEN_ALIASES = {
 DEFAULT_FEATURE_BUCKET_VARIANTS = ("q3", "q4", "q5", "q8")
 SEGMENT_VARIABLES_META_KEY = "__segment_variables__"
 SEGMENT_VARIABLES_AUTO_META_KEY = "__segment_variables_auto__"
+SEGMENT_VARIABLE_SPECS_META_KEY = "__segment_variable_specs__"
 EXCLUDED_VARIABLES_META_KEY = "__excluded_variables__"
 
 
@@ -73,11 +74,88 @@ def _as_mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _segment_source_from_item(item: Any) -> str | None:
+    if isinstance(item, dict):
+        source = item.get("source", item.get("column", item.get("name")))
+        if source is None:
+            return None
+        text = str(source).strip()
+    else:
+        text = str(item).strip()
+    if not text or text.lower() in {"auto", "none", "null"}:
+        return None
+    return text
+
+
+def _normalise_segment_spec(item: Any) -> dict[str, Any] | None:
+    source = _segment_source_from_item(item)
+    if source is None:
+        return None
+    if isinstance(item, dict):
+        spec = dict(item)
+    else:
+        spec = {}
+    spec["source"] = source
+    spec.setdefault("name", source)
+    raw_type = str(spec.get("type", spec.get("semantic_type", "categorical"))).strip().lower()
+    if raw_type in {"num", "number", "numeric", "continuous", "float", "integer", "int"}:
+        spec["type"] = "numeric"
+    else:
+        spec["type"] = "categorical"
+    return spec
+
+
+def segment_variable_specs_from_config(config: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = config.get("variables", {})
+    if not isinstance(raw, dict):
+        return []
+    value = next((raw.get(alias) for alias in VARIABLE_GROUP_ALIASES["segment_variables"] if alias in raw), [])
+    if _is_auto_value(value):
+        return []
+    items = value if isinstance(value, (list, tuple, set)) else [value]
+    specs: list[dict[str, Any]] = []
+    for item in items:
+        spec = _normalise_segment_spec(item)
+        if spec is not None:
+            specs.append(spec)
+    return specs
+
+
+def _first_ratio_signal_from_config(config: dict[str, Any]) -> dict[str, Any]:
+    model = _as_mapping(config.get("model", {}))
+    raw = _as_mapping(model.get("derived_signals", config.get("derived_signals", {})))
+    ratios = raw.get("ratios", [])
+    if isinstance(ratios, dict):
+        ratio_items = []
+        for name, spec in ratios.items():
+            if isinstance(spec, dict):
+                item = dict(spec)
+                item.setdefault("name", name)
+                ratio_items.append(item)
+        ratios = ratio_items
+    if not isinstance(ratios, list):
+        return {}
+    for raw_ratio in ratios:
+        if not isinstance(raw_ratio, dict):
+            continue
+        ratio = dict(raw_ratio)
+        ratio.setdefault("enabled", True)
+        ratio.setdefault("numerator", "main_feature")
+        ratio.setdefault("use_as_anomaly_signal", True)
+        ratio.setdefault("use_as_peer_variable", False)
+        ratio.setdefault("signal_name", ratio.get("name", "feature_ratio"))
+        return ratio
+    return {}
+
+
 def derived_features_from_config(config: dict[str, Any]) -> dict[str, Any]:
     model = _as_mapping(config.get("model", {}))
     raw = _as_mapping(model.get("derived_features", config.get("derived_features", {})))
     if "ratio_feature" in raw and "feature_ratio" not in raw:
         raw["feature_ratio"] = raw["ratio_feature"]
+    ratio_signal = _first_ratio_signal_from_config(config)
+    if ratio_signal:
+        raw["feature_ratio"] = ratio_signal
     return raw
 
 
@@ -145,7 +223,12 @@ def variable_groups_from_config(config: dict[str, Any]) -> dict[str, list[str]]:
     groups: dict[str, list[str]] = {}
     for canonical, aliases in VARIABLE_GROUP_ALIASES.items():
         value = next((raw.get(alias) for alias in aliases if alias in raw), [])
-        groups[canonical] = [] if canonical == "segment_variables" and _is_auto_value(value) else _as_string_list(value)
+        if canonical == "segment_variables":
+            groups[canonical] = [] if _is_auto_value(value) else [
+                str(spec["source"]) for spec in segment_variable_specs_from_config(config)
+            ]
+        else:
+            groups[canonical] = _as_string_list(value)
     return groups
 
 
@@ -205,6 +288,7 @@ def column_map_from_config(config: dict[str, Any]) -> dict[str, Any]:
         from_groups[SEGMENT_VARIABLES_AUTO_META_KEY] = True
     elif groups["segment_variables"]:
         from_groups[SEGMENT_VARIABLES_META_KEY] = groups["segment_variables"]
+        from_groups[SEGMENT_VARIABLE_SPECS_META_KEY] = segment_variable_specs_from_config(config)
     if groups.get("exclude_variables"):
         from_groups[EXCLUDED_VARIABLES_META_KEY] = groups["exclude_variables"]
     columns = config.get("columns", {})

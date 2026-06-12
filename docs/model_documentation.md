@@ -26,7 +26,7 @@ Opsiyonel ama peer kalitesi icin onemli degisken gruplari:
 - Sube
 - Ana metrigi normalize edebilecek referans feature
 
-Feature kolonlari adindan dolayi otomatik kullanilmaz. Bir feature'in oran sinyali veya behavior diagnostic'i olarak kullanilmasi `model.derived_features` altinda acikca tanimlanir. Peer segmentasyonuna girecek her kolon `variables.segment_variables` listesinde bulunmalidir.
+Feature kolonlari adindan dolayi otomatik kullanilmaz. Bir feature'in oran sinyali olarak kullanilmasi `model.derived_signals` altinda acikca tanimlanir. Peer segmentasyonuna girecek her kaynak kolon `variables.segment_variables` listesinde bulunmalidir.
 
 Ana metrik doldurulmaz. Ilk gorulme oncesi aylar yapay satir olarak uretilmez. Ilk gorulme sonrasi kopuk aylar detail tabloda data quality sinyali olarak tutulur.
 
@@ -45,19 +45,30 @@ Musteri yeterince okunabiliyorsa karar driver'i oncelikle customer family olur. 
 
 ## Adaptif Peer Secimi
 
-Peer adaylari yalniz `variables.segment_variables` listesinden uretilir. Production config artik proses-spesifik `explicit_levels` tasimaz; engine bu segment kolonlarinin aday lattice'ini kurar, destek/kalibrasyon/dagilim/objective skorlarina gore en iyi peer'i secer.
+Peer adaylari yalniz `variables.segment_variables` listesinden uretilir. Kategorik kolonlar dogrudan peer adayi olur; `type: numeric` ve `optimize_buckets: true` verilen kolonlar ise scoring ayindan onceki gecmis veride objective bazli bucket edilir ve peer adayina bu optimize bucket kolonu girer. Production config proses-spesifik `explicit_levels` tasimaz; engine bu segment kolonlarinin aday lattice'ini kurar, destek/kalibrasyon/dagilim/objective skorlarina gore en iyi peer'i secer.
 
 `segment_variables: auto` kesif modudur. Engine once role kolonlarini (`id_variables`, `time_variables`, `main_feature`, referans feature, exposure feature) ve `exclude_variables` listesini ayirir; sonra kalan kolonlardan dusuk/orta cardinality ve bilgi tasiyan gecici segment listesini infer eder. Production run icin bu listenin YAML'da acik `segment_variables` listesine cevrilmesi onerilir.
 
 Otomatik aday setinde su aileler denenir:
 
 - Segment adaylari: `variables.segment_variables` icindeki kolonlarin tekli/coklu kombinasyonlari.
+- Numeric segment adaylari: `variables.segment_variables` icindeki numeric kolonlarin gecmis veride secilen optimize bucket kolonlari.
 - Auto segment adaylari: `segment_variables: auto` ise uygun cardinality'li kolonlar runtime'da infer edilir.
 - Global fallback: hicbir aday destek gecmezse global peer denenir.
 
 `behavior_*` alanlari scoring ayini kullanmadan, yalnizca scoring ayindan onceki musteri gecmisinden uretilir. Bu alanlar peer segmentasyonuna otomatik girmez; detail/model diagnostic olarak kalir.
 
 Referans feature ratio ana metrik / referans feature sinyali icin kullanilir. Ratio veya turetilmis bucket'lar peer aday setine otomatik girmez; peer kirilimi icin kullanilacak her kolon `variables.segment_variables` listesinde acikca bulunmalidir.
+
+Numeric segment bucket objective'i label kullanmaz; burada hedef anomaly target'i degil, peer temsil kalitesidir. Her numeric kaynak icin q3/q4/q5/q8 ve raw/log1p adaylari gecmis veride denenir. Secim skorunda su bilesenler vardir:
+
+- Homojenlik: bucket icindeki weighted log IQR ne kadar dusukse iyi, agirlik 0.35.
+- Support: minimum bucket satir destegini gecen gozlem payi, agirlik 0.25.
+- Mean-medyan uyumu: raw ortalama/medyan farki ne kadar dusukse iyi, agirlik 0.15.
+- Std-medyan uyumu: raw std/medyan orani ne kadar dusukse iyi, agirlik 0.15.
+- Separation: bucket medyanlari birbirinden anlamli ayrisiyorsa iyi, agirlik 0.10.
+
+Bu objective sadece segment olusturma icindir; final anomaly score target'siz evidence-first akista kalir. Bucket fit'i scoring ayina bakmaz, yalniz gecmis aylarla yapilir.
 
 Peer adaylari su kriterlerle degerlendirilir:
 
@@ -136,7 +147,7 @@ Bu skor tek basina "iyi peer" demek degildir. Destek azsa `PEER_DESTEK_SKORU`, d
 
 ## Feature Ratio Kalite Gate
 
-`feature_ratio` ana metrik / referans feature gibi oran sinyallerini uretir. Oran hesaplanabilir olsa bile final skora girmesi icin kalite gate'leri gecmelidir.
+`model.derived_signals.ratios` ana metrik / referans feature gibi oran sinyallerini uretir. Oran hesaplanabilir olsa bile final skora girmesi icin kalite gate'leri gecmelidir. Geriye uyumluluk icin eski `model.derived_features.feature_ratio` okunur, fakat resmi yeni sozlesme `derived_signals.ratios` altindadir.
 
 Global gate:
 
@@ -272,14 +283,14 @@ Detail sozlugunu okurken kolonlari su kullanim tipleriyle dusun:
 |---|---|---|---|
 | Ham input | `MUSTERINO`, `DONEM_AY`, ana metrik, segment degiskenleri | Her zaman tasinir. ID ve donem scoring/join icin zorunludur; ana metrik scoring degeridir; segment degiskenleri peer secimi icin kullanilir. | Kararin hangi kaynak satirindan geldigini, hangi ay ve hangi gercek ana metrikle skorlandigini gosterir. |
 | Seri ve data quality | `ANA_METRIK_EKSIK_MI`, `YENI_MUSTERI_MI`, `KESIK_SERI_MI`, `SON_12_AY_KAPSAMA`, `DATA_GAP_SKORU` | Karar guveni ve strateji seciminde aktiftir. Ana metrik eksikse skorlanabilirlik sinirlanir; yeni/kesik musteri self-history guvenini dusurur ve peer fallback'i guclendirir. | Modelin neden musteri-first, peer-only veya dusuk guvenli karar verdigini aciklar. |
-| Peer kimligi ve aylik peer metrikleri | `PEER_SEVIYE`, `PEER_KOLONLARI`, `PEER_AYLIK_ANA_METRIK_MEDYAN`, `MUSTERI_PEER_ANA_METRIK_ORANI` | Adaptif peer secimi sonucudur. Peer anlamli support ve kalite kapilarini gectiginde musteri degeri peer seviyesine gore de yorumlanir. | Musterinin hangi grupla kiyaslandigini ve o ay peer seviyesine gore nerede durdugunu gosterir. |
+| Peer kimligi ve aylik peer metrikleri | `PEER_SEVIYE`, `PEER_KOLONLARI`, `PEER_KOLONLARI_ACIKLAMA`, `PEER_DEGERLERI`, `PEER_AYLIK_ANA_METRIK_MEDYAN`, `MUSTERI_PEER_ANA_METRIK_ORANI` | Adaptif peer secimi sonucudur. `PEER_KOLONLARI` internal/join icin kullanilir; `PEER_KOLONLARI_ACIKLAMA` optimize numeric bucket'larin kaynak kolonunu human-readable gosterir; `PEER_DEGERLERI` scoring ayinda secilen peer anahtar degerlerini tek kolonda verir. Peer secimi sadece YAML `segment_variables` icinden ve onlarin optimize edilmis bucket/group karsiliklarindan gelir. | Musterinin hangi grupla ve hangi peer degerleriyle kiyaslandigini, o ay peer seviyesine gore nerede durdugunu gosterir. |
 | Beklenen/gercek ana metrik | `SKORLANAN_ANA_METRIK`, `BEKLENEN_ANA_METRIK`, `GERCEK_BEKLENEN_ORANI` | Scoring ayinda final reason ve skor aciklamasinda aktiftir. Beklenen seviye customer/peer evidence kaynaklarindan secilir. | "Neye gore anomalidir?" sorusunun sayisal cevabini verir. |
 | Musteri sinyalleri | `MUSTERI_GECMIS_Z`, `MUSTERI_TREND_Z`, `MUSTERI_SEZON_Z`, `MUSTERI_SINYAL_SKORU` | Musteri gecmisi yeterliyse oncelikli karar ailesidir. Trend icin yeterli gozlem, sezon icin ayni ay/gecmis ay bilgisi ve coverage kosullari aranir. | Musterinin kendi normalinden ne kadar saptigini olcer; customer-first mantigin ana evidencelaridir. |
 | Peer sinyalleri | `GECMIS_PEER_Z`, `GUNCEL_PEER_Z`, `PEER_TREND_Z`, `PEER_SINYAL_SKORU` | Musteri verisi yetersizse veya peer de destekliyorsa aktiftir. Peer kalite dusukse karar guveni dusurulur veya review dili kullanilir. | Musteri kendi dunyasiyla aciklanamiyorsa benzer grup davranisina gore farki olcer. |
 | Feature-ratio gate | `FEATURE_ORAN_Z`, `FEATURE_ORAN_GLOBAL_GATE_GECTI`, `FEATURE_ORAN_PEER_GATE_GECTI` | Sadece denominator coverage, missing/zero orani, peer ratio row sayisi ve MAD kosullari gecerse anomaly sinyali olabilir. Gate gecmezse diagnostic olarak kalir. | Ana metrik / referans feature oraninin guvenilir olup olmadigini ve karara dahil edilip edilmedigini aciklar. |
 | Challenger diagnostic | `model_challenger_score`, `pca_challenger_score`, `if_challenger_score`, `lof_challenger_score`, `*_challenger_anomaly_flag` | Sadece scoring ay satirinda doludur. Production flag'i degistirmez; sadece ana metrik residual transformasyonlariyla ek kontrol saglar. | Robust sistemle uyumlu/uyumsuz model davranisini izlemek ve challenger adaylarini takip etmek icindir; rule-derived karar kolonlari modele verilmez. |
 | Peer kalite ve kalibrasyon | `PEER_TEMSIL_SKORU`, `PEER_OBJECTIVE_SKORU`, `PEER_DAGILIM_SKORU`, `PEER_KALIBRASYON_SKORU` | Peer seciminde ve karar guveninde aktiftir. Support, dagilim, spesifiklik, stabilite ve rolling OOT kalibrasyon kriterleri birlikte degerlendirilir. | Secilen peer gercekten temsil edici mi, yoksa peer kaynakli karar dikkatle mi okunmali sorusunu cevaplar. |
-| Davranis/behavior | `DAVRANIS_CLUSTER`, `DAVRANIS_*` | Scoring ayindan onceki musteri gecmisinden uretilir; peer aday genisletmede otomatik kullanilmaz ve karar sinyali degildir. | Musterinin seviye/volatilite/trend davranisini diagnostic olarak izler. |
+| Davranis/behavior | `DAVRANIS_CLUSTER`, `DAVRANIS_*` | Varsayilan output alanina otomatik basilan karar sinyali degildir. Sadece YAML'da acikca bir segment/derived signal olarak tanimlanirsa ilgili run'da kullanilir veya raporlanir. | Generic engine'in farkli veri setlerinde gizli behavior varsayimi uretmesini engeller. |
 | Onceki skor diagnostigi | `ONCEKI_ANOMALI_SKORU`, `ONCEKI_AYA_GORE_SKOR_FARKI`, `SKOR_TREND_DIAGNOSTIGI` | Karar driver'i degildir; bias yaratmamak icin final flag'i tek basina degistirmez. | Bu ayki skorun onceki skor trendinden kopup kopmadigini izlemek icindir. |
 | Evidence driver | `ANA_SINYAL`, `PRIMARY_SINYAL_P_DEGERI`, `EVIDENCE_DRIVER`, `EVIDENCE_CONFLICT_FLAG` | Final karar anlatiminda aktiftir. En guclu sinyal p-value/effect yonu ve customer-peer uyumuna gore secilir. | Reason cumlesinin hangi kanita dayandigini ve sinyaller arasi konflikt olup olmadigini gosterir. |
 | Final karar | `ANOMALI_FLAG`, `ANOMALI_ETIKETI`, `ANOMALI_SKORU`, `ANOMALI_NEDENI` | Scoring ayinin karar sonucudur. `ANOMALI_SKORU` final etiketle uyumlu operasyonel risk skorudur; ham sinyal gucu sinyal skor kolonlarinda kalir. Detail satirlarinda seri gorunumu icin gecmis aylar da bulunur; flag scoring ay disinda 0 kalir. | Operasyonel karar, skor, yon ve okunabilir reason'i tasir. |
@@ -426,9 +437,9 @@ Fayda saglayan parcalar:
 Cikarilan veya sinirlanan parcalar:
 
 - `*_FINAL_AGIRLIK` detail outputtan cikarildi. Final karar weighted average olmadigi icin bu isim yanlis izlenim veriyordu.
-- Feature ratio default karar sinyali olmaktan cikarildi; kalite gate gecerse aktif.
+- Feature ratio default karar sinyali olmaktan cikarildi; yalniz `model.derived_signals.ratios` altinda acik tanimlanir ve kalite gate gecerse aktif olur.
 - Behavior cluster production karar sinyali degildir; detail/model diagnostic olarak tutulur.
-- Referans feature bucket'lari peer adayi olarak yaristirilmez; feature ratio kalite gate gecerse ratio z-score sinyali olarak kullanilir.
+- Referans feature bucket'lari peer adayi olarak yaristirilmez. Peer bucket ihtiyaci varsa kaynak numeric kolon `variables.segment_variables` icinde `type: numeric` tanimlanir ve objective bazli bucket edilir. Feature ratio kalite gate gecerse yalniz ratio z-score sinyali olarak kullanilir.
 - Autoencoder/LSTM production kapsamina alinmadi.
 - Raw IF/LOF/PCA production kapsamina alinmadi.
 - Performance ve project risk review output klasorleri kalici proje ciktisi olmaktan cikarildi.

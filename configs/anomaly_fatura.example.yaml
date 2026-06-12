@@ -10,13 +10,33 @@ variables:
   # Aylik donem/tarih kolonu. 202603, 20260301 veya tarih formati olabilir.
   time_variables:
     - DONEM_AY
-  # Peer/segment adaylari. Sistem peer adaylarini bu degiskenlerden uretir.
+  # Peer/segment adaylari. Sistem peer adaylarini sadece bu degiskenlerden uretir.
+  # Numeric verilenler gecmis veriyle objective bazli bucket edilir.
   segment_variables:
-    - SEGMENTAD
-    - REF_ALTFAALIYET
-    - SUBE_KD
+    - name: SEGMENTAD
+      type: categorical
+    - name: REF_ALTFAALIYET
+      type: categorical
+    - name: SUBE_KD
+      type: categorical
+    - name: TURNOVER_AMT
+      type: numeric
+      optimize_buckets: true
+      binning:
+        candidates: [q3, q4, q5, q8]
+        transform_candidates: [raw, log1p]
+        min_bucket_rows: 120
+        min_objective_gain: 0.0
+    - name: AKTIF_ABONE
+      type: numeric
+      optimize_buckets: true
+      binning:
+        candidates: [q3, q4, q5, q8]
+        transform_candidates: [raw, log1p]
+        min_bucket_rows: 120
+        min_objective_gain: 0.0
   # Ilk feature skorlanan ana metriktir. Diger feature'lar tek basina kullanilmaz;
-  # aktif kullanilacaksa model.derived_features altinda acikca referans verilir.
+  # aktif kullanilacaksa segment_variables veya model.derived_signals altinda acikca referans verilir.
   feature_variables:
     - FATURA_TTR
     - TURNOVER_AMT
@@ -34,34 +54,31 @@ model:
   high_top_rate: 0.0075
   # Onceki ay skoru sadece diagnostik olarak hesaplanir; final karara direkt target gibi girmez.
   include_prior_score_diagnostic: true
-  derived_features:
+  derived_signals:
     # Ana metrigin baska bir referans feature'a orani. Ornek: ana_metrik / referans_feature.
-    # Baska bir proses icin sadece denominator kolonunu degistir veya enabled: false yap.
-    feature_ratio:
-      enabled: true
-      numerator: main_feature
-      denominator: TURNOVER_AMT
-      use_as_anomaly_signal: true
-      quality_gate:
-        # true ise oran skora girmeden once kaynak ve peer kalite kontrollerinden gecmelidir.
+    # Baska bir proses icin denominator kolonunu degistir veya enabled: false yap.
+    ratios:
+      - name: metric_to_turnover
         enabled: true
-        # Referans feature null/zero orani bu esigi asarsa oran skora girmez, sadece detail diagnostic kalir.
-        max_denominator_missing_or_zero_rate: 0.50
-        # Referans feature'in pozitif oldugu satir payi bu esigin altindaysa oran skora girmez.
-        min_monthly_valid_coverage: 0.50
-        # Secilen peer icinde oran sinyali icin gereken minimum ratio gozlem sayisi.
-        min_peer_ratio_rows: 20
-        # Secilen peer icinde ratio MAD cok dusukse oran sinyali kapatilir.
-        min_peer_ratio_mad: 0.001
+        numerator: main_feature
+        denominator: TURNOVER_AMT
+        use_as_anomaly_signal: true
+        quality_gate:
+          # true ise oran skora girmeden once kaynak ve peer kalite kontrollerinden gecmelidir.
+          enabled: true
+          # Referans feature null/zero orani bu esigi asarsa oran skora girmez, sadece detail diagnostic kalir.
+          max_denominator_missing_or_zero_rate: 0.50
+          # Referans feature'in pozitif oldugu satir payi bu esigin altindaysa oran skora girmez.
+          min_monthly_valid_coverage: 0.50
+          # Secilen peer icinde oran sinyali icin gereken minimum ratio gozlem sayisi.
+          min_peer_ratio_rows: 20
+          # Secilen peer icinde ratio MAD cok dusukse oran sinyali kapatilir.
+          min_peer_ratio_mad: 0.001
+  derived_features:
     # Musteri gecmis davranisindan level/volatilite/trend cluster'i uretir.
     # Peer segmentasyonuna otomatik girmez; sadece detail/model diagnostic olarak kalir.
     behavior_peer:
       enabled: false
-    # Ek numeric feature'i bucket'a cevirir; peer adayina otomatik girmez.
-    # internal_role: exposure_feature simdilik tek generic exposure bucket'ina map edilir.
-    bucket_features:
-      - source: AKTIF_ABONE
-        internal_role: exposure_feature
   score_aggregation:
     # Evidence-first skor konsolidasyonu. Sinyalleri agirlikli ortalama yerine p-value kanitiyle toplar.
     method: directional_empirical_evidence

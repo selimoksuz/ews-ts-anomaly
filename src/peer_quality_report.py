@@ -172,6 +172,15 @@ def build_scoring_context(prepared: pd.DataFrame, scoring_month: int) -> tuple[p
     output_mapping = report_column_mapping(prepared)
     profile = prepared.attrs.get("profile", {}) if hasattr(prepared, "attrs") else {}
     derived_features = profile.get("derived_features", {})
+    history, scoring, effective_segment_cols, segment_report = core.apply_segment_optimizations(
+        history,
+        scoring,
+        profile,
+    )
+    if effective_segment_cols:
+        profile = dict(profile)
+        profile["effective_segment_columns"] = effective_segment_cols
+        profile["segment_optimization_report"] = segment_report
     feature_edges = core.fit_feature_bucket_edges(history, derived_features)
     legacy_edges = core.fit_reference_feature_edges(history)
     scoring = core.assign_feature_buckets(scoring, feature_edges)
@@ -184,19 +193,10 @@ def build_scoring_context(prepared: pd.DataFrame, scoring_month: int) -> tuple[p
         history = core.assign_behavior_clusters(history, behavior)
     scoring["_global_key"] = "ALL"
     history["_global_key"] = "ALL"
-    feature_bucket_cols = [str(column) for column in feature_edges.keys()]
-    segment_cols = [str(col) for col in profile.get("segment_columns", []) if str(col) in scoring.columns]
+    segment_cols = [str(col) for col in profile.get("effective_segment_columns", profile.get("segment_columns", [])) if str(col) in scoring.columns]
     wanted_cols = [
         "customer_id",
         *segment_cols,
-        "feature_ratio_bucket",
-        *feature_bucket_cols,
-        "exposure_bucket",
-        "behavior_cluster",
-        "behavior_history_n",
-        "behavior_level_bucket",
-        "behavior_volatility_bucket",
-        "behavior_trend_bucket",
         "_global_key",
     ]
     out = scoring[[col for col in wanted_cols if col in scoring.columns]].copy()
@@ -204,14 +204,6 @@ def build_scoring_context(prepared: pd.DataFrame, scoring_month: int) -> tuple[p
         columns={
             "customer_id": output_mapping.get("customer_id", "ENTITY_ID"),
             **{column: output_mapping.get(column, column) for column in segment_cols},
-            "feature_ratio_bucket": "FEATURE_RATIO_BUCKET",
-            **{column: column.upper() for column in feature_bucket_cols},
-            "exposure_bucket": "EXPOSURE_BUCKET",
-            "behavior_cluster": "DAVRANIS_CLUSTER_REBUILT",
-            "behavior_history_n": "DAVRANIS_GECMIS_ADET_REBUILT",
-            "behavior_level_bucket": "DAVRANIS_SEVIYE_BUCKET_REBUILT",
-            "behavior_volatility_bucket": "DAVRANIS_VOLATILITE_BUCKET_REBUILT",
-            "behavior_trend_bucket": "DAVRANIS_TREND_BUCKET_REBUILT",
             "_global_key": "_GLOBAL_KEY",
         }
     )
